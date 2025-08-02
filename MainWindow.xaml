@@ -1,0 +1,123 @@
+﻿<Window x:Class="Kinectv1.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Kinect Face &amp; Voice Recognition" 
+        Height="560" Width="720"
+        WindowStartupLocation="CenterScreen"
+        ShowInTaskbar="True"
+        Topmost="False"
+        ResizeMode="CanResize"
+        WindowState="Normal">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+        
+        <!-- Transcription Display -->
+        <StackPanel Grid.Row="0" Margin="10">
+            <TextBlock Text="Voice Transcription:" FontWeight="Bold"/>
+            <Label Name="TranscriptionLabel" Content="Waiting for voice..." 
+                   Background="LightGray" Padding="5" MinHeight="30"/>
+        </StackPanel>
+        
+        <!-- RMS Level Display -->
+        <StackPanel Grid.Row="1" Margin="10">
+            <TextBlock Text="Audio Level:" FontWeight="Bold"/>
+            <ProgressBar Name="RmsBar" Height="20" Minimum="0" Maximum="100" Value="0"/>
+            <TextBlock Name="RmsText" Text="RMS: 0.0" HorizontalAlignment="Center"/>
+        </StackPanel>
+        
+        <!-- Speaker Recognition -->
+        <StackPanel Grid.Row="2" Margin="10">
+            <TextBlock Text="Speaker Recognition:" FontWeight="Bold"/>
+            <Label Name="SpeakerLabel" Content="Unknown (0.00)" 
+                   Background="LightBlue" Padding="5" MinHeight="30"/>
+        </StackPanel>
+        
+        <!-- Face Enrollment Section -->
+        <StackPanel Grid.Row="3" Margin="10" Orientation="Horizontal">
+            <TextBlock Text="Enroll Face:" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,10,0"/>
+            <TextBox Name="EnrollNameBox" Width="150" Margin="0,0,10,0" VerticalAlignment="Center"/>
+            <Button Name="EnrollButton" Content="Enroll Face" Padding="10,5" Click="EnrollButton_Click"/>
+        </StackPanel>
+        
+        <!-- Voice Enrollment Section -->
+        <StackPanel Grid.Row="4" Margin="10">
+            <TextBlock Text="Enhanced Voice Enrollment (10 samples):" FontWeight="Bold" Margin="0,0,0,5"/>
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,5">
+                <TextBox Name="VoiceEnrollNameBox" Width="150" Margin="0,0,10,0" VerticalAlignment="Center" 
+                         Text="{Binding ElementName=EnrollNameBox, Path=Text}"/>
+                <Button Name="EnrollVoiceButton" Content="Enroll Voice (10x)" Padding="10,5" Click="EnrollVoiceButton_Click"/>
+                <Button Name="CancelVoiceButton" Content="Cancel" Padding="10,5" Margin="5,0,0,0" 
+                        Click="CancelVoiceButton_Click" IsEnabled="False"/>
+            </StackPanel>
+            <StackPanel Orientation="Horizontal">
+                <TextBlock Name="VoiceEnrollStatusText" Text="Ready for enhanced voice enrollment" 
+                           VerticalAlignment="Center" Margin="0,0,10,0" Width="250"/>
+                <ProgressBar Name="VoiceEnrollProgress" Width="200" Height="18" 
+                             Minimum="0" Maximum="10" Value="0" Margin="0,0,10,0"/>
+                <TextBlock Name="VoiceProgressText" Text="0/10" VerticalAlignment="Center" Width="40"/>
+                <TextBlock Name="VoiceProgressPercent" Text="(0%)" VerticalAlignment="Center" 
+                           Foreground="DarkBlue" FontWeight="Bold" Margin="5,0,0,0"/>
+            </StackPanel>
+        </StackPanel>
+        
+        <!-- Speaker Management -->
+        <StackPanel Grid.Row="5" Margin="10" Orientation="Horizontal">
+            <Button Name="ListSpeakersButton" Content="List Enrolled Speakers" Padding="10,5" 
+                    Click="ListSpeakersButton_Click" Margin="0,0,10,0"/>
+            <Button Name="ShowInstructionsButton" Content="Voice Instructions" Padding="10,5" 
+                    Click="ShowInstructionsButton_Click" Margin="0,0,10,0"/>
+            <Button Name="TestVoiceButton" Content="Test Voice Recognition" Padding="10,5" 
+                    Click="TestVoiceButton_Click" Background="Orange" Margin="0,0,10,0"/>
+        </StackPanel>
+        
+        <!-- Video Display Controls -->
+        <StackPanel Grid.Row="6" Margin="10" Orientation="Horizontal">
+            <TextBlock Text="Video Display:" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,10,0"/>
+            <Button Name="ShowVideoButton" Content="📺 Show Video Feed" Padding="10,5" 
+                    Click="ShowVideoButton_Click" Background="MediumSeaGreen" Foreground="White" Margin="0,0,10,0"/>
+            <Button Name="HideVideoButton" Content="🚫 Hide Video Feed" Padding="10,5" 
+                    Click="HideVideoButton_Click" Background="Crimson" Foreground="White" Margin="0,0,10,0" IsEnabled="False"/>
+            <TextBlock Text="Live camera feed with face detection boxes and name labels" 
+                       VerticalAlignment="Center" Foreground="DarkGreen" FontStyle="Italic" Margin="10,0,0,0"/>
+        </StackPanel>
+        
+        <!-- Voice Threshold Control Section -->
+        <StackPanel Grid.Row="7" Margin="10" Orientation="Horizontal">
+            <TextBlock Text="Voice Threshold:" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,10,0"/>
+            <TextBox Name="ThresholdTextBox" Width="80" Height="25" VerticalAlignment="Center" 
+                     Text="0.40" Margin="0,0,5,0" HorizontalContentAlignment="Center"/>
+            <Button Name="SetAsDefaultButton" Content="Set Default" Padding="8,3" 
+                    Click="SetAsDefaultButton_Click" Background="LightGreen" Margin="0,0,10,0"/>
+            <Button Name="TestWithThresholdButton" Content="Test with Threshold" Padding="10,5" 
+                    Click="TestWithThresholdButton_Click" Background="LightSteelBlue" Margin="0,0,10,0"/>
+            <Button Name="CheckDataButton" Content="Check Data" Padding="8,3" 
+                    Click="CheckDataButton_Click" Background="LightCoral"/>
+        </StackPanel>
+        
+        <!-- Voice Data Management Section -->
+        <StackPanel Grid.Row="8" Margin="10" Orientation="Horizontal">
+            <TextBlock Text="Voice Data:" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,10,0"/>
+            <Button Name="FlushVoiceButton" Content="🗑️ Flush All Voice Data" Padding="10,5" 
+                    Click="FlushVoiceButton_Click" Background="IndianRed" Foreground="White" Margin="0,0,10,0"/>
+            <TextBlock Text="⚠️ This will delete all enrolled voices!" VerticalAlignment="Center" 
+                       Foreground="Red" FontStyle="Italic"/>
+        </StackPanel>
+        
+        <!-- Status Area -->
+        <Border Grid.Row="9" Margin="10" BorderBrush="Gray" BorderThickness="1">
+            <TextBlock Text="✅ Application ready - Enhanced face and voice recognition active!" 
+                       Padding="10" VerticalAlignment="Top" Foreground="Green" FontWeight="Bold"/>
+        </Border>
+    </Grid>
+</Window>

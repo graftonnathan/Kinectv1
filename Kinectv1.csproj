@@ -1,0 +1,40 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+	<PropertyGroup>
+		<!-- core WPF SDK settings -->
+		<OutputType>WinExe</OutputType>
+		<TargetFramework>net8.0-windows</TargetFramework>
+		<UseWPF>true</UseWPF>
+		<Nullable>enable</Nullable>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<Platforms>AnyCPU;x64</Platforms>
+	</PropertyGroup>
+
+	<!-- Add back model files -->
+	<ItemGroup>
+		<Content Include="models\arcface.onnx" Condition="Exists('models\arcface.onnx')">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</Content>
+		<Content Include="models\pyannote_embedding.onnx" Condition="Exists('models\pyannote_embedding.onnx')">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</Content>
+		<Content Include="models\vosk-model-small-en-us-0.15\**" Condition="Exists('models\vosk-model-small-en-us-0.15')">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</Content>
+	</ItemGroup>
+
+	<!-- NuGet packages including Kinect Face x64 -->
+	<ItemGroup>
+		<PackageReference Include="Microsoft.Kinect.Face.x64" Version="2.0.1410.19000" />
+		<PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.17.0" />
+		<PackageReference Include="NAudio" Version="2.2.1" />
+		<PackageReference Include="Vosk" Version="0.3.38" />
+	</ItemGroup>
+
+	<!-- Kinect references - Use the main Kinect SDK reference -->
+	<ItemGroup>
+		<Reference Include="Microsoft.Kinect">
+			<HintPath>..\..\..\..\..\Program Files\Microsoft SDKs\Kinect\v2.0_1409\Assemblies\Microsoft.Kinect.dll</HintPath>
+		</Reference>
+		<!-- Removed local Microsoft.Kinect.Face.dll reference since we're using NuGet package -->
+	</ItemGroup>
+</Project>
