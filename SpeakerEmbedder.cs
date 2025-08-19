@@ -20,7 +20,7 @@ public static class SpeakerEmbedder
             _model = CreateCpuOnlySession(modelPath);
             
             var meta = _model.InputMetadata;
-            Console.WriteLine($"✅ SpeakerEmbedder loaded (CPU-ONLY) - {modelPath}");
+            Console.WriteLine($"SpeakerEmbedder loaded (CPU-ONLY) - {modelPath}");
             Console.WriteLine("Speaker model input nodes:");
             foreach (var name in meta.Keys)
             {
@@ -29,7 +29,7 @@ public static class SpeakerEmbedder
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"❌ Failed to load SpeakerEmbedder: {ex.Message}");
+            Console.WriteLine($"Failed to load SpeakerEmbedder: {ex.Message}");
             throw;
         }
     }
@@ -76,7 +76,7 @@ public static class SpeakerEmbedder
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"⚠️ Speaker embedding failed: {ex.Message}");
+            Console.WriteLine($"Speaker embedding failed: {ex.Message}");
             return new float[512]; // Return dummy embedding as fallback
         }
     }

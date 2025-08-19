@@ -3,6 +3,38 @@ using System;
 
 public static class AudioUtils
 {
+    private static float? _cachedVadThreshold = null;
+    
+    /// <summary>
+    /// Get the current VAD threshold from settings (cached for performance)
+    /// </summary>
+    private static float GetVadThreshold()
+    {
+        if (!_cachedVadThreshold.HasValue)
+        {
+            try
+            {
+                _cachedVadThreshold = Kinectv1.AppSettings.LoadVoiceActivityThreshold();
+                Console.WriteLine($"🎙️ VAD threshold loaded: {_cachedVadThreshold.Value:F0}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"ERROR: Failed to load VAD threshold, using default 300: {ex.Message}");
+                _cachedVadThreshold = 300f; // Fallback default
+            }
+        }
+        return _cachedVadThreshold.Value;
+    }
+    
+    /// <summary>
+    /// Update the cached VAD threshold (call this when settings change)
+    /// </summary>
+    public static void RefreshVadThreshold()
+    {
+        _cachedVadThreshold = null;
+        GetVadThreshold(); // This will reload and cache the new value
+    }
+
     public static bool IsVoiceActive(byte[] buffer, int bytesRecorded, out float rms)
     {
         // Simple RMS-based voice activity detection
@@ -18,7 +50,10 @@ public static class AudioUtils
         
         double rmsDouble = Math.Sqrt((double)sum / (bytesRecorded / 2));
         rms = (float)rmsDouble;
-        return rms > 500; // Threshold for voice activity
+        
+        // Use configurable threshold instead of hardcoded 500
+        float vadThreshold = GetVadThreshold();
+        return rms > vadThreshold;
     }
 
     public static bool IsVoiceActive(byte[] buffer, int bytesRecorded)

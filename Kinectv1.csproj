@@ -2,11 +2,26 @@
 	<PropertyGroup>
 		<!-- core WPF SDK settings -->
 		<OutputType>WinExe</OutputType>
-		<TargetFramework>net8.0-windows</TargetFramework>
+		<TargetFramework>net481</TargetFramework>
 		<UseWPF>true</UseWPF>
-		<Nullable>enable</Nullable>
-		<ImplicitUsings>enable</ImplicitUsings>
-		<Platforms>AnyCPU;x64</Platforms>
+		<Nullable>disable</Nullable>
+		<!-- Force x64 for Kinect - CRITICAL for Kinect SDK -->
+		<PlatformTarget>x64</PlatformTarget>
+		<Platforms>x64</Platforms>
+		<!-- Enable automatic package reference copying for non-Kinect packages -->
+		<CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+		<LangVersion>10.0</LangVersion>
+		<GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+		<AssemblyTitle>Kinect Face &amp; Voice Recognition</AssemblyTitle>
+		<AssemblyProduct>Kinectv1</AssemblyProduct>
+		<AssemblyVersion>1.0.0.0</AssemblyVersion>
+		<FileVersion>1.0.0.0</FileVersion>
+		<AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+	</PropertyGroup>
+
+	<!-- Fallback for NuGet package root (used to copy native Voice DLLs) -->
+	<PropertyGroup>
+		<NuGetPackageRoot Condition="'$(NuGetPackageRoot)' == ''">$(UserProfile)\.nuget\packages\</NuGetPackageRoot>
 	</PropertyGroup>
 
 	<!-- Add back model files -->
@@ -22,19 +37,80 @@
 		</Content>
 	</ItemGroup>
 
-	<!-- NuGet packages including Kinect Face x64 -->
+	<!-- NEW: System prompt files -->
 	<ItemGroup>
-		<PackageReference Include="Microsoft.Kinect.Face.x64" Version="2.0.1410.19000" />
-		<PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.17.0" />
-		<PackageReference Include="NAudio" Version="2.2.1" />
-		<PackageReference Include="Vosk" Version="0.3.38" />
+		<Content Include="prompts\system.txt" Condition="Exists('prompts\system.txt')">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</Content>
+		<Content Include="prompts\**\*.txt" Condition="Exists('prompts')">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</Content>
 	</ItemGroup>
 
-	<!-- Kinect references - Use the main Kinect SDK reference -->
+	<!-- NuGet packages compatible with .NET Framework 4.8.1 -->
 	<ItemGroup>
-		<Reference Include="Microsoft.Kinect">
-			<HintPath>..\..\..\..\..\Program Files\Microsoft SDKs\Kinect\v2.0_1409\Assemblies\Microsoft.Kinect.dll</HintPath>
-		</Reference>
-		<!-- Removed local Microsoft.Kinect.Face.dll reference since we're using NuGet package -->
+		<PackageReference Include="Microsoft.Kinect" Version="2.0.1410.19000" />
+		<PackageReference Include="Microsoft.Kinect.Face.x64" Version="2.0.1410.19000" />
+		<PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.18.0" />
+		<PackageReference Include="NAudio" Version="2.2.1" />
+		<PackageReference Include="Vosk" Version="0.3.38" />
+		<PackageReference Include="System.Management" Version="6.0.2" />
+		<PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+		<PackageReference Include="System.Net.Http" Version="4.3.4" />
+		<PackageReference Include="System.Configuration.ConfigurationManager" Version="6.0.1" />
+		<!-- Discord Bot Dependencies - Latest Discord.Net 3.18.0 with OpusDecodeStream support -->
+		<PackageReference Include="Discord.Net" Version="3.18.0" />
+		<PackageReference Include="Discord.Net.Commands" Version="3.18.0" />
+		<PackageReference Include="Discord.Net.WebSocket" Version="3.18.0" />
+		<!-- Native audio libraries for Discord.Net voice - includes opus.dll and libsodium.dll -->
+		<!-- Native libraries for Discord.Net voice will be loaded manually -->
 	</ItemGroup>
+	
+	<ItemGroup>
+	  <Folder Include="libs\" />
+	</ItemGroup>
+	
+	<ItemGroup>
+	  <Compile Update="Properties\Settings.Designer.cs">
+	    <DesignTimeSharedInput>True</DesignTimeSharedInput>
+	    <AutoGen>True</AutoGen>
+	    <DependentUpon>Settings.settings</DependentUpon>
+	  </Compile>
+	</ItemGroup>
+	
+	<ItemGroup>
+	  <None Update="models\tts\cmudict.dict">
+	    <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+	  </None>
+	  <None Update="models\tts\model.onnx">
+	    <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+	  </None>
+	  <None Update="models\tts\SpeakerList.txt">
+	    <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+	  </None>
+	  <None Update="models\tts\symbols.txt">
+	    <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+	  </None>
+	  <None Update="Properties\Settings.settings">
+	    <Generator>SettingsSingleFileGenerator</Generator>
+	    <LastGenOutput>Settings.Designer.cs</LastGenOutput>
+	  </None>
+	</ItemGroup>
+
+	<!-- Enhanced verification with prompt files -->
+	<Target Name="VerifyRuntimeSetup" AfterTargets="Build">
+		<Message Text="?? .NET Framework 4.8.1 Build Status:" Importance="high" />
+		<Message Text="Build completed - using .NET Framework with native Kinect support" Importance="high" />
+		<Message Text="?? Using Newtonsoft.Json for better .NET Framework compatibility" Importance="high" />
+		<Message Text="?? System prompt files copied to output directory" Importance="high" />
+	</Target>
+
+	<!-- Verify system prompt file after build -->
+	<Target Name="VerifySystemPrompt" AfterTargets="Build" Condition="Exists('$(OutputPath)prompts\system.txt')">
+		<Message Text="System prompt file verified in output: $(OutputPath)prompts\system.txt" Importance="high" />
+	</Target>
+	
+	<Target Name="WarnMissingSystemPrompt" AfterTargets="Build" Condition="!Exists('$(OutputPath)prompts\system.txt')">
+		<Warning Text="System prompt file not found in output directory. Create prompts\system.txt in project root." />
+	</Target>
 </Project>

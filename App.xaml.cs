@@ -1,323 +1,166 @@
 ﻿using System;
 using System.Threading.Tasks;
 using System.Windows;
-using System.Threading;
 
 namespace Kinectv1
 {
     public partial class App : Application
     {
+        public App()
+        {
+            // Don't initialize here - move to OnStartup to ensure proper console allocation
+        }
+
         protected override void OnStartup(StartupEventArgs e)
         {
-            // Add global exception handling first
-            AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
-            DispatcherUnhandledException += OnDispatcherUnhandledException;
-            TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
+            // Initialize console for essential output first
+            try
+            {
+                ConsoleManager.ShowConsole();
+                Console.WriteLine("🚀 Kinect Face & Voice Recognition - Starting...");
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Console initialization failed: {ex.Message}");
+            }
 
             base.OnStartup(e);
 
             try
             {
-                // 1) Console - keep this minimal
-                ConsoleManager.AllocConsole();
-                Console.WriteLine("🟢 App.OnStartup");
-
-                // 2) Skip MemoryStore.Init() for now - defer it
-                Console.WriteLine("⏩ Deferring MemoryStore initialization");
-
-                // 3) Create and show main window IMMEDIATELY - no heavy operations
+                // Initialize application-wide settings early
+                Console.WriteLine("⚙️ Initializing app settings...");
+                AppSettings.InitializeSettingsOnStartup();
+                Console.WriteLine("✅ App settings initialized successfully");
+                
+                // Test conversation manager functionality
+                Console.WriteLine("🧪 Testing conversation manager on startup...");
+                OllamaService.TestConversationSaving();
+                Console.WriteLine("✅ Conversation manager test completed");
+                
+                // NOTE: Removed hanging DiagnoseConversationHistory() call from startup
+                // Use DiagnoseConversationHistoryAsync() manually when needed
+                Console.WriteLine("🔍 Conversation diagnostic available via DiagnoseConversationHistoryAsync()");
+                
+                // Load settings from Settings.settings on startup
+                AppSettings.InitializeSettingsOnStartup();
+                
+                // Initialize core components
+                MemoryStore.Init();
+                
+                // Create and show main window
                 var win = new MainWindow();
                 win.Show();
                 win.Activate();
-                win.Topmost = true;
-                win.Focus();
                 
-                // Remove topmost after delay
-                Task.Delay(100).ContinueWith(_ => 
-                {
-                    win.Dispatcher.Invoke(() => win.Topmost = false);
-                });
-                
-                Console.WriteLine("✅ MainWindow shown and activated");
-                Console.WriteLine("🟢 App startup complete - UI ready IMMEDIATELY");
-                Console.WriteLine("🔄 ALL initialization deferred to background");
-
-                // 4) COMPLETELY defer ALL initialization - start after UI is rendered
-                StartDeferredInitialization();
+                // Start background services
+                StartServices();
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[FATAL] Startup error: {ex}");
-                try
-                {
-                    MessageBox.Show($"Application failed to start:\n{ex.Message}", "Startup Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                }
-                catch
-                {
-                    Console.WriteLine("[FATAL] Could not show error MessageBox");
-                }
+                Console.WriteLine($"❌ Startup error: {ex.Message}");
+                MessageBox.Show($"Application failed to start:\n{ex.Message}", "Startup Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 Shutdown();
             }
         }
 
-        private void StartDeferredInitialization()
+        private void StartServices()
         {
-            // Wait for UI to be fully rendered, then start ALL initialization
-            Application.Current.Dispatcher.BeginInvoke(new Action(async () =>
-            {
-                // Small delay to ensure UI is fully rendered
-                await Task.Delay(500);
-                
-                Console.WriteLine("🚀 UI fully rendered - starting deferred initialization");
-                Console.WriteLine("📱 Application is fully responsive - services loading in background");
-                
-                // Now start background services in completely isolated threads
-                StartBackgroundServicesCompleteyIsolated();
-            }), System.Windows.Threading.DispatcherPriority.Background);
-        }
-
-        private void StartBackgroundServicesCompleteyIsolated()
-        {
-            // Use separate background threads with maximum isolation
-            
-            // 1) MemoryStore initialization - now in background
-            new Thread(() =>
+            // Start services in background
+            Task.Run(() =>
             {
                 try
                 {
-                    Console.WriteLine("🔄 [MEM-Thread] Initializing MemoryStore...");
-                    MemoryStore.Init();
-                    Console.WriteLine("✅ [MEM-Thread] MemoryStore initialized");
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"⚠️ [MEM-Thread] MemoryStore.Init failed: {ex.Message}");
-                }
-            })
-            {
-                IsBackground = true,
-                Name = "MemoryStore-Init"
-            }.Start();
-
-            // 2) Speaker model loading
-            new Thread(() =>
-            {
-                try
-                {
-                    // Wait a bit to let MemoryStore initialize first
-                    Thread.Sleep(1000);
-                    
-                    Console.WriteLine("🔄 [SPEAKER-Thread] Starting SpeakerEmbedder initialization...");
-                    
-                    var embModel = System.IO.Path.Combine(
-                        AppDomain.CurrentDomain.BaseDirectory,
-                        "models", "pyannote_embedding.onnx");
-                    
-                    if (System.IO.File.Exists(embModel))
+                    // Load speaker model
+                    var embModel = AppSettings.LoadSpeakerEmbeddingModelPath();
+                    if (!string.IsNullOrWhiteSpace(embModel) && System.IO.File.Exists(embModel))
                     {
-                        Console.WriteLine("📁 [SPEAKER-Thread] SpeakerEmbedder model found, loading...");
                         SpeakerEmbedder.Load(embModel);
-                        Console.WriteLine("💻 [SPEAKER-Thread] SpeakerEmbedder loaded with CPU");
                     }
-                    else
-                    {
-                        Console.WriteLine($"⚠️ [SPEAKER-Thread] Speaker model not found: {embModel}");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"⚠️ [SPEAKER-Thread] SpeakerEmbedder failed: {ex.Message}");
-                }
-            })
-            {
-                IsBackground = true,
-                Name = "SpeakerEmbedder-Init"
-            }.Start();
 
-            // 3) Kinect initialization
-            new Thread(() =>
-            {
-                try
-                {
-                    // Wait a bit more for MemoryStore
-                    Thread.Sleep(2000);
-                    
-                    Console.WriteLine("🔄 [KINECT-Thread] Starting Kinect initialization...");
-                    KinectFaceTracker.Start();
-                    Console.WriteLine("✅ [KINECT-Thread] Kinect initialization completed");
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"⚠️ [KINECT-Thread] Kinect initialization failed: {ex.Message}");
-                    Console.WriteLine("💡 Face recognition will not be available");
-                }
-            })
-            {
-                IsBackground = true,
-                Name = "Kinect-Init"
-            }.Start();
-
-            // 4) Voice recognition initialization
-            new Thread(() =>
-            {
-                try
-                {
-                    // Wait for MemoryStore to be ready
-                    Thread.Sleep(3000);
-                    
-                    Console.WriteLine("🔄 [VOICE-Thread] Starting VoiceRecognizer initialization...");
-                    
-                    var voiceModelPath = "models/vosk-model-small-en-us-0.15";
-                    if (System.IO.Directory.Exists(voiceModelPath))
+                    // Start voice recognition
+                    var voiceModelPath = AppSettings.LoadSttModelPath();
+                    if (!string.IsNullOrWhiteSpace(voiceModelPath) && System.IO.Directory.Exists(voiceModelPath))
                     {
-                        Console.WriteLine("📁 [VOICE-Thread] Voice model found, loading...");
                         VoiceRecognizer.Start(voiceModelPath, "john");
-                        Console.WriteLine("✅ [VOICE-Thread] VoiceRecognizer started");
                     }
-                    else
-                    {
-                        Console.WriteLine($"⚠️ [VOICE-Thread] Voice model not found: {voiceModelPath}");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"⚠️ [VOICE-Thread] VoiceRecognizer failed: {ex.Message}");
-                }
-            })
-            {
-                IsBackground = true,
-                Name = "VoiceRecognizer-Init"
-            }.Start();
 
-            // 5) Status monitoring thread
-            new Thread(() =>
-            {
-                try
-                {
-                    // Wait for other services to have time to initialize
-                    Thread.Sleep(10000); // 10 seconds
-                    
-                    Console.WriteLine("📊 [STATUS-Thread] === INITIALIZATION STATUS CHECK ===");
-                    
+                    // Initialize TTS system for testing
                     try
                     {
-                        var kinectStatus = KinectFaceTracker.GetSystemStatus();
-                        Console.WriteLine($"🎯 [STATUS-Thread] Kinect Status: {kinectStatus}");
+                        var ttsModelPath = AppSettings.LoadTtsModelPath();
+                        var cmudictPath = AppSettings.LoadTtsCmudictPath();
+                        var symbolsPath = AppSettings.LoadTtsSymbolsPath();
+                        var vocoderPath = AppSettings.LoadTtsVocoderModelPath(); // Not used yet by CoquiTtsService but stored for future
+                        
+                        if (System.IO.File.Exists(ttsModelPath) && System.IO.File.Exists(cmudictPath) && System.IO.File.Exists(symbolsPath))
+                        {
+                            Console.WriteLine("🎤 Initializing TTS system...");
+                            if (CoquiTtsService.Initialize(ttsModelPath, cmudictPath, symbolsPath))
+                            {
+                                Console.WriteLine("✅ TTS system initialized successfully");
+                                
+                                // Test tokenization on startup to verify it's working
+                                CoquiTtsService.TestTokenization();
+                            }
+                            else
+                            {
+                                Console.WriteLine("❌ TTS system initialization failed");
+                            }
+                        }
+                        else
+                        {
+                            Console.WriteLine("⚠️ TTS model files not found - TTS features disabled");
+                            Console.WriteLine($"   Expected: {ttsModelPath}");
+                            Console.WriteLine($"   Expected: {cmudictPath}");
+                            Console.WriteLine($"   Expected: {symbolsPath}");
+                        }
                     }
-                    catch (Exception ex)
+                    catch (Exception ttsEx)
                     {
-                        Console.WriteLine($"⚠️ [STATUS-Thread] Could not get Kinect status: {ex.Message}");
+                        Console.WriteLine($"❌ TTS initialization error: {ttsEx.Message}");
                     }
+
+                    // Start Enhanced Kinect Face Tracker (shows ALL faces with tracking IDs)
+                    EnhancedKinectFaceTracker.Start();
                     
-                    Console.WriteLine("🎤 [STATUS-Thread] Voice Recognition: Check microphone levels in UI");
-                    Console.WriteLine("📊 [STATUS-Thread] === STATUS CHECK COMPLETE ===");
-                    Console.WriteLine("💡 [STATUS-Thread] If any services failed, you can still use the application");
-                    Console.WriteLine("📺 [STATUS-Thread] Try opening the video feed to test functionality");
+                    // Initialize Ollama service based on settings
+                    var ollamaEnabled = AppSettings.LoadOllamaEnabled();
+                    OllamaService.SetEnabled(ollamaEnabled);
+                    Console.WriteLine($"Ollama service initialized (enabled: {ollamaEnabled})");
+                    
+                    Console.WriteLine("All services initialized successfully with enhanced face tracking and Ollama integration");
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"⚠️ [STATUS-Thread] Status check failed: {ex.Message}");
+                    Console.WriteLine($"Service initialization error: {ex.Message}");
                 }
-            })
-            {
-                IsBackground = true,
-                Name = "Status-Monitor"
-            }.Start();
-
-            Console.WriteLine("🎭 All background services started in isolated threads");
-            Console.WriteLine("🎯 Each service runs completely independently");
-            Console.WriteLine("⚡ UI thread is completely free and responsive");
-        }
-
-        private void OnUnhandledException(object sender, UnhandledExceptionEventArgs e)
-        {
-            Console.WriteLine($"[FATAL] Unhandled exception: {e.ExceptionObject}");
-            try
-            {
-                MessageBox.Show($"Unhandled exception:\n{e.ExceptionObject}", "Fatal Error", MessageBoxButton.OK, MessageBoxImage.Error);
-            }
-            catch
-            {
-                Console.WriteLine("[FATAL] Could not show MessageBox for unhandled exception");
-            }
-        }
-
-        private void OnDispatcherUnhandledException(object sender, System.Windows.Threading.DispatcherUnhandledExceptionEventArgs e)
-        {
-            Console.WriteLine($"[FATAL] Dispatcher exception: {e.Exception}");
-            try
-            {
-                MessageBox.Show($"UI thread exception:\n{e.Exception.Message}", "UI Error", MessageBoxButton.OK, MessageBoxImage.Error);
-            }
-            catch
-            {
-                Console.WriteLine("[FATAL] Could not show MessageBox for dispatcher exception");
-            }
-            e.Handled = true; // Prevent crash
-        }
-
-        private void OnUnobservedTaskException(object sender, UnobservedTaskExceptionEventArgs e)
-        {
-            Console.WriteLine($"[ERROR] Unobserved task exception: {e.Exception}");
-            e.SetObserved(); // Prevent process termination
+            });
         }
 
         protected override void OnExit(ExitEventArgs e)
         {
             try
             {
-                Console.WriteLine("🔄 Application shutting down...");
+                // Save all settings before exiting
+                AppSettings.SaveAllSettings();
                 
-                // Quick shutdown - don't wait for background threads
-                try
-                {
-                    KinectFaceTracker.Stop();
-                    Console.WriteLine("✅ Kinect stopped");
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"⚠️ Error stopping Kinect: {ex.Message}");
-                }
-
-                try
-                {
-                    VoiceRecognizer.Stop();
-                    Console.WriteLine("✅ VoiceRecognizer stopped");
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"⚠️ Error stopping VoiceRecognizer: {ex.Message}");
-                }
-
-                try
-                {
-                    MemoryStore.Save();
-                    Console.WriteLine("✅ MemoryStore saved");
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"⚠️ Error saving MemoryStore: {ex.Message}");
-                }
-
-                try
-                {
-                    ConsoleManager.FreeConsole();
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"⚠️ Error freeing console: {ex.Message}");
-                }
+                EnhancedKinectFaceTracker.Stop();
+                VoiceRecognizer.Stop();
+                OllamaService.Dispose();
+                MemoryStore.Save();
                 
-                Console.WriteLine("🔄 Application shutdown complete");
+                // Dispose all Vosk models to prevent memory leaks
+                VoskModelManager.DisposeAllModels();
+                
+                ConsoleManager.HideConsole();
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[ERROR] Exit cleanup failed: {ex}");
+                Console.WriteLine($"Shutdown error: {ex.Message}");
             }
-            finally
-            {
-                base.OnExit(e);
-            }
+            
+            base.OnExit(e);
         }
     }
 }

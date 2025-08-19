@@ -24,11 +24,11 @@ public sealed class ArcFaceEmbedder : IDisposable
             _inputName = _arcface.InputMetadata.Keys.First();
             _outputName = _arcface.OutputMetadata.Keys.First();
             
-            Console.WriteLine($"✅ ArcFace loaded (CPU-ONLY) - {modelPath}");
+            Console.WriteLine($"ArcFace loaded (CPU-ONLY) - {modelPath}");
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"❌ ArcFaceEmbedder failed to load: {ex.Message}");
+            Console.WriteLine($"ArcFaceEmbedder failed to load: {ex.Message}");
             throw;
         }
     }
@@ -62,7 +62,7 @@ public sealed class ArcFaceEmbedder : IDisposable
             // L2 normalize
             float sum = 0f;
             for (int i = 0; i < output.Length; i++) sum += output[i] * output[i];
-            float norm = MathF.Sqrt(sum) + 1e-9f;
+            float norm = (float)Math.Sqrt(sum) + 1e-9f; // Use Math.Sqrt instead of MathF.Sqrt for .NET Framework
             for (int i = 0; i < output.Length; i++) output[i] /= norm;
 
             return output;

@@ -1,17 +1,21 @@
-﻿    // TriggerHandler.cs
+﻿// TriggerHandler.cs
 using System;
 
-public static class TriggerHandler
+namespace Kinectv1
 {
-    public static void TryTrigger(string text, string triggerName)
+    public static class TriggerHandler
     {
-        if (string.IsNullOrWhiteSpace(text) || string.IsNullOrWhiteSpace(triggerName))
-            return;
-
-        if (text.Contains(triggerName, StringComparison.OrdinalIgnoreCase))
+        public static void TryTrigger(string text, string triggerName)
         {
-            Console.WriteLine($"[Trigger] Detected trigger word: {triggerName}");
-            VoiceRecognizer.OnNameHeard?.Invoke(triggerName);
+            if (string.IsNullOrWhiteSpace(text) || string.IsNullOrWhiteSpace(triggerName))
+                return;
+
+            // Use IndexOf for .NET Framework compatibility since Contains with StringComparison doesn't exist
+            if (text.IndexOf(triggerName, StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                Console.WriteLine($"[Trigger] Detected trigger word: {triggerName}");
+                VoiceRecognizer.OnNameHeard?.Invoke(triggerName);
+            }
         }
     }
 }

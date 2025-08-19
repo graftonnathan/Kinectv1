@@ -13,13 +13,490 @@ namespace Kinectv1.Properties {
     
     [global::System.Runtime.CompilerServices.CompilerGeneratedAttribute()]
     [global::System.CodeDom.Compiler.GeneratedCodeAttribute("Microsoft.VisualStudio.Editors.SettingsDesigner.SettingsSingleFileGenerator", "17.14.0.0")]
-    public sealed partial class Settings : global::System.Configuration.ApplicationSettingsBase {
+    internal sealed partial class Settings : global::System.Configuration.ApplicationSettingsBase {
         
         private static Settings defaultInstance = ((Settings)(global::System.Configuration.ApplicationSettingsBase.Synchronized(new Settings())));
         
         public static Settings Default {
             get {
                 return defaultInstance;
+            }
+        }
+        
+        [global::System.Configuration.ApplicationScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("Native")]
+        public string KinectMode {
+            get {
+                return ((string)(this["KinectMode"]));
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("0.2")]
+        public float VoiceThreshold {
+            get {
+                return ((float)(this["VoiceThreshold"]));
+            }
+            set {
+                this["VoiceThreshold"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("50")]
+        public float VoiceActivityThreshold {
+            get {
+                return ((float)(this["VoiceActivityThreshold"]));
+            }
+            set {
+                this["VoiceActivityThreshold"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("25")]
+        public float DiscordVoiceActivityThreshold {
+            get {
+                return ((float)(this["DiscordVoiceActivityThreshold"]));
+            }
+            set {
+                this["DiscordVoiceActivityThreshold"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("0.7")]
+        public float VoiceConfidenceThreshold {
+            get {
+                return ((float)(this["VoiceConfidenceThreshold"]));
+            }
+            set {
+                this["VoiceConfidenceThreshold"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("0.9")]
+        public float VoiceHighConfidenceThreshold {
+            get {
+                return ((float)(this["VoiceHighConfidenceThreshold"]));
+            }
+            set {
+                this["VoiceHighConfidenceThreshold"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("7")]
+        public int VoiceConfidenceBufferSize {
+            get {
+                return ((int)(this["VoiceConfidenceBufferSize"]));
+            }
+            set {
+                this["VoiceConfidenceBufferSize"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool VoiceConfidenceLoggingEnabled {
+            get {
+                return ((bool)(this["VoiceConfidenceLoggingEnabled"]));
+            }
+            set {
+                this["VoiceConfidenceLoggingEnabled"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("0.45")]
+        public float FaceThreshold {
+            get {
+                return ((float)(this["FaceThreshold"]));
+            }
+            set {
+                this["FaceThreshold"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("gemma3:4b")]
+        public string OllamaModel {
+            get {
+                return ((string)(this["OllamaModel"]));
+            }
+            set {
+                this["OllamaModel"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool OllamaEnabled {
+            get {
+                return ((bool)(this["OllamaEnabled"]));
+            }
+            set {
+                this["OllamaEnabled"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("20")]
+        public int OllamaMaxMessagesPerSpeaker {
+            get {
+                return ((int)(this["OllamaMaxMessagesPerSpeaker"]));
+            }
+            set {
+                this["OllamaMaxMessagesPerSpeaker"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("3")]
+        public int OllamaMaxSystemMessages {
+            get {
+                return ((int)(this["OllamaMaxSystemMessages"]));
+            }
+            set {
+                this["OllamaMaxSystemMessages"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("30")]
+        public int OllamaConversationTimeoutMinutes {
+            get {
+                return ((int)(this["OllamaConversationTimeoutMinutes"]));
+            }
+            set {
+                this["OllamaConversationTimeoutMinutes"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool OllamaMemoryEnabled {
+            get {
+                return ((bool)(this["OllamaMemoryEnabled"]));
+            }
+            set {
+                this["OllamaMemoryEnabled"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("history")]
+        public string ConversationHistoryPath {
+            get {
+                return ((string)(this["ConversationHistoryPath"]));
+            }
+            set {
+                this["ConversationHistoryPath"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("prompts\\system.txt")]
+        public string SystemPromptPath {
+            get {
+                return ((string)(this["SystemPromptPath"]));
+            }
+            set {
+                this["SystemPromptPath"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool TtsEnabled {
+            get {
+                return ((bool)(this["TtsEnabled"]));
+            }
+            set {
+                this["TtsEnabled"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("314")]
+        public string TtsSpeaker {
+            get {
+                return ((string)(this["TtsSpeaker"]));
+            }
+            set {
+                this["TtsSpeaker"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool TtsUseGpu {
+            get {
+                return ((bool)(this["TtsUseGpu"]));
+            }
+            set {
+                this["TtsUseGpu"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("Default")]
+        public string SttInputDevice {
+            get {
+                return ((string)(this["SttInputDevice"]));
+            }
+            set {
+                this["SttInputDevice"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("Default")]
+        public string TtsOutputDevice {
+            get {
+                return ((string)(this["TtsOutputDevice"]));
+            }
+            set {
+                this["TtsOutputDevice"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("MTQwNjAwODUyNzYzMzM4NzU2Mg.Go4qyl.ZRjaXwb9RgkOil8q0mHhYvsnpcQlOVnScPHOMc")]
+        public string DiscordBotToken {
+            get {
+                return ((string)(this["DiscordBotToken"]));
+            }
+            set {
+                this["DiscordBotToken"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool DiscordBotEnabled {
+            get {
+                return ((bool)(this["DiscordBotEnabled"]));
+            }
+            set {
+                this["DiscordBotEnabled"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("!")]
+        public string DiscordBotPrefix {
+            get {
+                return ((string)(this["DiscordBotPrefix"]));
+            }
+            set {
+                this["DiscordBotPrefix"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool DiscordAutoJoinVoice {
+            get {
+                return ((bool)(this["DiscordAutoJoinVoice"]));
+            }
+            set {
+                this["DiscordAutoJoinVoice"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool DarkMode {
+            get {
+                return ((bool)(this["DarkMode"]));
+            }
+            set {
+                this["DarkMode"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("900")]
+        public double WindowWidth {
+            get {
+                return ((double)(this["WindowWidth"]));
+            }
+            set {
+                this["WindowWidth"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("900")]
+        public double WindowHeight {
+            get {
+                return ((double)(this["WindowHeight"]));
+            }
+            set {
+                this["WindowHeight"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("100")]
+        public double WindowLeft {
+            get {
+                return ((double)(this["WindowLeft"]));
+            }
+            set {
+                this["WindowLeft"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("100")]
+        public double WindowTop {
+            get {
+                return ((double)(this["WindowTop"]));
+            }
+            set {
+                this["WindowTop"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("Normal")]
+        public string WindowState {
+            get {
+                return ((string)(this["WindowState"]));
+            }
+            set {
+                this["WindowState"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("1")]
+        public double LocalTtsVolume {
+            get {
+                return ((double)(this["LocalTtsVolume"]));
+            }
+            set {
+                this["LocalTtsVolume"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("1")]
+        public double DiscordTtsVolume {
+            get {
+                return ((double)(this["DiscordTtsVolume"]));
+            }
+            set {
+                this["DiscordTtsVolume"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("models\\tts\\model.onnx")]
+        public string TtsModelPath {
+            get {
+                return ((string)(this["TtsModelPath"]));
+            }
+            set {
+                this["TtsModelPath"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("models\\tts\\cmudict.dict")]
+        public string TtsCmudictPath {
+            get {
+                return ((string)(this["TtsCmudictPath"]));
+            }
+            set {
+                this["TtsCmudictPath"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("models\\tts\\symbols.txt")]
+        public string TtsSymbolsPath {
+            get {
+                return ((string)(this["TtsSymbolsPath"]));
+            }
+            set {
+                this["TtsSymbolsPath"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("models\\tts\\vocoder.onnx")]
+        public string TtsVocoderModelPath {
+            get {
+                return ((string)(this["TtsVocoderModelPath"]));
+            }
+            set {
+                this["TtsVocoderModelPath"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("models\\vosk-model-small-en-us-0.15")]
+        public string SttModelPath {
+            get {
+                return ((string)(this["SttModelPath"]));
+            }
+            set {
+                this["SttModelPath"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("models\\pyannote_embedding.onnx")]
+        public string SpeakerEmbeddingModelPath {
+            get {
+                return ((string)(this["SpeakerEmbeddingModelPath"]));
+            }
+            set {
+                this["SpeakerEmbeddingModelPath"] = value;
             }
         }
     }

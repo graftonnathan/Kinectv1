@@ -1,6 +1,126 @@
 ﻿<?xml version='1.0' encoding='utf-8'?>
-<SettingsFile xmlns="http://schemas.microsoft.com/VisualStudio/2004/01/settings" CurrentProfile="(Default)">
-  <Profiles>
-    <Profile Name="(Default)" />
-  </Profiles>
+<SettingsFile xmlns="http://schemas.microsoft.com/VisualStudio/2004/01/settings" CurrentProfile="(Default)" GeneratedClassNamespace="Kinectv1.Properties" GeneratedClassName="Settings">
+  <Profiles />
+  <Settings>
+    <Setting Name="KinectMode" Type="System.String" Scope="Application">
+      <Value Profile="(Default)">Native</Value>
+    </Setting>
+    <Setting Name="VoiceThreshold" Type="System.Single" Scope="User">
+      <Value Profile="(Default)">0.2</Value>
+    </Setting>
+    <Setting Name="VoiceActivityThreshold" Type="System.Single" Scope="User">
+      <Value Profile="(Default)">50</Value>
+    </Setting>
+    <Setting Name="DiscordVoiceActivityThreshold" Type="System.Single" Scope="User">
+      <Value Profile="(Default)">25</Value>
+    </Setting>
+    <Setting Name="VoiceConfidenceThreshold" Type="System.Single" Scope="User">
+      <Value Profile="(Default)">0.7</Value>
+    </Setting>
+    <Setting Name="VoiceHighConfidenceThreshold" Type="System.Single" Scope="User">
+      <Value Profile="(Default)">0.9</Value>
+    </Setting>
+    <Setting Name="VoiceConfidenceBufferSize" Type="System.Int32" Scope="User">
+      <Value Profile="(Default)">7</Value>
+    </Setting>
+    <Setting Name="VoiceConfidenceLoggingEnabled" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">True</Value>
+    </Setting>
+    <Setting Name="FaceThreshold" Type="System.Single" Scope="User">
+      <Value Profile="(Default)">0.45</Value>
+    </Setting>
+    <Setting Name="OllamaModel" Type="System.String" Scope="User">
+      <Value Profile="(Default)">gemma3:4b</Value>
+    </Setting>
+    <Setting Name="OllamaEnabled" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">True</Value>
+    </Setting>
+    <Setting Name="OllamaMaxMessagesPerSpeaker" Type="System.Int32" Scope="User">
+      <Value Profile="(Default)">20</Value>
+    </Setting>
+    <Setting Name="OllamaMaxSystemMessages" Type="System.Int32" Scope="User">
+      <Value Profile="(Default)">3</Value>
+    </Setting>
+    <Setting Name="OllamaConversationTimeoutMinutes" Type="System.Int32" Scope="User">
+      <Value Profile="(Default)">30</Value>
+    </Setting>
+    <Setting Name="OllamaMemoryEnabled" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">True</Value>
+    </Setting>
+    <Setting Name="ConversationHistoryPath" Type="System.String" Scope="User">
+      <Value Profile="(Default)">history</Value>
+    </Setting>
+    <Setting Name="SystemPromptPath" Type="System.String" Scope="User">
+      <Value Profile="(Default)">prompts\system.txt</Value>
+    </Setting>
+    <Setting Name="TtsEnabled" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">True</Value>
+    </Setting>
+    <Setting Name="TtsSpeaker" Type="System.String" Scope="User">
+      <Value Profile="(Default)">314</Value>
+    </Setting>
+    <Setting Name="TtsUseGpu" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">False</Value>
+    </Setting>
+    <Setting Name="SttInputDevice" Type="System.String" Scope="User">
+      <Value Profile="(Default)">Default</Value>
+    </Setting>
+    <Setting Name="TtsOutputDevice" Type="System.String" Scope="User">
+      <Value Profile="(Default)">Default</Value>
+    </Setting>
+    <Setting Name="DiscordBotToken" Type="System.String" Scope="User">
+      <Value Profile="(Default)">MTQwNjAwODUyNzYzMzM4NzU2Mg.Go4qyl.ZRjaXwb9RgkOil8q0mHhYvsnpcQlOVnScPHOMc</Value>
+    </Setting>
+    <Setting Name="DiscordBotEnabled" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">True</Value>
+    </Setting>
+    <Setting Name="DiscordBotPrefix" Type="System.String" Scope="User">
+      <Value Profile="(Default)">!</Value>
+    </Setting>
+    <Setting Name="DiscordAutoJoinVoice" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">False</Value>
+    </Setting>
+    <Setting Name="DarkMode" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">True</Value>
+    </Setting>
+    <Setting Name="WindowWidth" Type="System.Double" Scope="User">
+      <Value Profile="(Default)">900</Value>
+    </Setting>
+    <Setting Name="WindowHeight" Type="System.Double" Scope="User">
+      <Value Profile="(Default)">900</Value>
+    </Setting>
+    <Setting Name="WindowLeft" Type="System.Double" Scope="User">
+      <Value Profile="(Default)">100</Value>
+    </Setting>
+    <Setting Name="WindowTop" Type="System.Double" Scope="User">
+      <Value Profile="(Default)">100</Value>
+    </Setting>
+    <Setting Name="WindowState" Type="System.String" Scope="User">
+      <Value Profile="(Default)">Normal</Value>
+    </Setting>
+    <Setting Name="LocalTtsVolume" Type="System.Double" Scope="User">
+      <Value Profile="(Default)">1</Value>
+    </Setting>
+    <Setting Name="DiscordTtsVolume" Type="System.Double" Scope="User">
+      <Value Profile="(Default)">1</Value>
+    </Setting>
+    <Setting Name="TtsModelPath" Type="System.String" Scope="User">
+      <Value Profile="(Default)">models\tts\model.onnx</Value>
+    </Setting>
+    <Setting Name="TtsCmudictPath" Type="System.String" Scope="User">
+      <Value Profile="(Default)">models\tts\cmudict.dict</Value>
+    </Setting>
+    <Setting Name="TtsSymbolsPath" Type="System.String" Scope="User">
+      <Value Profile="(Default)">models\tts\symbols.txt</Value>
+    </Setting>
+    <Setting Name="TtsVocoderModelPath" Type="System.String" Scope="User">
+      <Value Profile="(Default)">models\tts\vocoder.onnx</Value>
+    </Setting>
+    <Setting Name="SttModelPath" Type="System.String" Scope="User">
+      <Value Profile="(Default)">models\vosk-model-small-en-us-0.15</Value>
+    </Setting>
+    <Setting Name="SpeakerEmbeddingModelPath" Type="System.String" Scope="User">
+      <Value Profile="(Default)">models\pyannote_embedding.onnx</Value>
+    </Setting>
+  </Settings>
 </SettingsFile>

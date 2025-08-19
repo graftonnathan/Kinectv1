@@ -9,6 +9,18 @@ using System.Windows.Threading;
 
 namespace Kinectv1
 {
+    // Data structure for face detection information - moved outside class for accessibility
+    public class FaceDetection
+    {
+        public int Left { get; set; }
+        public int Top { get; set; }
+        public int Width { get; set; }
+        public int Height { get; set; }
+        public string Name { get; set; } = "Unknown";
+        public float Confidence { get; set; }
+        public DateTime Timestamp { get; set; }
+    }
+
     public partial class VideoWindow : Window
     {
         private DispatcherTimer? _fpsTimer;
@@ -38,7 +50,7 @@ namespace Kinectv1
             // Set initial status
             UpdateStatus("Video feed ready - waiting for Kinect data");
             
-            Console.WriteLine("?? Video window initialized");
+            Console.WriteLine("Video window initialized");
         }
 
         public void UpdateVideoFrame(BitmapSource videoFrame)
@@ -61,7 +73,7 @@ namespace Kinectv1
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"? Error updating video frame: {ex.Message}");
+                Console.WriteLine($"Error updating video frame: {ex.Message}");
             }
         }
 
@@ -84,6 +96,17 @@ namespace Kinectv1
             Dispatcher.Invoke(UpdateFaceOverlays);
         }
 
+        public void UpdateAllFaceDetections(List<FaceDetection> faces)
+        {
+            lock (_faceLock)
+            {
+                _currentFaces.Clear();
+                _currentFaces.AddRange(faces);
+            }
+
+            Dispatcher.Invoke(UpdateFaceOverlays);
+        }
+
         public void ClearFaceDetections()
         {
             lock (_faceLock)
@@ -97,14 +120,14 @@ namespace Kinectv1
         {
             try
             {
-                // Clear existing overlays
+                // Clear existing overlays first to prevent ghosting
                 OverlayCanvas.Children.Clear();
 
                 List<FaceDetection> facesToDraw;
                 lock (_faceLock)
                 {
-                    // Remove old detections (older than 2 seconds)
-                    _currentFaces.RemoveAll(f => DateTime.Now - f.Timestamp > TimeSpan.FromSeconds(2));
+                    // Remove old detections (older than 1 second for more responsive updates)
+                    _currentFaces.RemoveAll(f => DateTime.Now - f.Timestamp > TimeSpan.FromSeconds(1));
                     facesToDraw = new List<FaceDetection>(_currentFaces);
                 }
 
@@ -120,7 +143,7 @@ namespace Kinectv1
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"? Error updating face overlays: {ex.Message}");
+                Console.WriteLine($"Error updating face overlays: {ex.Message}");
             }
         }
 
@@ -222,20 +245,8 @@ namespace Kinectv1
         protected override void OnClosed(EventArgs e)
         {
             _fpsTimer?.Stop();
-            Console.WriteLine("?? Video window closed");
+            Console.WriteLine("Video window closed");
             base.OnClosed(e);
         }
-    }
-
-    // Data structure for face detection information
-    public class FaceDetection
-    {
-        public int Left { get; set; }
-        public int Top { get; set; }
-        public int Width { get; set; }
-        public int Height { get; set; }
-        public string Name { get; set; } = "Unknown";
-        public float Confidence { get; set; }
-        public DateTime Timestamp { get; set; }
     }
 }
