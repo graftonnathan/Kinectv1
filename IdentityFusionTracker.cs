@@ -74,8 +74,16 @@ namespace Kinectv1
                 _identities[trackingId] = entry;
 
                 // Recompute fusion
+                var oldFusedName = entry.FusedName;
+                var oldFusedScore = entry.FusedScore;
                 RecomputeFusion(ref entry);
                 _identities[trackingId] = entry;
+
+                // Log significant fusion changes
+                if (oldFusedName != entry.FusedName || Math.Abs(oldFusedScore - entry.FusedScore) > 0.1f)
+                {
+                    Console.WriteLine($"🔀 Fusion Update (Face) TrackingID {trackingId}: {oldFusedName}({oldFusedScore:F2}) → {entry.FusedName}({entry.FusedScore:F2})");
+                }
 
                 OnIdentityFused?.Invoke(trackingId, entry.FusedName, entry.FusedScore);
             }
@@ -104,8 +112,16 @@ namespace Kinectv1
                     _identities[trackingId.Value] = entry;
 
                     // Recompute fusion
+                    var oldFusedName = entry.FusedName;
+                    var oldFusedScore = entry.FusedScore;
                     RecomputeFusion(ref entry);
                     _identities[trackingId.Value] = entry;
+
+                    // Log significant fusion changes
+                    if (oldFusedName != entry.FusedName || Math.Abs(oldFusedScore - entry.FusedScore) > 0.1f)
+                    {
+                        Console.WriteLine($"🔀 Fusion Update (Voice) TrackingID {trackingId.Value}: {oldFusedName}({oldFusedScore:F2}) → {entry.FusedName}({entry.FusedScore:F2})");
+                    }
 
                     OnIdentityFused?.Invoke(trackingId.Value, entry.FusedName, entry.FusedScore);
                 }

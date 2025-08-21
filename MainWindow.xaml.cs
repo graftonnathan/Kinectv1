@@ -44,6 +44,23 @@ namespace Kinectv1
                 this.ShowInTaskbar = true;
                 this.Title = "Kinect Face & Voice Recognition";
 
+                // Add keyboard shortcut for testing fusion (Ctrl+F)
+                this.KeyDown += (sender, e) =>
+                {
+                    if (e.Key == Key.F && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
+                    {
+                        try
+                        {
+                            Console.WriteLine("🧪 Testing Identity Fusion System (Ctrl+F pressed)");
+                            IdentityFusionTracker.TestFusion();
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"Error testing fusion: {ex.Message}");
+                        }
+                    }
+                };
+
                 // Hook GUI events
                 try
                 {
