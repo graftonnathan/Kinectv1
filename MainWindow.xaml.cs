@@ -2584,7 +2584,34 @@ namespace Kinectv1
                 
                 cleanupTimer.Start();
                 
+                // Set up periodic status logging timer
+                var statusTimer = new DispatcherTimer
+                {
+                    Interval = TimeSpan.FromSeconds(15) // Log status every 15 seconds
+                };
+                
+                statusTimer.Tick += (sender, e) =>
+                {
+                    try
+                    {
+                        var status = IdentityFusionTracker.GetFusionStatus();
+                        if (!status.Contains("No active identities"))
+                        {
+                            Console.WriteLine("--- Identity Fusion Status ---");
+                            Console.WriteLine(status);
+                            Console.WriteLine("-----------------------------");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Error during identity fusion status logging: {ex.Message}");
+                    }
+                };
+                
+                statusTimer.Start();
+                
                 Console.WriteLine("🔀 Identity fusion cleanup timer initialized (10s interval)");
+                Console.WriteLine("🔀 Identity fusion status logging initialized (15s interval)");
             }
             catch (Exception ex)
             {

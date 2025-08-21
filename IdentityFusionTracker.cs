@@ -275,16 +275,45 @@ namespace Kinectv1
         /// </summary>
         private static ulong? FindProximityTrackingId(string voiceName)
         {
-            // Simple heuristic: find the most recently updated face entry
-            // In a more sophisticated system, this would use spatial proximity
-            var recentCutoff = DateTime.UtcNow.AddSeconds(-2); // Only consider faces updated in last 2 seconds
+            // Enhanced heuristic: prefer faces that:
+            // 1. Have matching name already (reinforce existing matches)
+            // 2. Are recently active (updated in last 2 seconds)
+            // 3. Have high confidence
+            var recentCutoff = DateTime.UtcNow.AddSeconds(-2);
             
-            var candidateEntry = _identities
-                .Where(kvp => kvp.Value.LastUpdate >= recentCutoff)
-                .OrderByDescending(kvp => kvp.Value.LastUpdate)
+            // First, try to find a face that already has this voice name
+            var existingMatch = _identities
+                .Where(kvp => kvp.Value.LastUpdate >= recentCutoff && 
+                             string.Equals(kvp.Value.VoiceName, voiceName, StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(kvp => kvp.Value.VoiceScore)
                 .FirstOrDefault();
             
-            if (candidateEntry.Key != 0) // Default value for ulong in KeyValuePair
+            if (existingMatch.Key != 0)
+            {
+                return existingMatch.Key;
+            }
+            
+            // Second, try to find a face with matching face name (cross-modal reinforcement)
+            var crossModalMatch = _identities
+                .Where(kvp => kvp.Value.LastUpdate >= recentCutoff && 
+                             string.Equals(kvp.Value.FaceName, voiceName, StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(kvp => kvp.Value.FaceScore)
+                .FirstOrDefault();
+            
+            if (crossModalMatch.Key != 0)
+            {
+                return crossModalMatch.Key;
+            }
+            
+            // Finally, find the most recently updated face with no voice or low voice confidence
+            var candidateEntry = _identities
+                .Where(kvp => kvp.Value.LastUpdate >= recentCutoff &&
+                             (string.IsNullOrEmpty(kvp.Value.VoiceName) || kvp.Value.VoiceScore < 0.4f))
+                .OrderByDescending(kvp => kvp.Value.LastUpdate)
+                .ThenByDescending(kvp => kvp.Value.FaceScore)
+                .FirstOrDefault();
+            
+            if (candidateEntry.Key != 0)
             {
                 return candidateEntry.Key;
             }
@@ -338,6 +367,48 @@ namespace Kinectv1
                 
                 return status.ToString();
             }
+        }
+
+        /// <summary>
+        /// Test method to demonstrate fusion functionality
+        /// </summary>
+        public static void TestFusion()
+        {
+            Console.WriteLine("🧪 Testing Identity Fusion Tracker...");
+            
+            // Simulate face detection
+            UpdateFace(12345, "John", 0.8f);
+            Console.WriteLine("Added face: John (0.8)");
+            
+            // Wait a moment and add voice
+            System.Threading.Thread.Sleep(100);
+            UpdateVoice(12345, "John", 0.7f);
+            Console.WriteLine("Added voice: John (0.7)");
+            
+            // Check fusion result
+            var result = GetFusedIdentity(12345);
+            Console.WriteLine($"Fused result: {result.name} ({result.score:F3})");
+            
+            // Test time decay - wait and check again
+            System.Threading.Thread.Sleep(1000);
+            result = GetFusedIdentity(12345);
+            Console.WriteLine($"After 1s decay: {result.name} ({result.score:F3})");
+            
+            // Test voice-only proximity matching
+            UpdateVoice(null, "Jane", 0.6f);
+            Console.WriteLine("Added voice-only: Jane (0.6)");
+            
+            // Add a face that should match
+            UpdateFace(67890, "Unknown", 0.4f);
+            System.Threading.Thread.Sleep(100);
+            UpdateVoice(null, "Jane", 0.6f); // Should find proximity match now
+            
+            result = GetFusedIdentity(67890);
+            Console.WriteLine($"Proximity matched: {result.name} ({result.score:F3})");
+            
+            Console.WriteLine("--- Test Status ---");
+            Console.WriteLine(GetFusionStatus());
+            Console.WriteLine("--- End Test ---");
         }
     }
 }

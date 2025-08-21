@@ -180,6 +180,7 @@ namespace Kinectv1
                 Console.WriteLine(GetDiscordBotSettingsSummary());
                 Console.WriteLine(GetAudioDeviceSettingsSummary());
                 Console.WriteLine(GetTelemetrySettingsSummary());
+                Console.WriteLine(GetFusionSettingsSummary());
 
                 // Other settings remain grouped by feature
                 Console.WriteLine($"👤 Face Settings:\n   Face Threshold: {LoadFaceThreshold():F2}");
@@ -2016,7 +2017,7 @@ namespace Kinectv1
         {
             try
             {
-                var value = GetFloat("FusionFaceWeight");
+                var value = GetFloat("FusionFaceWeight", 0.6f); // Use default fallback
                 if (value <= 0.0f || value > 1.0f)
                 {
                     LogSettingError("FusionFaceWeight", $"OUT OF RANGE (expected 0.0-1.0, got {value})");
@@ -2055,7 +2056,7 @@ namespace Kinectv1
         {
             try
             {
-                var value = GetFloat("FusionVoiceWeight");
+                var value = GetFloat("FusionVoiceWeight", 0.4f); // Use default fallback
                 if (value <= 0.0f || value > 1.0f)
                 {
                     LogSettingError("FusionVoiceWeight", $"OUT OF RANGE (expected 0.0-1.0, got {value})");
@@ -2094,7 +2095,7 @@ namespace Kinectv1
         {
             try
             {
-                var value = GetInt("FusionDecayHalfLifeMs");
+                var value = GetInt("FusionDecayHalfLifeMs", 2000); // Use default fallback
                 if (value < 500 || value > 10000)
                 {
                     LogSettingError("FusionDecayHalfLifeMs", $"OUT OF RANGE (expected 500-10000ms, got {value})");
@@ -2133,7 +2134,7 @@ namespace Kinectv1
         {
             try
             {
-                var value = GetFloat("FusionUnknownThreshold");
+                var value = GetFloat("FusionUnknownThreshold", 0.3f); // Use default fallback
                 if (value < 0.0f || value > 1.0f)
                 {
                     LogSettingError("FusionUnknownThreshold", $"OUT OF RANGE (expected 0.0-1.0, got {value})");

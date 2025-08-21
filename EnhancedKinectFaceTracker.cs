@@ -696,12 +696,10 @@ public static class EnhancedKinectFaceTracker
                 float confidence = 0.0f;
                 EmotionState emotion = new EmotionState();
 
-                if (_recognitionResults.ContainsKey(face.TrackingId))
-                {
-                    var recognition = _recognitionResults[face.TrackingId];
-                    name = recognition.name;
-                    confidence = recognition.confidence;
-                }
+                // Get fused identity instead of raw recognition result
+                var fusedIdentity = IdentityFusionTracker.GetFusedIdentity(face.TrackingId);
+                name = fusedIdentity.name;
+                confidence = fusedIdentity.score;
 
                 if (_emotionResults.ContainsKey(face.TrackingId))
                 {
@@ -711,7 +709,7 @@ public static class EnhancedKinectFaceTracker
                 var faceInfo = new FaceTrackingInfo(face.TrackingId, face.BoundingBox, name, confidence, emotion);
                 allFaces.Add(faceInfo);
 
-                // Create FaceDetection for video window - include emotion in name display
+                // Create FaceDetection for video window - include emotion and fusion indicator in name display
                 var width = face.BoundingBox.Right - face.BoundingBox.Left;
                 var height = face.BoundingBox.Bottom - face.BoundingBox.Top;
                 
@@ -719,6 +717,12 @@ public static class EnhancedKinectFaceTracker
                 if (emotion.PrimaryEmotion != "Neutral")
                 {
                     displayName += $" ({emotion.PrimaryEmotion})";
+                }
+                
+                // Add fusion indicator if it's a fused result with decent confidence
+                if (confidence > 0.0f && name != "Unknown")
+                {
+                    displayName += " [F]"; // [F] indicates fused result
                 }
                 
                 faceDetections.Add(new FaceDetection
