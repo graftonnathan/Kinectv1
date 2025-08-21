@@ -1,0 +1,38 @@
+name: "ASR robustness: resampler + LPF and unified partial/final handling"
+goal: >
+  Improve Discord 48k→16k path with proper low-pass + high-quality resample,
+  and reduce low-confidence churn by unifying partial/final result logic.
+
+context:
+  repo_paths:
+    - DiscordAudioProcessor.cs
+    - VoiceProcessor.cs
+    - VoiceRecognizer.cs
+  constraints:
+    - Prefer NAudio.Wave.SampleProviders.WdlResamplingSampleProvider for quality resample.
+    - Add pre-decimation low-pass (BiQuadFilter.LowPassFilter) ~7.5–8 kHz before downsample.
+    - Keep CPU impact modest; measure via Telemetry timers.
+
+steps:
+  - In DiscordAudioProcessor:
+      - Replace simple DecimateAudio with path:
+        stereo→mono → high-pass (already) → low-pass (~8 kHz) → WdlResamplingSampleProvider to 16k.
+      - Keep a single reusable provider chain to avoid per-chunk allocations; pool buffers.
+      - Telemetry : lpf_ms, resample_ms.
+  - In VoiceProcessor:
+      - Add ResultAggregator that:
+        - Merges partial hypotheses; only emits OnTranscription if text changed meaningfully
+          (e.g., Levenshtein distance or ended-with-punctuation).
+        - FinalResult promotion clears partial and deduplicates against previous final.
+      - Emit debounce reasons via Telemetry (already partially in place).
+  - Update summary logs in GetVoiceConfidenceSettingsSummary to show “Resampler: WDL + LPF”.
+
+acceptance_criteria:
+  - Audible quality is cleaner (fewer artifacts) and Vosk acceptance improves.
+  - No repeated partial spam for the same hypothesis; fewer duplicate finals.
+  - CPU overhead increase is small, verified by Telemetry.
+
+files_touched:
+  - modify: DiscordAudioProcessor.cs, VoiceProcessor.cs, VoiceRecognizer.cs
+
+labels: [asr, audio, dsp]

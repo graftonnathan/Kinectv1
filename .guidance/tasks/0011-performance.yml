@@ -1,0 +1,40 @@
+name: "Performance: reduce hot-path allocations and session thrash"
+goal: >
+  Profile and optimize ONNX session creation, per-chunk allocations, and LINQ in hot paths;
+  adopt pooled buffers in audio/STT loops.
+
+context:
+  repo_paths:
+    - OnnxSessionFactory.cs
+    - KokoroTtsService.cs
+    - CoquiTtsService.cs
+    - DiscordAudioProcessor.cs
+    - VoiceProcessor.cs
+  constraints:
+    - Use ArrayPool<T> for float/byte buffers; return promptly.
+    - Remove LINQ from per-sample loops; use for loops.
+    - Cache ONNX sessions by model+EP; reuse across calls.
+
+steps:
+  - Add simple profiler helpers in Telemetry (Begin/End) to capture hot spans.
+  - OnnxSessionFactory:
+      - Introduce internal cache keyed by (modelPath, useGpu, deviceId).
+      - Reuse sessions; expose DisposeAll() on shutdown.
+  - DiscordAudioProcessor:
+      - Replace temporary arrays with ArrayPool<float>/byte.
+      - Consolidate conversions (bytes->float->mono) in a single pass.
+      - Remove LINQ; tight for loops only.
+  - VoiceProcessor:
+      - Pool buffers for PCM and result parsing; avoid string allocations where possible (StringBuilder).
+  - Add Telemetry counters: pooled_rents, pooled_returns, pool_misses.
+
+acceptance_criteria:
+  - Measured GC allocs per second drop notably during live audio.
+  - First-TTS latency unaffected or improved; session reuse observed in logs.
+  - No regressions in audio or ASR correctness.
+
+files_touched:
+  - modify: OnnxSessionFactory.cs, KokoroTtsService.cs, CoquiTtsService.cs,
+            DiscordAudioProcessor.cs, VoiceProcessor.cs, Telemetry.cs
+
+labels: [performance, memory, onnx]

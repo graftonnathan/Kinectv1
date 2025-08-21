@@ -1,0 +1,41 @@
+name: "Testing harness: offline fixtures for ASR/TTS and pruning logic"
+goal: >
+  Add small offline tests to catch regressions: WAV->ASR golden results, synthetic Discord frames->STT,
+  and snapshot tests for debounce/pruning.
+
+context:
+  repo_paths:
+    - VoiceProcessor.cs
+    - DiscordAudioProcessor.cs
+    - VoskModelManager.cs
+    - tools/ (new)
+    - testdata/ (new)
+  constraints:
+    - Keep it lightweight; no heavy test frameworks required.
+    - CLI tools in tools/ that run in CI and exit non-zero on failures.
+
+steps:
+  - Create tools/AsrOffline.exe (small console app):
+      - Args: input.wav -> prints JSON {text, conf, tokens} and writes to stdout.
+      - Compare with testdata/golden/asr/<name>.json (exact or relaxed match via thresholds).
+  - Create tools/DiscordSim.exe:
+      - Generate 48k stereo frames with speech + noise; run through DiscordAudioProcessor;
+        ensure output is 16k mono with expected RMS and no clipping > threshold.
+  - Add tools/SnapshotCheck.exe:
+      - Feed a scripted sequence of partial/final results into VoiceProcessor's aggregator;
+        compare emitted sequence to testdata/golden/snapshots/<name>.json.
+  - Add a GH Action job to run the tools and fail on diff.
+  - Document how to refresh goldens (env var ALLOW_GOLDEN_UPDATE=1).
+
+acceptance_criteria:
+  - tools/AsrOffline.exe testdata/wav/hello.wav matches golden text.
+  - DiscordSim reports "PASS" with expected resample stats.
+  - SnapshotCheck reports stable partial/final emission order.
+  - CI job fails on regressions.
+
+files_touched:
+  - add: tools/* (3 small console projects), testdata/*
+  - modify: DiscordAudioProcessor.cs, VoiceProcessor.cs (minor seams/hooks if needed)
+  - add: .github/workflows/offline-tests.yml
+
+labels: [testing, ci, stability]

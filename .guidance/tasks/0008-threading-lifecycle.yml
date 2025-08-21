@@ -1,0 +1,40 @@
+name: "Threading model: centralize hosted services and cancellation"
+goal: >
+  Standardize long-running tasks (audio capture, ASR, Discord bot, TTS queue) under
+  a single HostServices manager with shared CancellationToken and consistent start/stop.
+
+context:
+  repo_paths:
+    - MainWindow.xaml.cs
+    - VoiceRecognizer.cs
+    - DiscordNetBotManager.cs
+    - DiscordSystemAudioCapture.cs
+    - CoquiTtsService.cs
+    - OllamaService.cs
+  constraints:
+    - Avoid duplicate starts; use idempotent StartAsync/StopAsync with interlocked guards.
+    - Propagate CTS to all loops; shutdown should complete <10s.
+
+steps:
+  - Add HostServices.cs:
+      - Register(IHostedService { StartAsync(ct), StopAsync(ct), Name }).
+      - StartAllAsync/StopAllAsync with Telemetry and timeouts.
+  - Wrap each service:
+      - Audio capture/VoiceRecognizer worker as hosted service.
+      - Discord bot manager as hosted service.
+      - TTS playback queue as hosted service.
+      - (Optional) Ollama polling, if any.
+  - MainWindow:
+      - Replace ad-hoc inits with HostServices.StartAllAsync on load and StopAllAsync on Closing.
+      - Remove duplicated interlocked flags scattered around; centralize in services.
+
+acceptance_criteria:
+  - No double-start logs; start/stop ordering is consistent and clean.
+  - Closing the app performs orderly, bounded shutdown within the timeout.
+  - Code paths use the shared CTS; cancellation respected in loops.
+
+files_touched:
+  - add: HostServices.cs, IHostedService.cs
+  - modify: MainWindow.xaml.cs, VoiceRecognizer.cs, DiscordNetBotManager.cs, DiscordSystemAudioCapture.cs, CoquiTtsService.cs
+
+labels: [threading, lifecycle, cancellation]

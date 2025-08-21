@@ -1,0 +1,42 @@
+name: "Real-time TTS: robust interrupt/flush semantics"
+goal: >
+  Ensure starting a new utterance immediately preempts current generation/playback
+  without leaving silent headers or stuck output states.
+
+context:
+  repo_paths:
+    - CoquiTtsService.cs
+    - KokoroTtsService.cs
+    - AudioDeviceManager.*
+    - MainWindow.xaml.cs
+  constraints:
+    - Add a TtsPlaybackController that owns a CTS and utteranceId.
+    - All Speak* APIs accept CancellationToken and respect it.
+    - Streaming segments must close cleanly when canceled; no extra silence.
+
+steps:
+  - Add TtsPlaybackController.cs:
+      - StartUtterance(string text, string speaker, Func<CancellationToken, IAsyncEnumerable<float[]>> segmentSource).
+      - CancelCurrent() cancels CTS, flushes/drops buffered audio, and awaits drain.
+      - Tracks utteranceId (incrementing) for logging and guards.
+  - Modify CoquiTtsService:
+      - SpeakAsync/SpeakStreamingAsync route via TtsPlaybackController.
+      - Implement StopCurrentPlayback() to call controller.CancelCurrent().
+      - GenerateAudio/GenerateAudioSegments accept CancellationToken to stop synthesis early.
+  - AudioDeviceManager:
+      - Ensure a single initialized output (WaveOutEvent + BufferedWaveProvider).
+      - On new utterance: reset provider buffers (no partial frame headers),
+        prime with a tiny non-silent frame if needed to avoid header-only packets.
+  - Add Telemetry: tts_preemptions, tts_cancel_ms, playback_flush_ms.
+
+acceptance_criteria:
+  - While speaking, triggering another Speak interrupts within <100ms (audible).
+  - No “stuck speaking…” UI states after rapid preemptions.
+  - No silent-only output chunks recorded (verify with RMS > 0 on first 100ms).
+  - StopCurrentPlayback() is effective even mid-stream.
+
+files_touched:
+  - add: TtsPlaybackController.cs
+  - modify: CoquiTtsService.cs, KokoroTtsService.cs, AudioDeviceManager.*, MainWindow.xaml.cs
+
+labels: [tts, real-time, ux]
