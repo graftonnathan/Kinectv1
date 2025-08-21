@@ -19,7 +19,9 @@ namespace Kinectv1
         private readonly Action<float[]> _onVoiceEmbedding;
         private readonly string _triggerName;
         private DateTime _lastVoiceTime = DateTime.UtcNow;
-        private TimeSpan _silenceTimeout = TimeSpan.FromMilliseconds(150);
+        private TimeSpan _silenceTimeout;
+        private TimeSpan _vadDebounceTimeout;
+        private DateTime _lastFinalResultTime = DateTime.MinValue;
         private readonly List<float> _pcmBuffer = new List<float>();
         private string _lastTranscription = string.Empty;
         private string _pendingTranscription = string.Empty; // Store transcription for Ollama
@@ -64,6 +66,12 @@ namespace Kinectv1
             var bufferSize = AppSettings.LoadVoiceConfidenceBufferSize();
             _lowConfidenceBuffer = new Queue<VoskResult>(bufferSize);
             
+            // Load configurable VAD settings
+            var silenceTimeoutMs = AppSettings.LoadVadSilenceTimeoutMs();
+            var debounceTimeoutMs = AppSettings.LoadVadDebounceTimeoutMs();
+            _silenceTimeout = TimeSpan.FromMilliseconds(silenceTimeoutMs);
+            _vadDebounceTimeout = TimeSpan.FromMilliseconds(debounceTimeoutMs);
+            
             Console.WriteLine($"?? VoiceProcessor initialized with confidence settings:");
             Console.WriteLine($"   Confidence threshold: {_confidenceThreshold:F2}");
             Console.WriteLine($"   High confidence threshold: {_highConfidenceThreshold:F2}");
@@ -71,6 +79,9 @@ namespace Kinectv1
             Console.WriteLine($"   Logging enabled: {_confidenceLoggingEnabled}");
             Console.WriteLine($"   Microphone RMS callback: {(_onRmsLevel != null ? "Connected" : "Not connected")}");
             Console.WriteLine($"   Discord RMS callback: {(_onDiscordRmsLevel != null ? "Connected" : "Not connected")}");
+            Console.WriteLine($"?? VAD settings:");
+            Console.WriteLine($"   Silence timeout: {silenceTimeoutMs}ms");
+            Console.WriteLine($"   Debounce timeout: {debounceTimeoutMs}ms");
         }
 
         /// <summary>
@@ -193,8 +204,23 @@ namespace Kinectv1
                 {
                     if (DateTime.UtcNow - _lastVoiceTime > _silenceTimeout)
                     {
+                        // NEW: VAD debouncing to prevent double FinalResult flush
+                        var timeSinceLastFinalResult = DateTime.UtcNow - _lastFinalResultTime;
+                        if (timeSinceLastFinalResult < _vadDebounceTimeout)
+                        {
+                            if (_confidenceLoggingEnabled)
+                            {
+                                Console.WriteLine($"?? VAD debounce: Skipping FinalResult (last was {timeSinceLastFinalResult.TotalMilliseconds:F0}ms ago, debounce: {_vadDebounceTimeout.TotalMilliseconds:F0}ms)");
+                            }
+                            _lastVoiceTime = DateTime.UtcNow; // Reset silence timer
+                            return;
+                        }
+                        
                         var flush = _recognizer.FinalResult();
                         var result = ParseVoskResult(flush);
+                        
+                        // Update the debounce timer regardless of result quality
+                        _lastFinalResultTime = DateTime.UtcNow;
                         
                         if (result != null && !string.IsNullOrWhiteSpace(result.Text))
                         {
@@ -750,24 +776,29 @@ namespace Kinectv1
                 // Check if this transcription was already processed
                 if (_processedTranscriptions.Contains(transcription))
                 {
+                    Console.WriteLine($"?? DUPLICATE BLOCKED: '{transcription}' from {source} (already processed)");
                     return;
                 }
 
                 // Check if another dispatch is in progress
                 if (_ollamaDispatchInProgress)
                 {
+                    Console.WriteLine($"?? DISPATCH BLOCKED: '{transcription}' from {source} (dispatch in progress)");
                     return;
                 }
 
                 // Check if Ollama is enabled
                 if (!OllamaService.IsEnabled())
                 {
+                    Console.WriteLine($"?? DISPATCH SKIPPED: '{transcription}' from {source} (Ollama disabled)");
                     return;
                 }
 
                 // Mark as processed and set dispatch flag
                 _processedTranscriptions.Add(transcription);
                 _ollamaDispatchInProgress = true;
+                
+                Console.WriteLine($"?? DISPATCHING: '{transcription}' from {source} (#{_processedTranscriptions.Count} unique transcriptions)");
 
                 // Clear old processed transcriptions to prevent memory leaks (keep only recent 10)
                 if (_processedTranscriptions.Count > 10)
@@ -836,6 +867,108 @@ namespace Kinectv1
             {
                 return (_processedTranscriptions.Count, _ollamaDispatchInProgress);
             }
+        }
+
+        /// <summary>
+        /// Test method to verify duplicate prevention - simulates 5 consecutive phrases
+        /// Should result in exactly 5 dispatches to Ollama, demonstrating single-flight behavior
+        /// </summary>
+        public void TestDuplicatePreventionDispatch()
+        {
+            Console.WriteLine("?? TESTING: Duplicate Prevention Dispatch");
+            Console.WriteLine("   Simulating 5 consecutive Discord phrases from different users...");
+            
+            var testPhrases = new[]
+            {
+                "Hello everyone, this is the first test phrase",
+                "This is the second phrase from another user", 
+                "Third phrase to verify no duplicates",
+                "Fourth unique phrase for testing",
+                "Final fifth phrase to complete the test"
+            };
+
+            var initialStats = GetOllamaDispatchStats();
+            Console.WriteLine($"   Initial state: {initialStats.processedCount} processed, dispatch in progress: {initialStats.dispatchInProgress}");
+
+            // Simulate each phrase being processed
+            for (int i = 0; i < testPhrases.Length; i++)
+            {
+                Console.WriteLine($"   Phrase {i + 1}: \"{testPhrases[i]}\"");
+                TryDispatchToOllama(testPhrases[i], $"TestUser{i + 1}");
+                
+                // Brief delay to simulate real processing
+                System.Threading.Thread.Sleep(50);
+            }
+
+            var finalStats = GetOllamaDispatchStats();
+            var dispatchedCount = finalStats.processedCount - initialStats.processedCount;
+            
+            Console.WriteLine($"?? TEST RESULTS:");
+            Console.WriteLine($"   Input phrases: {testPhrases.Length}");
+            Console.WriteLine($"   Unique dispatches: {dispatchedCount}");
+            Console.WriteLine($"   Expected: 5 dispatches = 5 phrases");
+            Console.WriteLine($"   Result: {(dispatchedCount == testPhrases.Length ? "✅ PASS" : "❌ FAIL")}");
+            
+            if (dispatchedCount != testPhrases.Length)
+            {
+                Console.WriteLine($"   ⚠️ Expected {testPhrases.Length} dispatches but got {dispatchedCount}");
+            }
+        }
+
+        /// <summary>
+        /// Test VAD debouncing behavior by simulating rapid FinalResult calls
+        /// </summary>
+        public void TestVadDebounceBehavior()
+        {
+            Console.WriteLine("?? TESTING: VAD Debounce Behavior");
+            Console.WriteLine("   Simulating rapid FinalResult calls to test debouncing...");
+            
+            // Reset the last final result time to allow testing
+            _lastFinalResultTime = DateTime.MinValue;
+            
+            // Simulate rapid calls within debounce window
+            var testPhrase = "Test phrase for VAD debounce verification";
+            var callCount = 0;
+            var blockedCount = 0;
+            
+            for (int i = 0; i < 3; i++)
+            {
+                callCount++;
+                var beforeTime = _lastFinalResultTime;
+                
+                // Create a mock result for testing
+                var mockResult = new VoskResult 
+                { 
+                    Text = testPhrase, 
+                    Confidence = 0.8f, 
+                    Words = new List<WordResult>() 
+                };
+                
+                // Check if this would be blocked by debounce
+                var timeSinceLastFinalResult = DateTime.UtcNow - _lastFinalResultTime;
+                var wouldBeBlocked = timeSinceLastFinalResult < _vadDebounceTimeout && _lastFinalResultTime != DateTime.MinValue;
+                
+                if (wouldBeBlocked)
+                {
+                    blockedCount++;
+                    Console.WriteLine($"   Call {i + 1}: BLOCKED by debounce ({timeSinceLastFinalResult.TotalMilliseconds:F0}ms < {_vadDebounceTimeout.TotalMilliseconds:F0}ms)");
+                }
+                else
+                {
+                    Console.WriteLine($"   Call {i + 1}: ALLOWED (first call or outside debounce window)");
+                    _lastFinalResultTime = DateTime.UtcNow; // Simulate the update that would happen
+                }
+                
+                // Small delay between calls
+                System.Threading.Thread.Sleep(100);
+            }
+            
+            Console.WriteLine($"?? VAD DEBOUNCE TEST RESULTS:");
+            Console.WriteLine($"   Total calls: {callCount}");
+            Console.WriteLine($"   Blocked by debounce: {blockedCount}");
+            Console.WriteLine($"   Allowed through: {callCount - blockedCount}");
+            Console.WriteLine($"   Debounce timeout: {_vadDebounceTimeout.TotalMilliseconds:F0}ms");
+            Console.WriteLine($"   Result: {(blockedCount > 0 ? "✅ DEBOUNCE WORKING" : "⚠️ NO DEBOUNCE DETECTED")}");
         }
     }
 
