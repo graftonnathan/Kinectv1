@@ -12,28 +12,42 @@ jobs:
   summarize:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out PR
+      - name: Check out PR HEAD
         uses: actions/checkout@v4
         with:
-          # shallow clone is fine; we’ll fetch just dev explicitly
+          # Check out the PR head commit explicitly
+          ref: ${{ github.event.pull_request.head.sha }}
+          # Shallow is fine; we'll fetch the base commit by SHA next
           fetch-depth: 1
 
-      - name: Ensure origin/dev is available
+      - name: Fetch base commit by SHA
         run: |
-          git fetch --no-tags --prune --depth=1 origin +refs/heads/dev:refs/remotes/origin/dev
+          set -euo pipefail
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          echo "Base ref: ${{ github.base_ref }}"
+          echo "Base sha: $BASE_SHA"
+          # Ensure we have the base commit locally
+          git fetch --no-tags --depth=1 origin "${BASE_SHA}"
 
-      - name: Create diffstat summary vs dev
+      - name: Create diffstat summary (base...head)
         run: |
+          set -euo pipefail
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+
           echo "### Change summary" > summary.md
           echo "" >> summary.md
+
           echo '```' >> summary.md
-          git diff --stat origin/dev...HEAD >> summary.md
+          git diff --stat "${BASE_SHA}...${HEAD_SHA}" >> summary.md || true
           echo '```' >> summary.md
+
           echo "" >> summary.md
           echo "### Key files touched" >> summary.md
           echo "" >> summary.md
+
           echo '```' >> summary.md
-          git diff --name-only origin/dev...HEAD >> summary.md
+          git diff --name-only "${BASE_SHA}...${HEAD_SHA}" >> summary.md || true
           echo '```' >> summary.md
 
       - name: Post sticky comment
