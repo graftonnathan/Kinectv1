@@ -480,13 +480,13 @@ namespace Kinectv1
             if (string.IsNullOrWhiteSpace(text)) yield break;
 
             // Split on strong and weak punctuation; treat commas/dashes as non-explicit breaks
-            var parts = Regex.Split(text, "([.!?;:,]|—|–)");
+            var parts = Regex.Split(text, "([.!?;:,]|ï¿½|ï¿½)");
             var buffer = new StringBuilder();
             for (int i = 0; i < parts.Length; i++)
             {
                 var p = parts[i];
                 if (string.IsNullOrEmpty(p)) continue;
-                if (Regex.IsMatch(p, "^[.!?;:,]|—|–$"))
+                if (Regex.IsMatch(p, "^[.!?;:,]|ï¿½|ï¿½$"))
                 {
                     buffer.Append(p);
                     var s = buffer.ToString().Trim();
@@ -922,72 +922,102 @@ namespace Kinectv1
 
         public static float[] GenerateAudio(string text, string voiceKey)
         {
-            if (!_initialized && !Initialize()) return Array.Empty<float>();
-            if (string.IsNullOrWhiteSpace(text)) return Array.Empty<float>();
-            var vk = (!string.IsNullOrWhiteSpace(voiceKey) && _voiceFiles.ContainsKey(voiceKey)) ? voiceKey : _defaultVoiceKey;
-
-            var segments = BuildSegments(text);
-            var output = new List<float>();
-
-            foreach (var seg in segments)
+            using (var scope = Telemetry.LatencyScope("tts_generate", emitEvent: true))
             {
-                if (seg.IsBreak)
+                if (!_initialized && !Initialize()) 
                 {
-                    var ms = Math.Max(0, seg.BreakMs);
-                    int samples = (int)Math.Round((_nativeSampleRate / 1000.0) * ms);
-                    output.AddRange(new float[samples]);
-                    continue;
+                    Telemetry.Counter("tts.initialization_failures");
+                    return Array.Empty<float>();
                 }
-
-                var sentence = seg.Text;
-                if (string.IsNullOrWhiteSpace(sentence)) continue;
-
-                EnsureIpaService();
-                var ipa = RunEspeak(sentence);
-                if (string.IsNullOrWhiteSpace(ipa)) continue;
-
-                var ids = MapIpaToIds(ipa, 512);
-                if (ids == null || ids.Length < 2) continue;
-
-                int innerTokenCount = Math.Max(0, ids.Length - 2);
-                var style = LoadStyleVectorAt(_voiceFiles.ContainsKey(vk) ? _voiceFiles[vk] : null, innerTokenCount) ?? Enumerable.Repeat(0.01f, 256).ToArray();
-
-                // Build tensors by dimensions then copy values
-                var inputIds = new DenseTensor<long>(new[] { 1, ids.Length });
-                for (int i = 0; i < ids.Length; i++) inputIds[0, i] = ids[i];
-                var styleTensor = new DenseTensor<float>(new[] { 1, 256 });
-                for (int i = 0; i < 256; i++) styleTensor[0, i] = style[i];
-                var speedTensor = new DenseTensor<float>(new[] { 1 });
-                speedTensor[0] = _speed;
-
-                float[] audio = null;
-                bool ok = TryRunModel(inputIds, styleTensor, speedTensor, out audio);
-
-                if (EnableCpuSegmentRetry && _usingGpu && (!ok || audio == null || audio.Length == 0 || IsDegenerateAudio(audio)))
+                if (string.IsNullOrWhiteSpace(text)) 
                 {
-                    Console.WriteLine("[Kokoro] GPU segment produced degenerate/empty audio - retrying segment on CPU without switching session");
-                    EnsureCpuSession();
-                    if (_cpuSession != null)
+                    Telemetry.Counter("tts.empty_text");
+                    return Array.Empty<float>();
+                }
+                
+                Telemetry.Counter("tts.generate_requests");
+                var vk = (!string.IsNullOrWhiteSpace(voiceKey) && _voiceFiles.ContainsKey(voiceKey)) ? voiceKey : _defaultVoiceKey;
+
+                var segments = BuildSegments(text);
+                var output = new List<float>();
+                int segmentCount = 0;
+
+                foreach (var seg in segments)
+                {
+                    if (seg.IsBreak)
                     {
-                        ok = TryRunModelOnSession(_cpuSession, inputIds, styleTensor, speedTensor, out audio);
+                        var ms = Math.Max(0, seg.BreakMs);
+                        int samples = (int)Math.Round((_nativeSampleRate / 1000.0) * ms);
+                        output.AddRange(new float[samples]);
+                        continue;
+                    }
+
+                    var sentence = seg.Text;
+                    if (string.IsNullOrWhiteSpace(sentence)) continue;
+
+                    segmentCount++;
+                    EnsureIpaService();
+                    var ipa = RunEspeak(sentence);
+                    if (string.IsNullOrWhiteSpace(ipa)) 
+                    {
+                        Telemetry.Counter("tts.espeak_failures");
+                        continue;
+                    }
+
+                    var ids = MapIpaToIds(ipa, 512);
+                    if (ids == null || ids.Length < 2) 
+                    {
+                        Telemetry.Counter("tts.mapping_failures");
+                        continue;
+                    }
+
+                    int innerTokenCount = Math.Max(0, ids.Length - 2);
+                    var style = LoadStyleVectorAt(_voiceFiles.ContainsKey(vk) ? _voiceFiles[vk] : null, innerTokenCount) ?? Enumerable.Repeat(0.01f, 256).ToArray();
+
+                    // Build tensors by dimensions then copy values
+                    var inputIds = new DenseTensor<long>(new[] { 1, ids.Length });
+                    for (int i = 0; i < ids.Length; i++) inputIds[0, i] = ids[i];
+                    var styleTensor = new DenseTensor<float>(new[] { 1, 256 });
+                    for (int i = 0; i < 256; i++) styleTensor[0, i] = style[i];
+                    var speedTensor = new DenseTensor<float>(new[] { 1 });
+                    speedTensor[0] = _speed;
+
+                    float[] audio = null;
+                    bool ok = TryRunModel(inputIds, styleTensor, speedTensor, out audio);
+
+                    if (EnableCpuSegmentRetry && _usingGpu && (!ok || audio == null || audio.Length == 0 || IsDegenerateAudio(audio)))
+                    {
+                        Console.WriteLine("[Kokoro] GPU segment produced degenerate/empty audio - retrying segment on CPU without switching session");
+                        Telemetry.Counter("tts.gpu_fallbacks");
+                        EnsureCpuSession();
+                        if (_cpuSession != null)
+                        {
+                            ok = TryRunModelOnSession(_cpuSession, inputIds, styleTensor, speedTensor, out audio);
+                        }
+                    }
+
+                    if (!ok || audio == null || audio.Length == 0) 
+                    {
+                        Telemetry.Counter("tts.generation_failures");
+                        continue;
+                    }
+
+                    // Reduce punctuation pause by trimming tail silence
+                    audio = TrimTrailingSilence(audio, _nativeSampleRate, threshold: 0.003f, leaveMs: 6, maxTrimMs: 800);
+
+                    output.AddRange(audio);
+
+                    // Shorter minimal pad (~10ms) only for non-explicit breaks
+                    if (!seg.HasExplicitBreak)
+                    {
+                        output.AddRange(new float[(int)Math.Round(_nativeSampleRate * 0.01)]);
                     }
                 }
 
-                if (!ok || audio == null || audio.Length == 0) continue;
-
-                // Reduce punctuation pause by trimming tail silence
-                audio = TrimTrailingSilence(audio, _nativeSampleRate, threshold: 0.003f, leaveMs: 6, maxTrimMs: 800);
-
-                output.AddRange(audio);
-
-                // Shorter minimal pad (~10ms) only for non-explicit breaks
-                if (!seg.HasExplicitBreak)
-                {
-                    output.AddRange(new float[(int)Math.Round(_nativeSampleRate * 0.01)]);
-                }
+                Telemetry.Counter("tts.segments_processed", segmentCount);
+                Telemetry.Accumulator("tts.output_samples_total", output.Count);
+                return output.ToArray();
             }
-
-            return output.ToArray();
         }
 
         public static IEnumerable<float[]> GenerateAudioSegments(string text, string voiceKey)

@@ -36,6 +36,12 @@ namespace Kinectv1
                 AppSettings.InitializeSettingsOnStartup();
                 Console.WriteLine("✅ App settings initialized successfully");
 
+                // Initialize telemetry system
+                Console.WriteLine("📊 Initializing telemetry...");
+                Telemetry.RefreshSettings();
+                Telemetry.Event("app.startup", new { version = "1.0", timestamp = DateTime.UtcNow });
+                Console.WriteLine("✅ Telemetry initialized successfully");
+
                 // IMPORTANT: Start STT (Vosk) BEFORE creating MainWindow (which initializes TTS)
                 try
                 {
