@@ -1,6 +1,6 @@
 task: "<concise title>"
 context:
-  repo: "<owner>/<repo>"
+  repo: "graftonnathan/Kinectv1"
   modules:
     - <important files>
 goals:

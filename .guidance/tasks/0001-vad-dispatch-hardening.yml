@@ -1,0 +1,20 @@
+task: "Harden VAD & centralize dispatch to avoid duplicate LLM sends"
+context:
+  repo: "graftonnathan/Kinectv1"
+  modules:
+    - VoiceProcessor.cs
+    - DiscordAudioProcessor.cs
+    - OllamaService.cs
+goals:
+  - Debounce Vosk FinalResult flush on silence (prevent double finalization).
+  - Ensure single-flight Ollama dispatch across threads; no dupes per transcript.
+  - Normalize Discord RMS to match mic visualization; keep thresholds in AppSettings.
+constraints:
+  - .NET Framework 4.8.1
+  - Public APIs for CoquiTtsService/VoiceRecognizer remain stable
+acceptance:
+  - Add/keep a guard: no duplicate SendPromptAsync for identical transcription.
+  - Log sample: 5 consecutive phrases from Discord yield exactly 5 sends.
+  - UI: Mic/Discord RMS bars behave independently and scale correctly.
+deliverables:
+  - One PR (< 400 LOC) with before/after logging notes in the description.
