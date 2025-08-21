@@ -1,4 +1,5 @@
 name: PR Summary
+
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
@@ -11,30 +12,42 @@ jobs:
   summarize:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout PR HEAD
+      - name: Check out PR HEAD
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0      # get full history so we can diff reliably
+          # Check out the PR head commit explicitly
           ref: ${{ github.event.pull_request.head.sha }}
+          # Shallow is fine; we'll fetch the base commit by SHA next
+          fetch-depth: 1
 
-      - name: Ensure base & head SHAs are present
+      - name: Fetch base commit by SHA
         run: |
-          set -e
+          set -euo pipefail
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          echo "Base ref: ${{ github.base_ref }}"
+          echo "Base sha: $BASE_SHA"
+          # Ensure we have the base commit locally
+          git fetch --no-tags --depth=1 origin "${BASE_SHA}"
+
+      - name: Create diffstat summary (base...head)
+        run: |
+          set -euo pipefail
           BASE_SHA="${{ github.event.pull_request.base.sha }}"
           HEAD_SHA="${{ github.event.pull_request.head.sha }}"
-          # Fetch the exact commits in case they aren't in the local clone yet
-          git fetch --no-tags --depth=1 origin $BASE_SHA $HEAD_SHA
 
           echo "### Change summary" > summary.md
           echo "" >> summary.md
+
           echo '```' >> summary.md
-          git diff --stat --color=never "$BASE_SHA...$HEAD_SHA" >> summary.md
+          git diff --stat "${BASE_SHA}...${HEAD_SHA}" >> summary.md || true
           echo '```' >> summary.md
+
           echo "" >> summary.md
           echo "### Key files touched" >> summary.md
           echo "" >> summary.md
+
           echo '```' >> summary.md
-          git diff --name-only "$BASE_SHA...$HEAD_SHA" >> summary.md
+          git diff --name-only "${BASE_SHA}...${HEAD_SHA}" >> summary.md || true
           echo '```' >> summary.md
 
       - name: Post sticky comment
