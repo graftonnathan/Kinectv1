@@ -1,4 +1,5 @@
 name: PR Summary
+
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
@@ -11,22 +12,28 @@ jobs:
   summarize:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out PR
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          # shallow clone is fine; we’ll fetch just dev explicitly
+          fetch-depth: 1
 
-      - name: Create diffstat summary
+      - name: Ensure origin/dev is available
+        run: |
+          git fetch --no-tags --prune --depth=1 origin +refs/heads/dev:refs/remotes/origin/dev
+
+      - name: Create diffstat summary vs dev
         run: |
           echo "### Change summary" > summary.md
           echo "" >> summary.md
           echo '```' >> summary.md
-          git diff --stat master/${{ github.base_ref }}...HEAD >> summary.md
+          git diff --stat origin/dev...HEAD >> summary.md
           echo '```' >> summary.md
           echo "" >> summary.md
           echo "### Key files touched" >> summary.md
           echo "" >> summary.md
           echo '```' >> summary.md
-          git diff --name-only master/${{ github.base_ref }}...HEAD >> summary.md
+          git diff --name-only origin/dev...HEAD >> summary.md
           echo '```' >> summary.md
 
       - name: Post sticky comment
