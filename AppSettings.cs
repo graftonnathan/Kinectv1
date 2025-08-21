@@ -328,6 +328,76 @@ namespace Kinectv1
             }
         }
 
+        /// <summary>
+        /// Load VAD silence timeout in milliseconds (prevents double FinalResult flush)
+        /// </summary>
+        public static int LoadVadSilenceTimeoutMs()
+        {
+            try
+            {
+                var value = GetInt("VadSilenceTimeoutMs");
+                if (value < 100 || value > 5000)
+                    LogSettingError("VadSilenceTimeoutMs", $"OUT OF RANGE (expected 100-5000, got {value})");
+                return value;
+            }
+            catch (Exception ex)
+            {
+                LogSettingError("VadSilenceTimeoutMs", $"READ FAILED: {ex.Message}");
+                return 150; // Default 150ms
+            }
+        }
+
+        /// <summary>
+        /// Save VAD silence timeout in milliseconds
+        /// </summary>
+        public static void SaveVadSilenceTimeoutMs(int timeoutMs)
+        {
+            try
+            {
+                SetInt("VadSilenceTimeoutMs", timeoutMs);
+                Console.WriteLine($"VAD: Saved silence timeout: {timeoutMs}ms");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"ERROR: Error saving VAD silence timeout: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Load VAD debounce timeout in milliseconds (prevents rapid consecutive FinalResults)
+        /// </summary>
+        public static int LoadVadDebounceTimeoutMs()
+        {
+            try
+            {
+                var value = GetInt("VadDebounceTimeoutMs");
+                if (value < 50 || value > 1000)
+                    LogSettingError("VadDebounceTimeoutMs", $"OUT OF RANGE (expected 50-1000, got {value})");
+                return value;
+            }
+            catch (Exception ex)
+            {
+                LogSettingError("VadDebounceTimeoutMs", $"READ FAILED: {ex.Message}");
+                return 200; // Default 200ms debounce
+            }
+        }
+
+        /// <summary>
+        /// Save VAD debounce timeout in milliseconds
+        /// </summary>
+        public static void SaveVadDebounceTimeoutMs(int timeoutMs)
+        {
+            try
+            {
+                SetInt("VadDebounceTimeoutMs", timeoutMs);
+                Console.WriteLine($"VAD: Saved debounce timeout: {timeoutMs}ms");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"ERROR: Error saving VAD debounce timeout: {ex.Message}");
+            }
+        }
+
         public static float LoadVoiceConfidenceThreshold()
         {
             try
@@ -1376,21 +1446,26 @@ namespace Kinectv1
         /// <summary>
         /// Configure Voice Activity Detection settings for improved speech onset detection
         /// </summary>
-        public static void ConfigureVoiceActivitySettings(float vadThreshold = 300f, float discordVadThreshold = 25f)
+        public static void ConfigureVoiceActivitySettings(float vadThreshold = 300f, float discordVadThreshold = 25f, int silenceTimeoutMs = 150, int debounceTimeoutMs = 200)
         {
             try
             {
                 SaveVoiceActivityThreshold(vadThreshold);
                 SaveDiscordVoiceActivityThreshold(discordVadThreshold);
+                SaveVadSilenceTimeoutMs(silenceTimeoutMs);
+                SaveVadDebounceTimeoutMs(debounceTimeoutMs);
                 AudioUtils.RefreshVadThreshold(); // Update cached value immediately
 
                 Console.WriteLine($"🎙️ Voice Activity Detection configured:");
                 Console.WriteLine($"   Microphone VAD threshold: {vadThreshold:F0} (RMS level for voice detection)");
                 Console.WriteLine($"   Discord VAD threshold: {discordVadThreshold:F0} (RMS level for Discord audio)");
-                Console.WriteLine($"   💡 Lower values = more sensitive (catches quiet speech start)");
-                Console.WriteLine($"   💡 Higher values = less sensitive (reduces false positives)");
+                Console.WriteLine($"   Silence timeout: {silenceTimeoutMs}ms (time before finalizing transcription)");
+                Console.WriteLine($"   Debounce timeout: {debounceTimeoutMs}ms (prevents double finalization)");
+                Console.WriteLine($"   💡 Lower VAD values = more sensitive (catches quiet speech start)");
+                Console.WriteLine($"   💡 Higher VAD values = less sensitive (reduces false positives)");
                 Console.WriteLine($"   💡 Discord threshold should be lower due to audio compression");
                 Console.WriteLine($"   💡 Recommended ranges: Microphone 200-500, Discord 15-50");
+                Console.WriteLine($"   💡 Recommended timeouts: Silence 100-300ms, Debounce 100-500ms");
             }
             catch (Exception ex)
             {
@@ -1496,10 +1571,14 @@ namespace Kinectv1
                 var loggingEnabled = LoadVoiceConfidenceLoggingEnabled();
                 var vadThreshold = LoadVoiceActivityThreshold();
                 var discordVadThreshold = LoadDiscordVoiceActivityThreshold();
+                var silenceTimeoutMs = LoadVadSilenceTimeoutMs();
+                var debounceTimeoutMs = LoadVadDebounceTimeoutMs();
 
                 return $"🎤 Voice Recognition Settings:\n" +
                        $"   Microphone VAD threshold: {vadThreshold:F0} (voice activity detection)\n" +
                        $"   Discord VAD threshold: {discordVadThreshold:F0} (Discord voice activity detection)\n" +
+                       $"   VAD silence timeout: {silenceTimeoutMs}ms (finalization delay)\n" +
+                       $"   VAD debounce timeout: {debounceTimeoutMs}ms (double-finalization prevention)\n" +
                        $"   Confidence threshold: {threshold:F2} (minimum quality)\n" +
                        $"   High confidence threshold: {highThreshold:F2} (high quality)\n" +
                        $"   Buffer size: {bufferSize} (recovery attempts)\n" +
@@ -1715,7 +1794,9 @@ namespace Kinectv1
                        $"   Vosk Model: {LoadSttModelPath()}\n" +
                        $"   Speaker Embedding: {LoadSpeakerEmbeddingModelPath()}\n" +
                        $"   Mic VAD Threshold: {LoadVoiceActivityThreshold():F0}\n" +
-                       $"   Discord VAD Threshold: {LoadDiscordVoiceActivityThreshold():F0}";
+                       $"   Discord VAD Threshold: {LoadDiscordVoiceActivityThreshold():F0}\n" +
+                       $"   VAD Silence Timeout: {LoadVadSilenceTimeoutMs()}ms\n" +
+                       $"   VAD Debounce Timeout: {LoadVadDebounceTimeoutMs()}ms";
             }
             catch (Exception ex)
             {
