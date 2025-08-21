@@ -179,6 +179,7 @@ namespace Kinectv1
                 Console.WriteLine(GetVoiceConfidenceSettingsSummary());
                 Console.WriteLine(GetDiscordBotSettingsSummary());
                 Console.WriteLine(GetAudioDeviceSettingsSummary());
+                Console.WriteLine(GetTelemetrySettingsSummary());
 
                 // Other settings remain grouped by feature
                 Console.WriteLine($"👤 Face Settings:\n   Face Threshold: {LoadFaceThreshold():F2}");
