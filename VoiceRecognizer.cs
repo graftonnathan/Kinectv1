@@ -1,6 +1,7 @@
 ﻿// VoiceRecognizer.cs - Simplified and cleaned up
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
@@ -16,18 +17,24 @@ namespace Kinectv1
         private static VoiceProcessor _voiceProcessor;
         private static string _currentModelPath;
 
-        // Thread-safe audio queue for external sources (like Discord)
-        private static readonly ConcurrentQueue<(byte[] data, int length, string source)> _externalAudioQueue = new ConcurrentQueue<(byte[], int, string)>();
+        // Bounded audio queues with backpressure - using BlockingCollection for proper flow control
+        private static readonly BlockingCollection<(byte[] data, int length, string source)> _externalAudioQueue = new BlockingCollection<(byte[], int, string)>(boundedCapacity: 50);
         private static readonly Timer _audioProcessingTimer;
         private static readonly Timer _healthSnapshotTimer; // NEW: Periodic health snapshots
         private static readonly object _processingLock = new object();
         private static volatile bool _isProcessing = false;
         private static volatile bool _shutdownRequested = false; // NEW: prevent processing during shutdown
 
-        // NEW: Per-user Discord buffering to avoid interleaving/overwriting
-        private static readonly ConcurrentDictionary<string, ConcurrentQueue<(byte[] data, int length)>> _discordUserQueues = new ConcurrentDictionary<string, ConcurrentQueue<(byte[], int)>>();
+        // Bounded per-user Discord buffering with backpressure - prevents runaway memory usage
+        private static readonly ConcurrentDictionary<string, BlockingCollection<(byte[] data, int length)>> _discordUserQueues = new ConcurrentDictionary<string, BlockingCollection<(byte[], int)>>();
         private static volatile string _activeDiscordSource = null;
         private static int _queueWorkRunning = 0; // prevent re-entrant timer callbacks
+        
+        // Backpressure configuration and metrics
+        private const int MAX_EXTERNAL_QUEUE_SIZE = 50; // ~1 second of 20ms audio chunks  
+        private const int MAX_PER_USER_QUEUE_SIZE = 25; // ~0.5 seconds per Discord user
+        private static long _totalAudioDrops = 0;
+        private static long _totalDiscordDrops = 0;
 
         // Events
         public static Action<float> OnRmsLevel;
@@ -238,6 +245,26 @@ namespace Kinectv1
                 _waveIn = null;
                 _recognizer = null;
 
+                // Clean up bounded queues with proper disposal
+                try 
+                { 
+                    _externalAudioQueue?.CompleteAdding();
+                    _externalAudioQueue?.Dispose(); 
+                } 
+                catch { }
+                
+                // Clean up per-user Discord queues
+                foreach (var kvp in _discordUserQueues)
+                {
+                    try 
+                    { 
+                        kvp.Value?.CompleteAdding();
+                        kvp.Value?.Dispose(); 
+                    } 
+                    catch { }
+                }
+                _discordUserQueues.Clear();
+
                 Console.WriteLine("✅ VoiceRecognizer: Stopped and released shared model reference");
             }
             catch (Exception ex)
@@ -271,8 +298,33 @@ namespace Kinectv1
                 {
                     var copy = new byte[bytesRecorded];
                     Array.Copy(audioData, copy, bytesRecorded);
-                    var queue = _discordUserQueues.GetOrAdd(source, _ => new ConcurrentQueue<(byte[], int)>());
-                    queue.Enqueue((copy, bytesRecorded));
+                    var queue = _discordUserQueues.GetOrAdd(source, _ => new BlockingCollection<(byte[], int)>(boundedCapacity: MAX_PER_USER_QUEUE_SIZE));
+                    
+                    // Backpressure: Drop oldest if queue is full
+                    if (!queue.TryAdd((copy, bytesRecorded)))
+                    {
+                        // Queue is full - implement drop policy (oldest first)
+                        if (queue.TryTake(out var oldItem))
+                        {
+                            if (queue.TryAdd((copy, bytesRecorded)))
+                            {
+                                Interlocked.Increment(ref _totalDiscordDrops);
+                                Console.WriteLine($"⚠️ Discord audio backpressure: Dropped oldest chunk from {source} (total drops: {_totalDiscordDrops})");
+                            }
+                            else
+                            {
+                                // Still couldn't add - re-add the old item back
+                                queue.TryAdd(oldItem);
+                                Interlocked.Increment(ref _totalDiscordDrops);
+                                Console.WriteLine($"⚠️ Discord audio backpressure: Failed to add new chunk for {source} (total drops: {_totalDiscordDrops})");
+                            }
+                        }
+                        else
+                        {
+                            Interlocked.Increment(ref _totalDiscordDrops);
+                            Console.WriteLine($"⚠️ Discord audio backpressure: Queue full for {source}, dropping chunk (total drops: {_totalDiscordDrops})");
+                        }
+                    }
                     return; // Let timer process per-user queues
                 }
 
@@ -294,10 +346,25 @@ namespace Kinectv1
                     }
                     else
                     {
-                        // If currently processing microphone audio, queue for later (but this should be rare)
+                        // If currently processing microphone audio, queue for later with backpressure
                         var audioCopy = new byte[bytesRecorded];
                         Array.Copy(audioData, audioCopy, bytesRecorded);
-                        _externalAudioQueue.Enqueue((audioCopy, bytesRecorded, source));
+                        
+                        // Backpressure: Drop oldest if queue is full
+                        if (!_externalAudioQueue.TryAdd((audioCopy, bytesRecorded, source)))
+                        {
+                            // Queue is full - implement drop policy (oldest first)
+                            if (_externalAudioQueue.TryTake(out var oldItem))
+                            {
+                                if (!_externalAudioQueue.TryAdd((audioCopy, bytesRecorded, source)))
+                                {
+                                    // Still couldn't add - re-add the old item back
+                                    _externalAudioQueue.TryAdd(oldItem);
+                                }
+                            }
+                            Interlocked.Increment(ref _totalAudioDrops);
+                            Console.WriteLine($"⚠️ External audio backpressure: Dropped chunk from {source} (total drops: {_totalAudioDrops})");
+                        }
                     }
                 }
             }
@@ -332,7 +399,7 @@ namespace Kinectv1
                 {
                     foreach (var kvp in _discordUserQueues)
                     {
-                        if (kvp.Value != null && !kvp.Value.IsEmpty)
+                        if (kvp.Value != null && kvp.Value.Count > 0)
                         {
                             _activeDiscordSource = kvp.Key;
                             break;
@@ -345,7 +412,7 @@ namespace Kinectv1
                 {
                     int processedForUser = 0;
                     // Process a generous batch for the active user to keep phrases intact
-                    while (!_shutdownRequested && processedForUser < 50 && userQueue.TryDequeue(out var item))
+                    while (!_shutdownRequested && processedForUser < 50 && userQueue.TryTake(out var item))
                     {
                         lock (_processingLock)
                         {
@@ -370,7 +437,7 @@ namespace Kinectv1
                     }
 
                     // If we've drained this user's queue, inject a short silence to force flush and switch users
-                    if (userQueue.IsEmpty)
+                    if (userQueue.Count == 0)
                     {
                         // Schedule a short silence injection to allow VAD flush inside VoiceProcessor
                         Task.Run(() =>
@@ -406,7 +473,7 @@ namespace Kinectv1
 
                 // 2) Fallback: Process any remaining generic external items (non-Discord)
                 int processed = 0;
-                while (!_shutdownRequested && processed < 10 && _externalAudioQueue.TryDequeue(out var audioItem))
+                while (!_shutdownRequested && processed < 10 && _externalAudioQueue.TryTake(out var audioItem))
                 {
                     lock (_processingLock)
                     {
@@ -550,6 +617,30 @@ namespace Kinectv1
             {
                 // Silently log health snapshot errors to avoid disrupting main flow
                 Console.WriteLine($"Health snapshot error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Get backpressure metrics for monitoring queue health
+        /// </summary>
+        public static (int externalQueueCount, int totalDiscordQueues, int totalDiscordItems, long totalAudioDrops, long totalDiscordDrops) GetBackpressureMetrics()
+        {
+            try
+            {
+                var externalCount = _externalAudioQueue?.Count ?? 0;
+                var discordQueueCount = _discordUserQueues.Count;
+                var totalDiscordItems = 0;
+                
+                foreach (var kvp in _discordUserQueues)
+                {
+                    totalDiscordItems += kvp.Value?.Count ?? 0;
+                }
+                
+                return (externalCount, discordQueueCount, totalDiscordItems, _totalAudioDrops, _totalDiscordDrops);
+            }
+            catch
+            {
+                return (0, 0, 0, _totalAudioDrops, _totalDiscordDrops);
             }
         }
     }
