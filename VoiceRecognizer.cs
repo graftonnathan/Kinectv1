@@ -577,6 +577,10 @@ namespace Kinectv1
                 var snapshot = Telemetry.GetSnapshot();
                 
                 // Create key counters summary for health monitoring
+                // Get backpressure metrics for telemetry
+                var backpressureMetrics = GetBackpressureMetrics();
+                var ttsMetrics = Discord.DiscordNetBotManager.GetTtsBackpressureMetrics();
+                
                 var healthData = new
                 {
                     // Discord audio processing
@@ -603,6 +607,15 @@ namespace Kinectv1
                     // ONNX session management
                     onnx_sessions_created = Telemetry.GetCounter("onnx.sessions_created"),
                     cuda_ep_fallbacks = Telemetry.GetCounter("onnx.cpu_fallbacks"),
+                    
+                    // Backpressure metrics (NEW)
+                    external_queue_count = backpressureMetrics.externalQueueCount,
+                    discord_queue_count = backpressureMetrics.totalDiscordQueues,  
+                    discord_queue_items = backpressureMetrics.totalDiscordItems,
+                    audio_drops_total = backpressureMetrics.totalAudioDrops,
+                    discord_drops_total = backpressureMetrics.totalDiscordDrops,
+                    tts_queue_count = ttsMetrics.ttsQueueCount,
+                    tts_drops_total = ttsMetrics.totalTtsDrops,
                     
                     // System health
                     microphone_enabled = _microphoneInputEnabled,
