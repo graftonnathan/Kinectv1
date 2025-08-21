@@ -177,6 +177,7 @@
 	
 	<!-- Remove legacy Coqui TTS file copies (not used with Kokoro) -->
 	<ItemGroup>
+		<None Remove="copilot-instructions.md" />
 		<None Remove="models\tts\cmudict.dict" />
 		<None Remove="models\tts\model.onnx" />
 		<None Remove="models\tts\SpeakerList.txt" />
@@ -196,7 +197,11 @@
 		</None>
 	</ItemGroup>
 	<ItemGroup>
+	  <None Include=".github\copilot-instructions.md" />
+	  <None Include=".github\workflows\agent-bridge.yml" />
+	  <None Include=".github\workflows\pr-summary.yml" />
 	  <None Include=".guidance\tasks\0000-template.yml" />
+	  <None Include=".guidance\tasks\0001-vad-dispatch-hardening.yml" />
 	</ItemGroup>
 
 	<!-- Enhanced verification with prompt files -->

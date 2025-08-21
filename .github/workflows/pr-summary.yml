@@ -1,7 +1,10 @@
-name: PR Summary
+name: PR Summary & Chat Notify
+
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+    branches:
+      - dev
 
 permissions:
   contents: read
@@ -11,34 +14,58 @@ jobs:
   summarize:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout PR HEAD
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          fetch-depth: 0      # get full history so we can diff reliably
-          ref: ${{ github.event.pull_request.head.sha }}
+          # full history so diffs work reliably
+          fetch-depth: 0
 
-      - name: Ensure base & head SHAs are present
+      - name: Create diffstat summary
         run: |
-          set -e
           BASE_SHA="${{ github.event.pull_request.base.sha }}"
-          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
-          # Fetch the exact commits in case they aren't in the local clone yet
-          git fetch --no-tags --depth=1 origin $BASE_SHA $HEAD_SHA
-
+          HEAD_SHA="${{ github.sha }}"
           echo "### Change summary" > summary.md
           echo "" >> summary.md
           echo '```' >> summary.md
-          git diff --stat --color=never "$BASE_SHA...$HEAD_SHA" >> summary.md
+          git diff --stat "$BASE_SHA" "$HEAD_SHA" >> summary.md
           echo '```' >> summary.md
           echo "" >> summary.md
           echo "### Key files touched" >> summary.md
           echo "" >> summary.md
           echo '```' >> summary.md
-          git diff --name-only "$BASE_SHA...$HEAD_SHA" >> summary.md
+          git diff --name-only "$BASE_SHA" "$HEAD_SHA" >> summary.md
           echo '```' >> summary.md
 
       - name: Post sticky comment
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           path: summary.md
+
+      - name: Post Discord notification (optional)
+        if: ${{ secrets.DISCORD_WEBHOOK_URL != '' }}
+        env:
+          WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE:  ${{ github.event.pull_request.title }}
+          PR_URL:    ${{ github.event.pull_request.html_url }}
+          ACTOR:     ${{ github.actor }}
+        run: |
+          # Trim the markdown for an embed description (Discord limit ~4096; keep it shorter)
+          SUMMARY=$(sed -n '1,80p' summary.md | sed ':a;N;$!ba;s/\n/\\n/g' | cut -c1-1800)
+
+          payload=$(cat <<EOF
+          {
+            "username": "Kinectv1 CI",
+            "embeds": [{
+              "title": "PR #${PR_NUMBER}: ${PR_TITLE}",
+              "url": "${PR_URL}",
+              "description": "${SUMMARY}",
+              "color": 5814783,
+              "footer": { "text": "by ${ACTOR}" }
+            }]
+          }
+          EOF
+          )
+
+          curl -sS -H "Content-Type: application/json" -d "$payload" "$WEBHOOK_URL"
+
 
