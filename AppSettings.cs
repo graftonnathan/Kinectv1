@@ -2006,5 +2006,213 @@ namespace Kinectv1
                 return $"ERROR: Could not load telemetry settings: {ex.Message}";
             }
         }
+
+        // ====== IDENTITY FUSION SETTINGS ======
+
+        /// <summary>
+        /// Load fusion face weight (default: 0.6)
+        /// </summary>
+        public static float LoadFusionFaceWeight()
+        {
+            try
+            {
+                var value = GetFloat("FusionFaceWeight");
+                if (value <= 0.0f || value > 1.0f)
+                {
+                    LogSettingError("FusionFaceWeight", $"OUT OF RANGE (expected 0.0-1.0, got {value})");
+                    return 0.6f; // Default face weight
+                }
+                return value;
+            }
+            catch (Exception ex)
+            {
+                LogSettingError("FusionFaceWeight", $"read FAILED: {ex.Message}");
+                return 0.6f; // Default face weight
+            }
+        }
+
+        /// <summary>
+        /// Save fusion face weight
+        /// </summary>
+        public static void SaveFusionFaceWeight(float weight)
+        {
+            try
+            {
+                var clampedWeight = Math.Max(0.0f, Math.Min(1.0f, weight));
+                SetFloat("FusionFaceWeight", clampedWeight);
+                Console.WriteLine($"Fusion: Face weight set to {clampedWeight:F2}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"ERROR: Error saving fusion face weight: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Load fusion voice weight (default: 0.4)
+        /// </summary>
+        public static float LoadFusionVoiceWeight()
+        {
+            try
+            {
+                var value = GetFloat("FusionVoiceWeight");
+                if (value <= 0.0f || value > 1.0f)
+                {
+                    LogSettingError("FusionVoiceWeight", $"OUT OF RANGE (expected 0.0-1.0, got {value})");
+                    return 0.4f; // Default voice weight
+                }
+                return value;
+            }
+            catch (Exception ex)
+            {
+                LogSettingError("FusionVoiceWeight", $"read FAILED: {ex.Message}");
+                return 0.4f; // Default voice weight
+            }
+        }
+
+        /// <summary>
+        /// Save fusion voice weight
+        /// </summary>
+        public static void SaveFusionVoiceWeight(float weight)
+        {
+            try
+            {
+                var clampedWeight = Math.Max(0.0f, Math.Min(1.0f, weight));
+                SetFloat("FusionVoiceWeight", clampedWeight);
+                Console.WriteLine($"Fusion: Voice weight set to {clampedWeight:F2}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"ERROR: Error saving fusion voice weight: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Load fusion decay half-life in milliseconds (default: 2000ms = 2 seconds)
+        /// </summary>
+        public static int LoadFusionDecayHalfLifeMs()
+        {
+            try
+            {
+                var value = GetInt("FusionDecayHalfLifeMs");
+                if (value < 500 || value > 10000)
+                {
+                    LogSettingError("FusionDecayHalfLifeMs", $"OUT OF RANGE (expected 500-10000ms, got {value})");
+                    return 2000; // Default 2 seconds
+                }
+                return value;
+            }
+            catch (Exception ex)
+            {
+                LogSettingError("FusionDecayHalfLifeMs", $"read FAILED: {ex.Message}");
+                return 2000; // Default 2 seconds
+            }
+        }
+
+        /// <summary>
+        /// Save fusion decay half-life in milliseconds
+        /// </summary>
+        public static void SaveFusionDecayHalfLifeMs(int halfLifeMs)
+        {
+            try
+            {
+                var clampedValue = Math.Max(500, Math.Min(10000, halfLifeMs));
+                SetInt("FusionDecayHalfLifeMs", clampedValue);
+                Console.WriteLine($"Fusion: Decay half-life set to {clampedValue}ms");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"ERROR: Error saving fusion decay half-life: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Load fusion unknown threshold (default: 0.3)
+        /// </summary>
+        public static float LoadFusionUnknownThreshold()
+        {
+            try
+            {
+                var value = GetFloat("FusionUnknownThreshold");
+                if (value < 0.0f || value > 1.0f)
+                {
+                    LogSettingError("FusionUnknownThreshold", $"OUT OF RANGE (expected 0.0-1.0, got {value})");
+                    return 0.3f; // Default threshold
+                }
+                return value;
+            }
+            catch (Exception ex)
+            {
+                LogSettingError("FusionUnknownThreshold", $"read FAILED: {ex.Message}");
+                return 0.3f; // Default threshold
+            }
+        }
+
+        /// <summary>
+        /// Save fusion unknown threshold
+        /// </summary>
+        public static void SaveFusionUnknownThreshold(float threshold)
+        {
+            try
+            {
+                var clampedThreshold = Math.Max(0.0f, Math.Min(1.0f, threshold));
+                SetFloat("FusionUnknownThreshold", clampedThreshold);
+                Console.WriteLine($"Fusion: Unknown threshold set to {clampedThreshold:F2}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"ERROR: Error saving fusion unknown threshold: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Configure fusion settings all at once
+        /// </summary>
+        public static void ConfigureFusionSettings(float faceWeight = 0.6f, float voiceWeight = 0.4f, int halfLifeMs = 2000, float unknownThreshold = 0.3f)
+        {
+            try
+            {
+                SaveFusionFaceWeight(faceWeight);
+                SaveFusionVoiceWeight(voiceWeight);
+                SaveFusionDecayHalfLifeMs(halfLifeMs);
+                SaveFusionUnknownThreshold(unknownThreshold);
+
+                Console.WriteLine($"🔀 Identity Fusion settings configured:");
+                Console.WriteLine($"   Face weight: {faceWeight:F2}");
+                Console.WriteLine($"   Voice weight: {voiceWeight:F2}");
+                Console.WriteLine($"   Decay half-life: {halfLifeMs}ms");
+                Console.WriteLine($"   Unknown threshold: {unknownThreshold:F2}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"ERROR: Error configuring fusion settings: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Get fusion settings summary
+        /// </summary>
+        public static string GetFusionSettingsSummary()
+        {
+            try
+            {
+                var faceWeight = LoadFusionFaceWeight();
+                var voiceWeight = LoadFusionVoiceWeight();
+                var halfLifeMs = LoadFusionDecayHalfLifeMs();
+                var unknownThreshold = LoadFusionUnknownThreshold();
+
+                return $"🔀 Identity Fusion Settings:\n" +
+                       $"   Face weight: {faceWeight:F2}\n" +
+                       $"   Voice weight: {voiceWeight:F2}\n" +
+                       $"   Decay half-life: {halfLifeMs}ms\n" +
+                       $"   Unknown threshold: {unknownThreshold:F2}\n" +
+                       $"   Fusion formula: (face*{faceWeight:F1} + voice*{voiceWeight:F1}) / {faceWeight + voiceWeight:F1}\n" +
+                       $"   Time decay: score *= exp(-dt/{halfLifeMs}ms)";
+            }
+            catch (Exception ex)
+            {
+                return $"ERROR: Could not load fusion settings: {ex.Message}";
+            }
+        }
     }
 }

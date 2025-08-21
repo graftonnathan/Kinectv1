@@ -103,6 +103,12 @@ namespace Kinectv1
                     (speaker, score) =>
                     {
                         Console.WriteLine($"🎤 Matched speaker: {speaker} (score={score:F3})");
+                        
+                        // Update identity fusion tracker with voice recognition
+                        // For now, we don't have direct tracking ID association, so pass null
+                        // The fusion tracker will handle proximity matching
+                        IdentityFusionTracker.UpdateVoice(null, speaker, score);
+                        
                         OnSpeakerMatch?.Invoke(speaker, score);
                     },
                     triggerName,

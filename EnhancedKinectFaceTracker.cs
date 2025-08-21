@@ -540,6 +540,10 @@ public static class EnhancedKinectFaceTracker
                         lock (_faceDataLock)
                         {
                             _recognitionResults[trackingId] = (_pendingLabelName, 1.0f, DateTime.UtcNow);
+                            
+                            // Update identity fusion tracker with enrollment
+                            IdentityFusionTracker.UpdateFace(trackingId, _pendingLabelName, 1.0f);
+                            
                             Console.WriteLine($"TrackingID {trackingId} immediately identified as '{_pendingLabelName}' after enrollment");
                         }
                     }
@@ -631,6 +635,9 @@ public static class EnhancedKinectFaceTracker
                         if (shouldUpdate)
                         {
                             _recognitionResults[trackingId] = (maybeKnown.Value.name, maybeKnown.Value.score, DateTime.UtcNow);
+                            
+                            // Update identity fusion tracker with face recognition
+                            IdentityFusionTracker.UpdateFace(trackingId, maybeKnown.Value.name, maybeKnown.Value.score);
                             
                             // Include emotion in the identification log
                             string emotionInfo = "";
