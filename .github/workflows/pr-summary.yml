@@ -20,13 +20,13 @@ jobs:
           echo "### Change summary" > summary.md
           echo "" >> summary.md
           echo '```' >> summary.md
-          git diff --stat origin/${{ github.base_ref }}...HEAD >> summary.md
+          git diff --stat master/${{ github.base_ref }}...HEAD >> summary.md
           echo '```' >> summary.md
           echo "" >> summary.md
           echo "### Key files touched" >> summary.md
           echo "" >> summary.md
           echo '```' >> summary.md
-          git diff --name-only origin/${{ github.base_ref }}...HEAD >> summary.md
+          git diff --name-only master/${{ github.base_ref }}...HEAD >> summary.md
           echo '```' >> summary.md
 
       - name: Post sticky comment
