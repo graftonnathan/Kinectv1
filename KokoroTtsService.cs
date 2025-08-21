@@ -1022,14 +1022,22 @@ namespace Kinectv1
 
         public static IEnumerable<float[]> GenerateAudioSegments(string text, string voiceKey)
         {
+            return GenerateAudioSegments(text, voiceKey, CancellationToken.None);
+        }
+
+        public static IEnumerable<float[]> GenerateAudioSegments(string text, string voiceKey, CancellationToken cancellationToken)
+        {
             if (!_initialized && !Initialize()) yield break;
             if (string.IsNullOrWhiteSpace(text)) yield break;
             var vk = (!string.IsNullOrWhiteSpace(voiceKey) && _voiceFiles.ContainsKey(voiceKey)) ? voiceKey : _defaultVoiceKey;
 
+            cancellationToken.ThrowIfCancellationRequested();
             var segments = BuildSegments(text);
 
             foreach (var seg in segments)
             {
+                cancellationToken.ThrowIfCancellationRequested();
+
                 if (seg.IsBreak)
                 {
                     var ms = Math.Max(0, seg.BreakMs);
@@ -1041,9 +1049,13 @@ namespace Kinectv1
                 var sentence = seg.Text;
                 if (string.IsNullOrWhiteSpace(sentence)) continue;
 
+                cancellationToken.ThrowIfCancellationRequested();
+
                 EnsureIpaService();
                 var ipa = RunEspeak(sentence);
                 if (string.IsNullOrWhiteSpace(ipa)) continue;
+
+                cancellationToken.ThrowIfCancellationRequested();
 
                 var ids = MapIpaToIds(ipa, 512);
                 if (ids == null || ids.Length < 2) continue;
@@ -1059,12 +1071,15 @@ namespace Kinectv1
                 var speedTensor = new DenseTensor<float>(new[] { 1 });
                 speedTensor[0] = _speed;
 
+                cancellationToken.ThrowIfCancellationRequested();
+
                 float[] audio = null;
                 bool ok = TryRunModel(inputIds, styleTensor, speedTensor, out audio);
 
                 if (EnableCpuSegmentRetry && _usingGpu && (!ok || audio == null || audio.Length == 0 || IsDegenerateAudio(audio)))
                 {
                     Console.WriteLine("[Kokoro] GPU segment produced degenerate/empty audio - retrying segment on CPU without switching session");
+                    Telemetry.Counter("tts.gpu_fallbacks");
                     EnsureCpuSession();
                     if (_cpuSession != null)
                     {
@@ -1072,7 +1087,13 @@ namespace Kinectv1
                     }
                 }
 
-                if (!ok || audio == null || audio.Length == 0) continue;
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (!ok || audio == null || audio.Length == 0) 
+                {
+                    Telemetry.Counter("tts.generation_failures");
+                    continue;
+                }
 
                 // Reduce punctuation pause by trimming tail silence
                 audio = TrimTrailingSilence(audio, _nativeSampleRate, threshold: 0.003f, leaveMs: 6, maxTrimMs: 800);

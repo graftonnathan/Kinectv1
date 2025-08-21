@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using NAudio.Wave;
 using System.Text.RegularExpressions;
@@ -44,24 +45,40 @@ namespace Kinectv1
         /// </summary>
         public static async Task<bool> SpeakAsync(string text, string speakerName = null)
         {
+            return await SpeakAsync(text, speakerName, CancellationToken.None);
+        }
+
+        /// <summary>
+        /// Convert text to speech and play it with cancellation support
+        /// </summary>
+        public static async Task<bool> SpeakAsync(string text, string speakerName = null, CancellationToken cancellationToken = default)
+        {
             try
             {
                 if (!IsEnabled() || string.IsNullOrWhiteSpace(text)) return false;
 
+                cancellationToken.ThrowIfCancellationRequested();
                 OnTtsSpeakingStarted?.Invoke(text);
 
                 var voiceKey = speakerName ?? _currentSpeaker ?? AppSettings.LoadTtsSpeaker();
 
-                // Generate audio using KokoroTtsService
-                var audio = await Task.Run(() => KokoroTtsService.GenerateAudio(text, voiceKey));
+                // Generate audio using KokoroTtsService with cancellation support
+                var audio = await Task.Run(() => KokoroTtsService.GenerateAudio(text, voiceKey), cancellationToken);
                 
                 if (audio == null || audio.Length == 0) { OnTtsError?.Invoke("Kokoro returned empty audio"); return false; }
 
-                // Play the generated audio at native sample rate
-                await AudioDeviceManager.PlayLocallyAsync(audio, KokoroTtsService.GetSampleRate());
+                cancellationToken.ThrowIfCancellationRequested();
+
+                // Play the generated audio at native sample rate with cancellation support
+                await AudioDeviceManager.PlayLocallyAsync(audio, KokoroTtsService.GetSampleRate(), cancellationToken);
 
                 OnTtsSpeakingFinished?.Invoke();
                 return true;
+            }
+            catch (OperationCanceledException)
+            {
+                // Clean cancellation - don't call OnTtsError for cancellation
+                return false;
             }
             catch (Exception ex)
             {
@@ -143,12 +160,15 @@ namespace Kinectv1
         /// <summary>
         /// Stop current audio playback if playing
         /// </summary>
-        public static void StopCurrentPlayback() { /* playback handled by AudioDeviceManager */ }
+        public static void StopCurrentPlayback() 
+        { 
+            TtsPlaybackController.CancelCurrent();
+        }
 
         /// <summary>
         /// Check if TTS is currently playing audio
         /// </summary>
-        public static bool IsCurrentlyPlaying() => false;
+        public static bool IsCurrentlyPlaying() => TtsPlaybackController.HasActiveUtterance();
 
         /// <summary>
         /// Get current local TTS volume (0.0 to 1.0)
@@ -205,27 +225,61 @@ namespace Kinectv1
         /// </summary>
         public static async Task<bool> SpeakStreamingAsync(string text, string speakerName = null)
         {
+            return await SpeakStreamingAsync(text, speakerName, CancellationToken.None);
+        }
+
+        /// <summary>
+        /// Convert text to speech and play it with reduced latency by streaming segments with cancellation support
+        /// </summary>
+        public static async Task<bool> SpeakStreamingAsync(string text, string speakerName = null, CancellationToken cancellationToken = default)
+        {
             try
             {
                 if (!IsEnabled() || string.IsNullOrWhiteSpace(text)) return false;
+
+                cancellationToken.ThrowIfCancellationRequested();
                 OnTtsSpeakingStarted?.Invoke(text);
 
                 var voiceKey = speakerName ?? _currentSpeaker ?? AppSettings.LoadTtsSpeaker();
 
-                foreach (var segment in KokoroTtsService.GenerateAudioSegments(text, voiceKey))
+                foreach (var segment in KokoroTtsService.GenerateAudioSegments(text, voiceKey, cancellationToken))
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     if (segment == null || segment.Length == 0) continue;
-                    await AudioDeviceManager.PlayLocallyAsync(segment, KokoroTtsService.GetSampleRate());
+                    await AudioDeviceManager.PlayLocallyAsync(segment, KokoroTtsService.GetSampleRate(), cancellationToken);
                 }
 
                 OnTtsSpeakingFinished?.Invoke();
                 return true;
+            }
+            catch (OperationCanceledException)
+            {
+                // Clean cancellation - don't call OnTtsError for cancellation
+                return false;
             }
             catch (Exception ex)
             {
                 OnTtsError?.Invoke(ex.Message);
                 return false;
             }
+        }
+
+        /// <summary>
+        /// Convert text to speech and play it with automatic preemption of any current utterance.
+        /// This method uses TtsPlaybackController to ensure robust interrupt/flush semantics.
+        /// </summary>
+        public static async Task<bool> SpeakWithPreemptionAsync(string text, string speakerName = null)
+        {
+            return await TtsPlaybackController.StartUtterance(text, speakerName, SpeakAsync);
+        }
+
+        /// <summary>
+        /// Convert text to speech and play it with streaming and automatic preemption of any current utterance.
+        /// This method uses TtsPlaybackController to ensure robust interrupt/flush semantics.
+        /// </summary>
+        public static async Task<bool> SpeakStreamingWithPreemptionAsync(string text, string speakerName = null)
+        {
+            return await TtsPlaybackController.StartUtterance(text, speakerName, SpeakStreamingAsync);
         }
     }
 }
