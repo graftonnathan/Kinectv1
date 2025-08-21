@@ -19,6 +19,7 @@ namespace Kinectv1
         // Thread-safe audio queue for external sources (like Discord)
         private static readonly ConcurrentQueue<(byte[] data, int length, string source)> _externalAudioQueue = new ConcurrentQueue<(byte[], int, string)>();
         private static readonly Timer _audioProcessingTimer;
+        private static readonly Timer _healthSnapshotTimer; // NEW: Periodic health snapshots
         private static readonly object _processingLock = new object();
         private static volatile bool _isProcessing = false;
         private static volatile bool _shutdownRequested = false; // NEW: prevent processing during shutdown
@@ -48,6 +49,9 @@ namespace Kinectv1
         {
             // Faster timer for any remaining queued items (immediate processing is primary path)
             _audioProcessingTimer = new Timer(ProcessExternalAudioQueue, null, TimeSpan.FromMilliseconds(5), TimeSpan.FromMilliseconds(5));
+            
+            // Health snapshot timer (every 5 seconds)
+            _healthSnapshotTimer = new Timer(EmitHealthSnapshot, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
         }
 
         public static void Start(string modelPath, string triggerName = "john")
@@ -493,6 +497,60 @@ namespace Kinectv1
         public static bool IsDiscordInputEnabled()
         {
             return _discordInputEnabled;
+        }
+
+        /// <summary>
+        /// Emit periodic health snapshot for telemetry monitoring
+        /// </summary>
+        private static void EmitHealthSnapshot(object state)
+        {
+            try
+            {
+                // Get telemetry snapshot
+                var snapshot = Telemetry.GetSnapshot();
+                
+                // Create key counters summary for health monitoring
+                var healthData = new
+                {
+                    // Discord audio processing
+                    chunks_processed = Telemetry.GetCounter("discord_audio.chunks_processed"),
+                    drop_count = Telemetry.GetCounter("discord_audio.null_input") + Telemetry.GetCounter("discord_audio.oversized_chunks"),
+                    clip_count = Telemetry.GetCounter("discord_audio.clip_count"),
+                    
+                    // ASR processing
+                    asr_final_ms = Telemetry.GetCounter("asr_final.count") > 0 
+                        ? Telemetry.GetAccumulator("asr_final.total_ms") / Telemetry.GetCounter("asr_final.count")
+                        : 0,
+                    asr_partial_count = Telemetry.GetCounter("asr.partial_results"),
+                    asr_final_count = Telemetry.GetCounter("asr.final_results"),
+                    debounce_skips = Telemetry.GetCounter("asr.debounce_skips"),
+                    final_flushes = Telemetry.GetCounter("asr.final_flushes"),
+                    
+                    // TTS processing
+                    tts_generate_ms = Telemetry.GetCounter("tts_generate.count") > 0 
+                        ? Telemetry.GetAccumulator("tts_generate.total_ms") / Telemetry.GetCounter("tts_generate.count")
+                        : 0,
+                    tts_segments = Telemetry.GetCounter("tts.segments_processed"),
+                    tts_requests = Telemetry.GetCounter("tts.generate_requests"),
+                    
+                    // ONNX session management
+                    onnx_sessions_created = Telemetry.GetCounter("onnx.sessions_created"),
+                    cuda_ep_fallbacks = Telemetry.GetCounter("onnx.cpu_fallbacks"),
+                    
+                    // System health
+                    microphone_enabled = _microphoneInputEnabled,
+                    discord_enabled = _discordInputEnabled,
+                    processing_active = _isProcessing,
+                    model_loaded = _recognizer != null
+                };
+
+                Telemetry.Event("health.snapshot", healthData);
+            }
+            catch (Exception ex)
+            {
+                // Silently log health snapshot errors to avoid disrupting main flow
+                Console.WriteLine($"Health snapshot error: {ex.Message}");
+            }
         }
     }
 }

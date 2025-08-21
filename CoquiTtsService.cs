@@ -75,10 +75,18 @@ namespace Kinectv1
         /// </summary>
         public static async Task<float[]> GenerateAudioDataAsync(string text, string speakerName = null)
         {
-            if (!IsEnabled() || string.IsNullOrWhiteSpace(text)) return Array.Empty<float>();
+            using (var scope = Telemetry.LatencyScope("coqui_tts_generate"))
+            {
+                if (!IsEnabled() || string.IsNullOrWhiteSpace(text)) 
+                {
+                    Telemetry.Counter("coqui_tts.disabled_or_empty");
+                    return Array.Empty<float>();
+                }
 
-            var voiceKey = speakerName ?? _currentSpeaker ?? AppSettings.LoadTtsSpeaker();
-            return await Task.Run(() => KokoroTtsService.GenerateAudio(text, voiceKey));
+                Telemetry.Counter("coqui_tts.generate_requests");
+                var voiceKey = speakerName ?? _currentSpeaker ?? AppSettings.LoadTtsSpeaker();
+                return await Task.Run(() => KokoroTtsService.GenerateAudio(text, voiceKey));
+            }
         }
 
         /// <summary>

@@ -208,6 +208,7 @@ namespace Kinectv1
                         var timeSinceLastFinalResult = DateTime.UtcNow - _lastFinalResultTime;
                         if (timeSinceLastFinalResult < _vadDebounceTimeout)
                         {
+                            Telemetry.Counter("asr.debounce_skips");
                             if (_confidenceLoggingEnabled)
                             {
                                 Console.WriteLine($"?? VAD debounce: Skipping FinalResult (last was {timeSinceLastFinalResult.TotalMilliseconds:F0}ms ago, debounce: {_vadDebounceTimeout.TotalMilliseconds:F0}ms)");
@@ -216,6 +217,7 @@ namespace Kinectv1
                             return;
                         }
                         
+                        Telemetry.Counter("asr.final_flushes");
                         var flush = _recognizer.FinalResult();
                         var result = ParseVoskResult(flush);
                         
@@ -717,48 +719,61 @@ namespace Kinectv1
 
         private void ProcessFinalResult(VoskResult result)
         {
-            string text = result.Text.Trim();
-            _onTranscription?.Invoke(text);
-            TriggerHandler.TryTrigger(text, _triggerName);
-            _lastTranscription = text;
-            _pendingTranscription = text;
-            _lastTranscriptionTime = DateTime.UtcNow;
-            
-            _transcriptionHistory.Add($"{DateTime.UtcNow:HH:mm:ss.fff}: FINAL '{text}' (conf: {result.Confidence:F2})");
-            if (_transcriptionHistory.Count > 10) _transcriptionHistory.RemoveAt(0);
-            
-            if (_confidenceLoggingEnabled)
+            using (var scope = Telemetry.LatencyScope("asr_final"))
             {
-                Console.WriteLine($"?? ?? Final transcription: '{text}' (confidence: {result.Confidence:F2})");
-            }
-            
-            // NEW: Use centralized dispatch system
-            TryDispatchToOllama(text, "ProcessFinalResult");
-        }
-
-        private void ProcessPartialResult(string partial)
-        {
-            _onTranscription?.Invoke(partial);
-            TriggerHandler.TryTrigger(partial, _triggerName);
-            
-            // Don't overwrite full transcription with partial, but update if we have nothing
-            if (string.IsNullOrWhiteSpace(_lastTranscription))
-            {
-                _lastTranscription = partial;
-            }
-            
-            // Always update pending transcription with latest partial if it's longer
-            if (string.IsNullOrWhiteSpace(_pendingTranscription) || partial.Length > _pendingTranscription.Length)
-            {
-                _pendingTranscription = partial;
+                string text = result.Text.Trim();
+                _onTranscription?.Invoke(text);
+                TriggerHandler.TryTrigger(text, _triggerName);
+                _lastTranscription = text;
+                _pendingTranscription = text;
                 _lastTranscriptionTime = DateTime.UtcNow;
                 
-                _transcriptionHistory.Add($"{DateTime.UtcNow:HH:mm:ss.fff}: PARTIAL '{partial}'");
+                // Track ASR results
+                Telemetry.Counter("asr.final_results");
+                Telemetry.Accumulator("asr.final_confidence_total", result.Confidence);
+                
+                _transcriptionHistory.Add($"{DateTime.UtcNow:HH:mm:ss.fff}: FINAL '{text}' (conf: {result.Confidence:F2})");
                 if (_transcriptionHistory.Count > 10) _transcriptionHistory.RemoveAt(0);
                 
                 if (_confidenceLoggingEnabled)
                 {
-                    Console.WriteLine($"?? ?? Partial transcription: '{partial}' (timestamp: {DateTime.UtcNow:HH:mm:ss.fff})");
+                    Console.WriteLine($"?? ?? Final transcription: '{text}' (confidence: {result.Confidence:F2})");
+                }
+                
+                // NEW: Use centralized dispatch system
+                TryDispatchToOllama(text, "ProcessFinalResult");
+            }
+        }
+
+        private void ProcessPartialResult(string partial)
+        {
+            using (var scope = Telemetry.LatencyScope("asr_partial"))
+            {
+                _onTranscription?.Invoke(partial);
+                TriggerHandler.TryTrigger(partial, _triggerName);
+                
+                // Track partial results
+                Telemetry.Counter("asr.partial_results");
+                
+                // Don't overwrite full transcription with partial, but update if we have nothing
+                if (string.IsNullOrWhiteSpace(_lastTranscription))
+                {
+                    _lastTranscription = partial;
+                }
+                
+                // Always update pending transcription with latest partial if it's longer
+                if (string.IsNullOrWhiteSpace(_pendingTranscription) || partial.Length > _pendingTranscription.Length)
+                {
+                    _pendingTranscription = partial;
+                    _lastTranscriptionTime = DateTime.UtcNow;
+                    
+                    _transcriptionHistory.Add($"{DateTime.UtcNow:HH:mm:ss.fff}: PARTIAL '{partial}'");
+                    if (_transcriptionHistory.Count > 10) _transcriptionHistory.RemoveAt(0);
+                    
+                    if (_confidenceLoggingEnabled)
+                    {
+                        Console.WriteLine($"?? ?? Partial transcription: '{partial}' (timestamp: {DateTime.UtcNow:HH:mm:ss.fff})");
+                    }
                 }
             }
         }

@@ -138,62 +138,76 @@ namespace Kinectv1
 
         public static InferenceSession Create(string modelPath, bool requestedGpu, out bool usingGpu)
         {
-            usingGpu = false;
-            PreloadOrtNative();
-            var so = new SessionOptions { GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_EXTENDED };
-            try { so.LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_VERBOSE; } catch { }
-
-            if (requestedGpu)
+            using (var scope = Telemetry.LatencyScope("onnx_session_create", emitEvent: true))
             {
-                try
+                usingGpu = false;
+                PreloadOrtNative();
+                var so = new SessionOptions { GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_EXTENDED };
+                try { so.LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_VERBOSE; } catch { }
+
+                Telemetry.Counter("onnx.session_create_requests");
+
+                if (requestedGpu)
                 {
-                    if (HasOrtExport("OrtSessionOptionsAppendExecutionProvider_CUDA") && IsCudaProviderAvailable())
+                    try
                     {
-                        int deviceId = AppSettings.LoadTtsGpuDeviceId();
-#if NETFRAMEWORK
-                        if (deviceId > 0) so.AppendExecutionProvider_CUDA(deviceId); else so.AppendExecutionProvider_CUDA();
-#else
-                        if (deviceId > 0)
+                        if (HasOrtExport("OrtSessionOptionsAppendExecutionProvider_CUDA") && IsCudaProviderAvailable())
                         {
-                            using var cudaOpts = SessionOptions.MakeSessionOptionWithCudaProvider(deviceId);
-                            so = cudaOpts;
+                            int deviceId = AppSettings.LoadTtsGpuDeviceId();
+#if NETFRAMEWORK
+                            if (deviceId > 0) so.AppendExecutionProvider_CUDA(deviceId); else so.AppendExecutionProvider_CUDA();
+#else
+                            if (deviceId > 0)
+                            {
+                                using var cudaOpts = SessionOptions.MakeSessionOptionWithCudaProvider(deviceId);
+                                so = cudaOpts;
+                            }
+                            else
+                            {
+                                so.AppendExecutionProvider_CUDA();
+                            }
+#endif
+                            usingGpu = true;
+                            Telemetry.Counter("onnx.cuda_ep_success");
+                            Console.WriteLine("[Onnx] EP: CUDA (GPU)");
                         }
                         else
                         {
-                            so.AppendExecutionProvider_CUDA();
+                            Telemetry.Counter("onnx.cuda_ep_unavailable");
+                            Console.WriteLine("[Onnx] CUDA EP not available or provider DLLs missing - skipping CUDA");
                         }
-#endif
-                        usingGpu = true;
-                        Console.WriteLine("[Onnx] EP: CUDA (GPU)");
                     }
-                    else
+                    catch (EntryPointNotFoundException) 
                     {
-                        Console.WriteLine("[Onnx] CUDA EP not available or provider DLLs missing - skipping CUDA");
+                        Telemetry.Counter("onnx.cuda_ep_entry_point_not_found");
+                    }
+                    catch (OnnxRuntimeException orex)
+                    {
+                        Telemetry.Counter("onnx.cuda_ep_runtime_error");
+                        Console.WriteLine($"[Onnx] CUDA EP load failed: {orex.Message}");
+                    }
+                    catch (Exception ex)
+                    {
+                        Telemetry.Counter("onnx.cuda_ep_unexpected_error");
+                        Console.WriteLine($"[Onnx] CUDA EP unexpected error: {ex.Message}");
                     }
                 }
-                catch (EntryPointNotFoundException) { }
-                catch (OnnxRuntimeException orex)
-                {
-                    Console.WriteLine($"[Onnx] CUDA EP load failed: {orex.Message}");
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"[Onnx] CUDA EP unexpected error: {ex.Message}");
-                }
-            }
 
-            if (!usingGpu)
-            {
-                try { so.AppendExecutionProvider_CPU(0); Console.WriteLine("[Onnx] EP: CPU"); } catch { }
-            }
+                if (!usingGpu)
+                {
+                    Telemetry.Counter("onnx.cpu_fallbacks");
+                    try { so.AppendExecutionProvider_CPU(0); Console.WriteLine("[Onnx] EP: CPU"); } catch { }
+                }
 
-            var session = new InferenceSession(modelPath, so);
-            try
-            {
-                Console.WriteLine("[Onnx] Session created.");
+                var session = new InferenceSession(modelPath, so);
+                try
+                {
+                    Telemetry.Counter("onnx.sessions_created");
+                    Console.WriteLine("[Onnx] Session created.");
+                }
+                catch { }
+                return session;
             }
-            catch { }
-            return session;
         }
     }
 }
