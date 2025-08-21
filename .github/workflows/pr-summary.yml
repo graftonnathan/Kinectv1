@@ -1,36 +1,87 @@
-      - name: Notify Discord (only if webhook is configured)
-        env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+name: PR Summary
+
+on:
+  pull_request:
+    branches: [dev]
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  summarize:
+    runs-on: ubuntu-latest
+    env:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine base/head SHAs and fetch base
+        id: shas
+        if: github.event_name == 'pull_request'
         run: |
           set -euo pipefail
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          echo "base=$BASE_SHA" >> "$GITHUB_OUTPUT"
+          echo "head=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          git fetch --no-tags --prune --depth=1 origin "$BASE_SHA"
 
-          if [ -z "${DISCORD_WEBHOOK_URL:-}" ]; then
-            echo "No DISCORD_WEBHOOK_URL set; skipping Discord notification."
-            exit 0
-          fi
+      - name: Build diffstat summary
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          BASE="${{ steps.shas.outputs.base }}"
+          HEAD="${{ steps.shas.outputs.head }}"
+          {
+            echo '### Change summary'
+            echo
+            echo '```diff'
+            git diff --stat "$BASE...$HEAD" || true
+            echo '```'
+            echo
+            echo '### Files touched'
+            echo
+            echo '```'
+            git diff --name-only "$BASE...$HEAD" || true
+            echo '```'
+          } > summary.md
+          echo "--- summary.md ---"
+          cat summary.md
 
+      - name: Post/update sticky PR comment
+        if: github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          path: summary.md
+
+      - name: Notify Discord (if webhook configured)
+        if: github.event_name == 'pull_request' && env.DISCORD_WEBHOOK_URL != ''
+        run: |
+          set -euo pipefail
           REPO="${{ github.repository }}"
           NUMBER="${{ github.event.pull_request.number }}"
           TITLE="${{ github.event.pull_request.title }}"
           URL="${{ github.event.pull_request.html_url }}"
           ACTOR="${{ github.actor }}"
-          BASE="${{ github.event.pull_request.base.ref }}"
+          BASE_REF="${{ github.event.pull_request.base.ref }}"
 
-          # Build a single-line/safe multi-line message in bash (no YAML quoting issues)
-          MSG=$(printf '[%s] PR #%s → %s by @%s\n%s\n%s\n' \
-                "$REPO" "$NUMBER" "$BASE" "$ACTOR" "$TITLE" "$URL")
+          MSG=$(printf '[%s] PR #%s -> %s by @%s\n%s\n%s\n' \
+                "$REPO" "$NUMBER" "$BASE_REF" "$ACTOR" "$TITLE" "$URL")
 
-          # Make MSG visible to the Python process
-          export MSG
-
-          # Create JSON payload without jq
-          python - <<'PY'
-import json, os
-content = os.environ.get("MSG","")
-with open("payload.json","w", encoding="utf-8") as f:
-    f.write(json.dumps({"content": content}))
-PY
+          # Encode message to JSON safely (jq is available on ubuntu-latest)
+          echo "$MSG" | jq -Rs '{content: .}' > payload.json
 
           curl -sS -X POST -H "Content-Type: application/json" \
-            --data-binary @payload.json \
-            "$DISCORD_WEBHOOK_URL" || echo "Discord post failed (non-blocking)."
+               --data-binary @payload.json \
+               "$DISCORD_WEBHOOK_URL" || echo "Discord post failed (non-blocking)."
+
+      - name: Manual run note
+        if: github.event_name != 'pull_request'
+        run: echo "This workflow only acts on pull_request events."
