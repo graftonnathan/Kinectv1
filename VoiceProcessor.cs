@@ -19,7 +19,9 @@ namespace Kinectv1
         private readonly Action<float[]> _onVoiceEmbedding;
         private readonly string _triggerName;
         private DateTime _lastVoiceTime = DateTime.UtcNow;
-        private TimeSpan _silenceTimeout = TimeSpan.FromMilliseconds(150);
+        private TimeSpan _silenceTimeout;
+        private TimeSpan _vadDebounceTimeout;
+        private DateTime _lastFinalResultTime = DateTime.MinValue;
         private readonly List<float> _pcmBuffer = new List<float>();
         private string _lastTranscription = string.Empty;
         private string _pendingTranscription = string.Empty; // Store transcription for Ollama
@@ -64,6 +66,12 @@ namespace Kinectv1
             var bufferSize = AppSettings.LoadVoiceConfidenceBufferSize();
             _lowConfidenceBuffer = new Queue<VoskResult>(bufferSize);
             
+            // Load configurable VAD settings
+            var silenceTimeoutMs = AppSettings.LoadVadSilenceTimeoutMs();
+            var debounceTimeoutMs = AppSettings.LoadVadDebounceTimeoutMs();
+            _silenceTimeout = TimeSpan.FromMilliseconds(silenceTimeoutMs);
+            _vadDebounceTimeout = TimeSpan.FromMilliseconds(debounceTimeoutMs);
+            
             Console.WriteLine($"?? VoiceProcessor initialized with confidence settings:");
             Console.WriteLine($"   Confidence threshold: {_confidenceThreshold:F2}");
             Console.WriteLine($"   High confidence threshold: {_highConfidenceThreshold:F2}");
@@ -71,6 +79,9 @@ namespace Kinectv1
             Console.WriteLine($"   Logging enabled: {_confidenceLoggingEnabled}");
             Console.WriteLine($"   Microphone RMS callback: {(_onRmsLevel != null ? "Connected" : "Not connected")}");
             Console.WriteLine($"   Discord RMS callback: {(_onDiscordRmsLevel != null ? "Connected" : "Not connected")}");
+            Console.WriteLine($"?? VAD settings:");
+            Console.WriteLine($"   Silence timeout: {silenceTimeoutMs}ms");
+            Console.WriteLine($"   Debounce timeout: {debounceTimeoutMs}ms");
         }
 
         /// <summary>
@@ -193,8 +204,23 @@ namespace Kinectv1
                 {
                     if (DateTime.UtcNow - _lastVoiceTime > _silenceTimeout)
                     {
+                        // NEW: VAD debouncing to prevent double FinalResult flush
+                        var timeSinceLastFinalResult = DateTime.UtcNow - _lastFinalResultTime;
+                        if (timeSinceLastFinalResult < _vadDebounceTimeout)
+                        {
+                            if (_confidenceLoggingEnabled)
+                            {
+                                Console.WriteLine($"?? VAD debounce: Skipping FinalResult (last was {timeSinceLastFinalResult.TotalMilliseconds:F0}ms ago, debounce: {_vadDebounceTimeout.TotalMilliseconds:F0}ms)");
+                            }
+                            _lastVoiceTime = DateTime.UtcNow; // Reset silence timer
+                            return;
+                        }
+                        
                         var flush = _recognizer.FinalResult();
                         var result = ParseVoskResult(flush);
+                        
+                        // Update the debounce timer regardless of result quality
+                        _lastFinalResultTime = DateTime.UtcNow;
                         
                         if (result != null && !string.IsNullOrWhiteSpace(result.Text))
                         {
@@ -750,24 +776,29 @@ namespace Kinectv1
                 // Check if this transcription was already processed
                 if (_processedTranscriptions.Contains(transcription))
                 {
+                    Console.WriteLine($"?? DUPLICATE BLOCKED: '{transcription}' from {source} (already processed)");
                     return;
                 }
 
                 // Check if another dispatch is in progress
                 if (_ollamaDispatchInProgress)
                 {
+                    Console.WriteLine($"?? DISPATCH BLOCKED: '{transcription}' from {source} (dispatch in progress)");
                     return;
                 }
 
                 // Check if Ollama is enabled
                 if (!OllamaService.IsEnabled())
                 {
+                    Console.WriteLine($"?? DISPATCH SKIPPED: '{transcription}' from {source} (Ollama disabled)");
                     return;
                 }
 
                 // Mark as processed and set dispatch flag
                 _processedTranscriptions.Add(transcription);
                 _ollamaDispatchInProgress = true;
+                
+                Console.WriteLine($"?? DISPATCHING: '{transcription}' from {source} (#{_processedTranscriptions.Count} unique transcriptions)");
 
                 // Clear old processed transcriptions to prevent memory leaks (keep only recent 10)
                 if (_processedTranscriptions.Count > 10)
