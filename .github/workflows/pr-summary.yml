@@ -1,10 +1,10 @@
-name: PR Summary & Chat Notify
+name: PR Summary
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, edited]
-    branches:
-      - dev
+    branches: [dev]
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch: {}
 
 permissions:
   contents: read
@@ -13,26 +13,39 @@ permissions:
 jobs:
   summarize:
     runs-on: ubuntu-latest
+    env:
+      # Expose the secret as an env var; we will check it in the step script.
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+
     steps:
+      - name: Debug event
+        run: |
+          echo "event_name=${{ github.event_name }}"
+          echo "base_ref=${{ github.base_ref }}"
+          echo "head_ref=${{ github.head_ref }}"
+          echo "ref=${{ github.ref }}"
+
       - uses: actions/checkout@v4
         with:
-          # full history so diffs work reliably
-          fetch-depth: 0
+          fetch-depth: 0   # we need full history to diff against base
+
+      - name: Ensure base ref is available
+        run: |
+          git fetch origin "${{ github.base_ref }}:${{ github.base_ref }}" || \
+          git fetch origin "${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
 
       - name: Create diffstat summary
         run: |
-          BASE_SHA="${{ github.event.pull_request.base.sha }}"
-          HEAD_SHA="${{ github.sha }}"
           echo "### Change summary" > summary.md
           echo "" >> summary.md
           echo '```' >> summary.md
-          git diff --stat "$BASE_SHA" "$HEAD_SHA" >> summary.md
+          git diff --stat "origin/${{ github.base_ref }}...HEAD" >> summary.md
           echo '```' >> summary.md
           echo "" >> summary.md
-          echo "### Key files touched" >> summary.md
+          echo "### Files touched" >> summary.md
           echo "" >> summary.md
           echo '```' >> summary.md
-          git diff --name-only "$BASE_SHA" "$HEAD_SHA" >> summary.md
+          git diff --name-only "origin/${{ github.base_ref }}...HEAD" >> summary.md
           echo '```' >> summary.md
 
       - name: Post sticky comment
@@ -40,32 +53,35 @@ jobs:
         with:
           path: summary.md
 
-      - name: Post Discord notification (optional)
-        if: ${{ secrets.DISCORD_WEBHOOK_URL != '' }}
-        env:
-          WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_TITLE:  ${{ github.event.pull_request.title }}
-          PR_URL:    ${{ github.event.pull_request.html_url }}
-          ACTOR:     ${{ github.actor }}
+      - name: Notify Discord (if webhook configured)
+        # No expression with `secrets.*` here; just check the env var in bash.
         run: |
-          # Trim the markdown for an embed description (Discord limit ~4096; keep it shorter)
-          SUMMARY=$(sed -n '1,80p' summary.md | sed ':a;N;$!ba;s/\n/\\n/g' | cut -c1-1800)
+          if [ -z "${DISCORD_WEBHOOK_URL:-}" ]; then
+            echo "No DISCORD_WEBHOOK_URL secret set; skipping Discord notification."
+            exit 0
+          fi
 
-          payload=$(cat <<EOF
-          {
-            "username": "Kinectv1 CI",
-            "embeds": [{
-              "title": "PR #${PR_NUMBER}: ${PR_TITLE}",
-              "url": "${PR_URL}",
-              "description": "${SUMMARY}",
-              "color": 5814783,
-              "footer": { "text": "by ${ACTOR}" }
-            }]
-          }
-          EOF
-          )
+          # Build a compact message
+          TITLE="${{ github.event.pull_request.title }}"
+          NUMBER="${{ github.event.pull_request.number }}"
+          REPO="${{ github.repository }}"
+          URL="${{ github.event.pull_request.html_url }}"
+          BY="${{ github.actor }}"
+          TARGET="${{ github.base_ref }}"
 
-          curl -sS -H "Content-Type: application/json" -d "$payload" "$WEBHOOK_URL"
+          MSG="[$REPO] PR #$NUMBER → $TARGET by @$BY
+$TITLE
+$URL"
 
+          # Safe JSON via Python (avoids jq dependency)
+          python - <<'PY' > payload.json
+import json, os, sys
+content = os.environ.get("MSG","")
+sys.stdout.write(json.dumps({"content": content}))
+PY
 
+          curl -sS -X POST -H "Content-Type: application/json" \
+            --data-binary @payload.json \
+            "$DISCORD_WEBHOOK_URL" || echo "Discord post failed (non-blocking)."
+        env:
+          MSG: ${{ env.MSG }}
