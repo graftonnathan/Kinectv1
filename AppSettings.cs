@@ -1573,6 +1573,8 @@ namespace Kinectv1
                 var discordVadThreshold = LoadDiscordVoiceActivityThreshold();
                 var silenceTimeoutMs = LoadVadSilenceTimeoutMs();
                 var debounceTimeoutMs = LoadVadDebounceTimeoutMs();
+                var telemetryEnabled = LoadTelemetryEnabled();
+                var telemetryFile = LoadTelemetryFile();
 
                 return $"🎤 Voice Recognition Settings:\n" +
                        $"   Microphone VAD threshold: {vadThreshold:F0} (voice activity detection)\n" +
@@ -1585,7 +1587,9 @@ namespace Kinectv1
                        $"   Logging enabled: {loggingEnabled}\n" +
                        $"   Quality level: {(threshold >= 0.5f ? "High" : threshold >= 0.3f ? "Medium" : "Low")}\n" +
                        $"   Microphone VAD sensitivity: {(vadThreshold <= 200f ? "High" : vadThreshold <= 400f ? "Medium" : "Low")}\n" +
-                       $"   Discord VAD sensitivity: {(discordVadThreshold <= 15f ? "High" : discordVadThreshold <= 35f ? "Medium" : "Low")}";
+                       $"   Discord VAD sensitivity: {(discordVadThreshold <= 15f ? "High" : discordVadThreshold <= 35f ? "Medium" : "Low")}\n" +
+                       $"   Telemetry enabled: {telemetryEnabled}\n" +
+                       $"   Telemetry file: {telemetryFile}";
             }
             catch (Exception ex)
             {
@@ -1869,6 +1873,136 @@ namespace Kinectv1
             catch (Exception ex)
             {
                 Console.WriteLine($"ERROR: Error saving Prefer DirectML: {ex.Message}");
+            }
+        }
+
+        // Telemetry Settings
+        public static bool LoadTelemetryEnabled()
+        {
+            try
+            {
+                return GetBool("TelemetryEnabled");
+            }
+            catch (Exception ex)
+            {
+                LogSettingError("TelemetryEnabled", $"READ FAILED: {ex.Message}");
+                return false; // Default to disabled for safety
+            }
+        }
+
+        public static void SaveTelemetryEnabled(bool enabled)
+        {
+            try
+            {
+                SetBool("TelemetryEnabled", enabled);
+                Console.WriteLine($"Telemetry: Enabled: {enabled}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"ERROR: Error saving telemetry enabled: {ex.Message}");
+            }
+        }
+
+        public static string LoadTelemetryFile()
+        {
+            try
+            {
+                var path = GetString("TelemetryFile");
+                return string.IsNullOrWhiteSpace(path) ? "logs/telemetry.ndjson" : path;
+            }
+            catch (Exception ex)
+            {
+                LogSettingError("TelemetryFile", $"READ FAILED: {ex.Message}");
+                return "logs/telemetry.ndjson";
+            }
+        }
+
+        public static void SaveTelemetryFile(string filePath)
+        {
+            try
+            {
+                SetString("TelemetryFile", filePath);
+                Console.WriteLine($"Telemetry: File path: {filePath}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"ERROR: Error saving telemetry file path: {ex.Message}");
+            }
+        }
+
+        public static int LoadTelemetrySamplingPct()
+        {
+            try
+            {
+                var pct = GetInt("TelemetrySamplingPct");
+                return Math.Max(0, Math.Min(100, pct)); // Clamp to 0-100
+            }
+            catch (Exception ex)
+            {
+                LogSettingError("TelemetrySamplingPct", $"READ FAILED: {ex.Message}");
+                return 100; // Default to 100% sampling
+            }
+        }
+
+        public static void SaveTelemetrySamplingPct(int samplingPct)
+        {
+            try
+            {
+                var clampedPct = Math.Max(0, Math.Min(100, samplingPct));
+                SetInt("TelemetrySamplingPct", clampedPct);
+                Console.WriteLine($"Telemetry: Sampling percentage: {clampedPct}%");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"ERROR: Error saving telemetry sampling percentage: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Configure telemetry settings all at once
+        /// </summary>
+        public static void ConfigureTelemetrySettings(bool enabled = true, string filePath = "logs/telemetry.ndjson", int samplingPct = 100)
+        {
+            try
+            {
+                SaveTelemetryEnabled(enabled);
+                SaveTelemetryFile(filePath);
+                SaveTelemetrySamplingPct(samplingPct);
+
+                Console.WriteLine($"📊 Telemetry settings configured:");
+                Console.WriteLine($"   Enabled: {enabled}");
+                Console.WriteLine($"   File path: {filePath}");
+                Console.WriteLine($"   Sampling: {samplingPct}%");
+                Console.WriteLine($"   💡 Events are logged as NDJSON to console and file");
+                Console.WriteLine($"   💡 File rotates at ~5MB to prevent disk fill");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"ERROR: Error configuring telemetry settings: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Get telemetry settings summary
+        /// </summary>
+        public static string GetTelemetrySettingsSummary()
+        {
+            try
+            {
+                var enabled = LoadTelemetryEnabled();
+                var filePath = LoadTelemetryFile();
+                var samplingPct = LoadTelemetrySamplingPct();
+
+                return $"📊 Telemetry Settings:\n" +
+                       $"   Enabled: {enabled}\n" +
+                       $"   File path: {filePath}\n" +
+                       $"   Sampling: {samplingPct}%\n" +
+                       $"   Format: NDJSON (Newline Delimited JSON)\n" +
+                       $"   Rotation: ~5MB file size limit";
+            }
+            catch (Exception ex)
+            {
+                return $"ERROR: Could not load telemetry settings: {ex.Message}";
             }
         }
     }

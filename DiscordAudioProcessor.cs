@@ -111,109 +111,147 @@ namespace Kinectv1
             int audioLength, 
             string username = "Discord")
         {
-            try
+            using (var scope = Telemetry.LatencyScope("discord_audio_process"))
             {
-                if (discordAudio == null || audioLength <= 0)
+                try
                 {
+                    if (discordAudio == null || audioLength <= 0)
+                    {
+                        Telemetry.Counter("discord_audio.null_input");
+                        return (null, 0, 0f);
+                    }
+
+                    // Count processed chunks
+                    Telemetry.Counter("discord_audio.chunks_processed");
+
+                    // Step 1: Convert s16 to float for processing
+                    int sampleCount = audioLength / 2; // 16-bit = 2 bytes per sample
+                    if (sampleCount > _processingBuffer.Length)
+                    {
+                        Console.WriteLine($"?? Discord audio chunk too large: {sampleCount} samples (max: {_processingBuffer.Length})");
+                        Telemetry.Counter("discord_audio.oversized_chunks");
+                        sampleCount = _processingBuffer.Length;
+                        audioLength = sampleCount * 2;
+                    }
+
+                    // Convert bytes to float samples
+                    for (int i = 0; i < sampleCount; i++)
+                    {
+                        short sample = (short)((discordAudio[i * 2 + 1] << 8) | discordAudio[i * 2]);
+                        _processingBuffer[i] = sample / 32768.0f; // Normalize to [-1.0, 1.0]
+                    }
+
+                    // Step 2: Convert stereo to mono (L+R)/2
+                    int monoSampleCount = sampleCount / 2;
+                    for (int i = 0; i < monoSampleCount; i++)
+                    {
+                        _monoBuffer[i] = (_processingBuffer[i * 2] + _processingBuffer[i * 2 + 1]) * 0.5f;
+                    }
+
+                    // Step 3: High-pass filter to remove rumble/DC
+                    using (var hpScope = Telemetry.LatencyScope("discord_audio.hp_filter"))
+                    {
+                        for (int i = 0; i < monoSampleCount; i++)
+                        {
+                            _filteredBuffer[i] = _highPassFilter.Transform(_monoBuffer[i]);
+                        }
+                    }
+
+                    // Step 4: Calculate RMS and normalize to target loudness
+                    float rms = CalculateRms(_filteredBuffer, monoSampleCount);
+                    _currentRms = rms;
+
+                    // Track RMS levels for monitoring
+                    Telemetry.Accumulator("discord_audio.rms_total", rms);
+                    if (rms > 0.001f)
+                    {
+                        Telemetry.Accumulator("discord_audio.rms_sum", rms);
+                        Telemetry.Counter("discord_audio.rms_count");
+                    }
+
+                    // Apply adaptive gain control
+                    float targetGain = (rms > 0.001f) ? (_targetRms / rms) : 1.0f;
+                    
+                    // Clamp gain to reasonable limits (prevent over-amplification)
+                    targetGain = Math.Max(0.1f, Math.Min(10.0f, targetGain));
+                    
+                    // Smooth gain changes to prevent artifacts
+                    _smoothedGain = GAIN_SMOOTHING_ALPHA * _smoothedGain + (1.0f - GAIN_SMOOTHING_ALPHA) * targetGain;
+
+                    // Step 5: Apply gain and soft limiter
+                    using (var normalizeScope = Telemetry.LatencyScope("discord_audio.normalize"))
+                    {
+                        int clippedSamples = 0;
+                        for (int i = 0; i < monoSampleCount; i++)
+                        {
+                            float sample = _filteredBuffer[i] * _smoothedGain;
+                            
+                            // Soft limiter to prevent clipping
+                            if (Math.Abs(sample) > _limiterThreshold)
+                            {
+                                sample = Math.Sign(sample) * SoftLimit(Math.Abs(sample), _limiterThreshold);
+                                clippedSamples++;
+                            }
+                            
+                            _normalizedBuffer[i] = sample;
+                        }
+                        
+                        // Track clipping
+                        if (clippedSamples > 0)
+                        {
+                            Telemetry.Counter("discord_audio.clip_count");
+                            Telemetry.Accumulator("discord_audio.clipped_samples", clippedSamples);
+                        }
+                    }
+
+                    // Step 6: Resample from 48kHz to 16kHz using simple decimation
+                    int resampledCount;
+                    using (var resampleScope = Telemetry.LatencyScope("discord_audio.resample"))
+                    {
+                        // Simple decimation (take every 3rd sample: 48kHz/3 = 16kHz)
+                        // For production use, consider using a proper anti-aliasing filter before decimation
+                        resampledCount = DecimateAudio(_normalizedBuffer, monoSampleCount, _resampledBuffer, 3);
+                    }
+
+                    // Step 7: Convert back to s16 for Vosk
+                    int outputByteCount = resampledCount * 2;
+                    if (outputByteCount > _outputBuffer.Length)
+                    {
+                        Telemetry.Counter("discord_audio.output_buffer_overflow");
+                        outputByteCount = _outputBuffer.Length;
+                        resampledCount = outputByteCount / 2;
+                    }
+
+                    for (int i = 0; i < resampledCount; i++)
+                    {
+                        float sample = Math.Max(-1.0f, Math.Min(1.0f, _resampledBuffer[i])); // Clamp
+                        short intSample = (short)(sample * 32767.0f);
+                        
+                        _outputBuffer[i * 2] = (byte)(intSample & 0xFF);
+                        _outputBuffer[i * 2 + 1] = (byte)((intSample >> 8) & 0xFF);
+                    }
+
+                    // Update statistics
+                    UpdateStatistics(rms, _smoothedGain);
+
+                    // Calculate final RMS for UI display (scale to expected range)
+                    float displayRms = rms * 3000f; // Scale for UI compatibility
+
+                    // Minimal logging - only show every 100 chunks or significant events
+                    if (_processedChunks % 100 == 0)
+                    {
+                        Console.WriteLine($"?? Discord Audio: {_processedChunks} chunks processed, RMS: {LinearToDbfs(rms):+0.1f}dB");
+                    }
+
+                    return (_outputBuffer, outputByteCount, displayRms);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"? Discord audio processing failed: {ex.Message}");
+                    Telemetry.Counter("discord_audio.processing_errors");
+                    Telemetry.Event("discord_audio.error", new { error = ex.Message }, TelemetryLevel.Error);
                     return (null, 0, 0f);
                 }
-
-                // Step 1: Convert s16 to float for processing
-                int sampleCount = audioLength / 2; // 16-bit = 2 bytes per sample
-                if (sampleCount > _processingBuffer.Length)
-                {
-                    Console.WriteLine($"?? Discord audio chunk too large: {sampleCount} samples (max: {_processingBuffer.Length})");
-                    sampleCount = _processingBuffer.Length;
-                    audioLength = sampleCount * 2;
-                }
-
-                // Convert bytes to float samples
-                for (int i = 0; i < sampleCount; i++)
-                {
-                    short sample = (short)((discordAudio[i * 2 + 1] << 8) | discordAudio[i * 2]);
-                    _processingBuffer[i] = sample / 32768.0f; // Normalize to [-1.0, 1.0]
-                }
-
-                // Step 2: Convert stereo to mono (L+R)/2
-                int monoSampleCount = sampleCount / 2;
-                for (int i = 0; i < monoSampleCount; i++)
-                {
-                    _monoBuffer[i] = (_processingBuffer[i * 2] + _processingBuffer[i * 2 + 1]) * 0.5f;
-                }
-
-                // Step 3: High-pass filter to remove rumble/DC
-                for (int i = 0; i < monoSampleCount; i++)
-                {
-                    _filteredBuffer[i] = _highPassFilter.Transform(_monoBuffer[i]);
-                }
-
-                // Step 4: Calculate RMS and normalize to target loudness
-                float rms = CalculateRms(_filteredBuffer, monoSampleCount);
-                _currentRms = rms;
-
-                // Apply adaptive gain control
-                float targetGain = (rms > 0.001f) ? (_targetRms / rms) : 1.0f;
-                
-                // Clamp gain to reasonable limits (prevent over-amplification)
-                targetGain = Math.Max(0.1f, Math.Min(10.0f, targetGain));
-                
-                // Smooth gain changes to prevent artifacts
-                _smoothedGain = GAIN_SMOOTHING_ALPHA * _smoothedGain + (1.0f - GAIN_SMOOTHING_ALPHA) * targetGain;
-
-                // Apply gain and soft limiter
-                for (int i = 0; i < monoSampleCount; i++)
-                {
-                    float sample = _filteredBuffer[i] * _smoothedGain;
-                    
-                    // Soft limiter to prevent clipping
-                    if (Math.Abs(sample) > _limiterThreshold)
-                    {
-                        sample = Math.Sign(sample) * SoftLimit(Math.Abs(sample), _limiterThreshold);
-                    }
-                    
-                    _normalizedBuffer[i] = sample;
-                }
-
-                // Step 5: Resample from 48kHz to 16kHz using simple decimation
-                // Simple decimation (take every 3rd sample: 48kHz/3 = 16kHz)
-                // For production use, consider using a proper anti-aliasing filter before decimation
-                int resampledCount = DecimateAudio(_normalizedBuffer, monoSampleCount, _resampledBuffer, 3);
-
-                // Step 6: Convert back to s16 for Vosk
-                int outputByteCount = resampledCount * 2;
-                if (outputByteCount > _outputBuffer.Length)
-                {
-                    outputByteCount = _outputBuffer.Length;
-                    resampledCount = outputByteCount / 2;
-                }
-
-                for (int i = 0; i < resampledCount; i++)
-                {
-                    float sample = Math.Max(-1.0f, Math.Min(1.0f, _resampledBuffer[i])); // Clamp
-                    short intSample = (short)(sample * 32767.0f);
-                    
-                    _outputBuffer[i * 2] = (byte)(intSample & 0xFF);
-                    _outputBuffer[i * 2 + 1] = (byte)((intSample >> 8) & 0xFF);
-                }
-
-                // Update statistics
-                UpdateStatistics(rms, _smoothedGain);
-
-                // Calculate final RMS for UI display (scale to expected range)
-                float displayRms = rms * 3000f; // Scale for UI compatibility
-
-                // Minimal logging - only show every 100 chunks or significant events
-                if (_processedChunks % 100 == 0)
-                {
-                    Console.WriteLine($"?? Discord Audio: {_processedChunks} chunks processed, RMS: {LinearToDbfs(rms):+0.1f}dB");
-                }
-
-                return (_outputBuffer, outputByteCount, displayRms);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"? Discord audio processing failed: {ex.Message}");
-                return (null, 0, 0f);
             }
         }
 
