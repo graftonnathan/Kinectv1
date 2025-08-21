@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Linq;
 using NAudio.Wave;
 using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Kinectv1
@@ -388,9 +389,19 @@ namespace Kinectv1
         /// </summary>
         public static async Task PlayLocallyAsync(float[] audio, int sampleRate)
         {
+            await PlayLocallyAsync(audio, sampleRate, CancellationToken.None);
+        }
+
+        /// <summary>
+        /// Play an array of floats as PCM audio through the configured output device with cancellation support
+        /// </summary>
+        public static async Task PlayLocallyAsync(float[] audio, int sampleRate, CancellationToken cancellationToken)
+        {
             if (audio == null || audio.Length == 0) return;
             try
             {
+                cancellationToken.ThrowIfCancellationRequested();
+
                 // Peak normalization to prevent clipping/distortion
                 float peak = 0f;
                 for (int i = 0; i < audio.Length; i++)
@@ -408,12 +419,16 @@ namespace Kinectv1
                     pcm[i] = (short)(x * 32767);
                 }
 
+                cancellationToken.ThrowIfCancellationRequested();
+
                 var waveFormat = new WaveFormat(sampleRate, 16, 1);
                 var deviceNumber = GetConfiguredOutputDeviceNumberFast() ?? -1; // -1 uses default device
                 var msDur = (int)Math.Ceiling(1000.0 * audio.Length / sampleRate) + 200;
 
                 await Task.Run(() =>
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
+
                     // Create byte buffer once to avoid BinaryWriter closing the stream
                     var bytes = new byte[pcm.Length * 2];
                     Buffer.BlockCopy(pcm, 0, bytes, 0, bytes.Length);
@@ -426,9 +441,25 @@ namespace Kinectv1
                     waveOut.Init(rss);
                     waveOut.Play();
 
-                    // Simple wait; we are not on UI thread
-                    Task.Delay(Math.Min(msDur, 30000)).GetAwaiter().GetResult();
-                }).ConfigureAwait(false);
+                    // Wait with cancellation support - poll in smaller intervals
+                    var totalWaitMs = Math.Min(msDur, 30000);
+                    var pollIntervalMs = 100;
+                    var elapsed = 0;
+                    
+                    while (elapsed < totalWaitMs && !cancellationToken.IsCancellationRequested)
+                    {
+                        var waitMs = Math.Min(pollIntervalMs, totalWaitMs - elapsed);
+                        Task.Delay(waitMs).GetAwaiter().GetResult();
+                        elapsed += waitMs;
+                    }
+
+                    cancellationToken.ThrowIfCancellationRequested();
+                }, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // Clean cancellation - just rethrow
+                throw;
             }
             catch (Exception ex)
             {
