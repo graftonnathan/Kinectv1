@@ -37,7 +37,8 @@ namespace Kinectv1.Discord
                     
                     // Get the application directory
                     var appDir = AppDomain.CurrentDomain.BaseDirectory;
-                    var projectRoot = Directory.GetParent(appDir)?.Parent?.Parent?.FullName ?? appDir;
+                    // Go up three levels to reach the project root when running from bin/Debug/net481
+                    var projectRoot = Directory.GetParent(appDir)?.Parent?.Parent?.Parent?.FullName ?? appDir;
                     
                     // Define all possible library locations in order of preference
                     var libraryLocations = new[]
@@ -52,7 +53,11 @@ namespace Kinectv1.Discord
                         new { Name = "Runtimes Directory", OpusPath = Path.Combine(appDir, "runtimes", "win-x64", "native", "opus.dll"), SodiumPath = Path.Combine(appDir, "runtimes", "win-x64", "native", "libsodium.dll") },
                         
                         // 4. Old lib directory (fallback for old installations)
-                        new { Name = "Legacy lib Directory", OpusPath = Path.Combine(projectRoot, "lib", "libopus.dll"), SodiumPath = Path.Combine(projectRoot, "lib", "libsodium.dll") }
+                        new { Name = "Legacy lib Directory", OpusPath = Path.Combine(projectRoot, "lib", "libopus.dll"), SodiumPath = Path.Combine(projectRoot, "lib", "libsodium.dll") },
+
+                        // 5. User-provided custom folder: lib\\discord (common mistake) - handle both names
+                        new { Name = "Custom lib\\discord Directory", OpusPath = Path.Combine(projectRoot, "lib", "discord", "opus.dll"), SodiumPath = Path.Combine(projectRoot, "lib", "discord", "libsodium.dll") },
+                        new { Name = "Custom lib\\discord Directory (libopus)", OpusPath = Path.Combine(projectRoot, "lib", "discord", "libopus.dll"), SodiumPath = Path.Combine(projectRoot, "lib", "discord", "libsodium.dll") }
                     };
                     
                     Console.WriteLine($"?? Searching for native libraries in {libraryLocations.Length} locations...");
@@ -162,6 +167,7 @@ namespace Kinectv1.Discord
                         Console.WriteLine("?? Manual installation alternative:");
                         Console.WriteLine("   Download from: https://github.com/discord-net/Discord.Net/tree/dev/voice-natives");
                         Console.WriteLine("   Place files in: libs\\ and bin\\Debug\\net481\\");
+                        Console.WriteLine("   Or place in: lib\\discord\\ (we now search this too)");
                     }
                     
                     return _librariesLoaded;

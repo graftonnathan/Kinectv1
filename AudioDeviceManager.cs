@@ -3,6 +3,8 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using NAudio.Wave;
+using System.IO;
+using System.Threading.Tasks;
 
 namespace Kinectv1
 {
@@ -59,7 +61,6 @@ namespace Kinectv1
             try
             {
                 int deviceCount = WaveIn.DeviceCount;
-                Console.WriteLine($"?? Found {deviceCount} input devices");
                 
                 for (int i = 0; i < deviceCount; i++)
                 {
@@ -77,10 +78,10 @@ namespace Kinectv1
                         };
                         
                         devices.Add(device);
-                        Console.WriteLine($"   Input {i}: {device.DeviceName} ({device.Channels} channels)");
                     }
                     catch (Exception ex)
                     {
+                        // Keep enumeration robust but quiet
                         Console.WriteLine($"   Error reading input device {i}: {ex.Message}");
                     }
                 }
@@ -103,7 +104,6 @@ namespace Kinectv1
             try
             {
                 int deviceCount = WaveOut.DeviceCount;
-                Console.WriteLine($"?? Found {deviceCount} output devices");
                 
                 for (int i = 0; i < deviceCount; i++)
                 {
@@ -121,10 +121,10 @@ namespace Kinectv1
                         };
                         
                         devices.Add(device);
-                        Console.WriteLine($"   Output {i}: {device.DeviceName} ({device.Channels} channels)");
                     }
                     catch (Exception ex)
                     {
+                        // Keep enumeration robust but quiet
                         Console.WriteLine($"   Error reading output device {i}: {ex.Message}");
                     }
                 }
@@ -263,45 +263,7 @@ namespace Kinectv1
         /// </summary>
         public static void LogAllDevices()
         {
-            Console.WriteLine("???? === AUDIO DEVICE ENUMERATION ===");
-            
-            Console.WriteLine("?? Input Devices (Microphones):");
-            var inputDevices = GetInputDevices();
-            if (inputDevices.Any())
-            {
-                foreach (var device in inputDevices)
-                {
-                    Console.WriteLine($"   [{device.DeviceNumber}] {device.DeviceName}");
-                    Console.WriteLine($"       Product: {device.ProductName}");
-                    Console.WriteLine($"       Channels: {device.Channels}");
-                    Console.WriteLine($"       Default: {device.IsDefault}");
-                    Console.WriteLine($"       Test Result: {(TestInputDevice(device.DeviceNumber) ? "? OK" : "? Failed")}");
-                }
-            }
-            else
-            {
-                Console.WriteLine("   ? No input devices found");
-            }
-            
-            Console.WriteLine("?? Output Devices (Speakers/Headphones):");
-            var outputDevices = GetOutputDevices();
-            if (outputDevices.Any())
-            {
-                foreach (var device in outputDevices)
-                {
-                    Console.WriteLine($"   [{device.DeviceNumber}] {device.DeviceName}");
-                    Console.WriteLine($"       Product: {device.ProductName}");
-                    Console.WriteLine($"       Channels: {device.Channels}");
-                    Console.WriteLine($"       Default: {device.IsDefault}");
-                    Console.WriteLine($"       Test Result: {(TestOutputDevice(device.DeviceNumber) ? "? OK" : "? Failed")}");
-                }
-            }
-            else
-            {
-                Console.WriteLine("   ? No output devices found");
-            }
-            
-            Console.WriteLine("???? === END AUDIO DEVICE ENUMERATION ===");
+            Console.WriteLine("???? Audio devices enumeration suppressed (verbose listing disabled)");
         }
 
         /// <summary>
@@ -320,7 +282,7 @@ namespace Kinectv1
                         var device = GetInputDevice(deviceNumber.Value);
                         if (device != null && TestInputDevice(device.DeviceNumber))
                         {
-                            Console.WriteLine($"?? Using configured STT input device: {device.DeviceName}");
+                            Console.WriteLine($"?? Using STT input device: {device.DeviceName}");
                             return device;
                         }
                         else
@@ -338,11 +300,11 @@ namespace Kinectv1
                 var defaultDevice = GetDefaultInputDevice();
                 if (defaultDevice != null)
                 {
-                    Console.WriteLine($"?? Using default STT input device: {defaultDevice.DeviceName}");
+                    Console.WriteLine($"?? Using STT input device: {defaultDevice.DeviceName}");
                     return defaultDevice;
                 }
                 
-                Console.WriteLine("? No valid STT input device available");
+                Console.WriteLine("?? No valid STT input device available");
                 return null;
             }
             catch (Exception ex)
@@ -368,7 +330,7 @@ namespace Kinectv1
                         var device = GetOutputDevice(deviceNumber.Value);
                         if (device != null && TestOutputDevice(device.DeviceNumber))
                         {
-                            Console.WriteLine($"?? Using configured TTS output device: {device.DeviceName}");
+                            Console.WriteLine($"?? Using TTS output device: {device.DeviceName}");
                             return device;
                         }
                         else
@@ -386,17 +348,91 @@ namespace Kinectv1
                 var defaultDevice = GetDefaultOutputDevice();
                 if (defaultDevice != null)
                 {
-                    Console.WriteLine($"?? Using default TTS output device: {defaultDevice.DeviceName}");
+                    Console.WriteLine($"?? Using TTS output device: {defaultDevice.DeviceName}");
                     return defaultDevice;
                 }
                 
-                Console.WriteLine("? No valid TTS output device available");
+                Console.WriteLine("?? No valid TTS output device available");
                 return null;
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"? Error getting configured output device: {ex.Message}");
                 return GetDefaultOutputDevice();
+            }
+        }
+
+        private static readonly object _deviceCacheLock = new object();
+        private static int? _cachedOutputDeviceNumber = null;
+
+        private static int? GetConfiguredOutputDeviceNumberFast()
+        {
+            lock (_deviceCacheLock)
+            {
+                if (_cachedOutputDeviceNumber.HasValue)
+                    return _cachedOutputDeviceNumber;
+
+                var configured = GetConfiguredOutputDevice();
+                _cachedOutputDeviceNumber = configured?.DeviceNumber;
+                return _cachedOutputDeviceNumber;
+            }
+        }
+
+        public static void InvalidateOutputDeviceCache()
+        {
+            lock (_deviceCacheLock) { _cachedOutputDeviceNumber = null; }
+        }
+
+        /// <summary>
+        /// Play an array of floats as PCM audio through the configured output device
+        /// </summary>
+        public static async Task PlayLocallyAsync(float[] audio, int sampleRate)
+        {
+            if (audio == null || audio.Length == 0) return;
+            try
+            {
+                // Peak normalization to prevent clipping/distortion
+                float peak = 0f;
+                for (int i = 0; i < audio.Length; i++)
+                {
+                    var a = Math.Abs(audio[i]);
+                    if (a > peak) peak = a;
+                }
+                float targetPeak = 0.98f;
+                float gain = (peak > 0f && peak > targetPeak) ? (targetPeak / peak) : 1.0f;
+
+                var pcm = new short[audio.Length];
+                for (int i = 0; i < audio.Length; i++)
+                {
+                    var x = Math.Max(-1.0f, Math.Min(1.0f, audio[i] * gain));
+                    pcm[i] = (short)(x * 32767);
+                }
+
+                var waveFormat = new WaveFormat(sampleRate, 16, 1);
+                var deviceNumber = GetConfiguredOutputDeviceNumberFast() ?? -1; // -1 uses default device
+                var msDur = (int)Math.Ceiling(1000.0 * audio.Length / sampleRate) + 200;
+
+                await Task.Run(() =>
+                {
+                    // Create byte buffer once to avoid BinaryWriter closing the stream
+                    var bytes = new byte[pcm.Length * 2];
+                    Buffer.BlockCopy(pcm, 0, bytes, 0, bytes.Length);
+
+                    using var ms = new MemoryStream(bytes, writable: false);
+                    using var rss = new RawSourceWaveStream(ms, waveFormat);
+                    using var waveOut = new WaveOutEvent();
+                    if (deviceNumber >= 0) waveOut.DeviceNumber = deviceNumber;
+                    waveOut.Volume = (float)AppSettings.LoadLocalTtsVolume();
+                    waveOut.Init(rss);
+                    waveOut.Play();
+
+                    // Simple wait; we are not on UI thread
+                    Task.Delay(Math.Min(msDur, 30000)).GetAwaiter().GetResult();
+                }).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[AudioDeviceManager] Local play failed: {ex.Message}");
             }
         }
     }

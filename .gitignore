@@ -371,3 +371,4 @@ FodyWeavers.xsd
 /models
 /history/conversation.json
 /native-libs
+/lib

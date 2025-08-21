@@ -4,6 +4,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Threading;
+using System.Runtime.ExceptionServices;
+using System.Security;
 using Vosk;
 
 namespace Kinectv1
@@ -17,12 +19,16 @@ namespace Kinectv1
         private static readonly object _lock = new object();
         private static readonly Dictionary<string, Model> _models = new Dictionary<string, Model>();
         private static readonly Dictionary<string, int> _referenceCount = new Dictionary<string, int>();
+        private static readonly HashSet<string> _failedModels = new HashSet<string>();
+        private static bool _logLevelSet = false;
         
         /// <summary>
         /// Get or create a Vosk model instance (thread-safe)
         /// </summary>
         /// <param name="modelPath">Path to the Vosk model directory</param>
         /// <returns>Shared Model instance or null if failed</returns>
+        [HandleProcessCorruptedStateExceptions]
+        [SecurityCritical]
         public static Model GetModel(string modelPath)
         {
             if (string.IsNullOrEmpty(modelPath) || !Directory.Exists(modelPath))
@@ -37,6 +43,30 @@ namespace Kinectv1
                 {
                     // Normalize path for consistent dictionary keys
                     var normalizedPath = Path.GetFullPath(modelPath);
+
+                    // Prevent repeated attempts if this model failed previously
+                    if (_failedModels.Contains(normalizedPath))
+                    {
+                        Console.WriteLine($"? VoskModelManager: Previous load failed for {normalizedPath} - skipping new attempt");
+                        return null;
+                    }
+
+                    // Set Vosk log level once per process
+                    if (!_logLevelSet)
+                    {
+                        try { Vosk.Vosk.SetLogLevel(-1); } catch { }
+                        _logLevelSet = true;
+                    }
+
+                    // Validate model structure before loading to avoid native crashes
+                    var confDir = Path.Combine(normalizedPath, "conf");
+                    var modelConf = Path.Combine(confDir, "model.conf");
+                    if (!Directory.Exists(confDir) || !File.Exists(modelConf))
+                    {
+                        Console.WriteLine($"? VoskModelManager: '{normalizedPath}' is not a valid Vosk model (missing conf/model.conf). Aborting load.");
+                        try { _failedModels.Add(normalizedPath); } catch { }
+                        return null;
+                    }
                     
                     if (_models.ContainsKey(normalizedPath))
                     {
@@ -49,9 +79,6 @@ namespace Kinectv1
                     // Create new model instance
                     Console.WriteLine($"?? VoskModelManager: Creating new model instance for {normalizedPath}");
                     
-                    // Set Vosk log level to minimal to reduce spam
-                    Vosk.Vosk.SetLogLevel(-1);
-                    
                     var model = new Model(normalizedPath);
                     _models[normalizedPath] = model;
                     _referenceCount[normalizedPath] = 1;
@@ -62,6 +89,7 @@ namespace Kinectv1
                 catch (Exception ex)
                 {
                     Console.WriteLine($"? VoskModelManager: Failed to create model for {modelPath}: {ex.Message}");
+                    try { _failedModels.Add(Path.GetFullPath(modelPath)); } catch { }
                     return null;
                 }
             }
@@ -73,6 +101,8 @@ namespace Kinectv1
         /// <param name="modelPath">Path to the Vosk model directory</param>
         /// <param name="sampleRate">Sample rate (default 16000)</param>
         /// <returns>New VoskRecognizer instance or null if failed</returns>
+        [HandleProcessCorruptedStateExceptions]
+        [SecurityCritical]
         public static VoskRecognizer CreateRecognizer(string modelPath, float sampleRate = 16000.0f)
         {
             var model = GetModel(modelPath);
@@ -91,6 +121,7 @@ namespace Kinectv1
             catch (Exception ex)
             {
                 Console.WriteLine($"? VoskModelManager: Failed to create recognizer: {ex.Message}");
+                try { _failedModels.Add(Path.GetFullPath(modelPath)); } catch { }
                 return null;
             }
         }
@@ -143,30 +174,50 @@ namespace Kinectv1
         }
         
         /// <summary>
-        /// Force dispose all models (use only on application shutdown)
+        /// Force dispose any models with no active references. Models with refs > 0 are kept alive
+        /// to avoid AccessViolation from disposing a model still used by recognizers.
         /// </summary>
         public static void DisposeAllModels()
         {
             lock (_lock)
             {
-                Console.WriteLine($"?? VoskModelManager: Disposing all models ({_models.Count} models)");
+                Console.WriteLine($"?? VoskModelManager: Disposing models with zero references ({_models.Count} total tracked)");
+                var toRemove = new List<string>();
                 
                 foreach (var kvp in _models)
                 {
-                    try
+                    var path = kvp.Key;
+                    var model = kvp.Value;
+                    int refs = 0;
+                    _referenceCount.TryGetValue(path, out refs);
+
+                    if (refs <= 0)
                     {
-                        kvp.Value?.Dispose();
-                        Console.WriteLine($"? VoskModelManager: Disposed model {kvp.Key}");
+                        try
+                        {
+                            model?.Dispose();
+                            Console.WriteLine($"? VoskModelManager: Disposed model {path}");
+                            toRemove.Add(path);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"? VoskModelManager: Error disposing model {path}: {ex.Message}");
+                        }
                     }
-                    catch (Exception ex)
+                    else
                     {
-                        Console.WriteLine($"? VoskModelManager: Error disposing model {kvp.Key}: {ex.Message}");
+                        Console.WriteLine($"?? VoskModelManager: Skipping dispose of {path} (refs: {refs})");
                     }
                 }
-                
-                _models.Clear();
-                _referenceCount.Clear();
-                Console.WriteLine($"? VoskModelManager: All models disposed");
+
+                // Remove disposed entries only
+                foreach (var path in toRemove)
+                {
+                    _models.Remove(path);
+                    _referenceCount.Remove(path);
+                }
+
+                Console.WriteLine($"? VoskModelManager: Dispose complete. Remaining loaded models: {_models.Count}");
             }
         }
         

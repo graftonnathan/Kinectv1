@@ -1,0 +1,16 @@
+task: "<concise title>"
+context:
+  repo: "<owner>/<repo>"
+  modules:
+    - <important files>
+goals:
+  - <what success looks like, bullets>
+constraints:
+  - .NET Framework 4.8.1 compatible
+  - keep public APIs stable
+acceptance:
+  - <unit or manual checks>
+deliverables:
+  - PR with summary, < LOC limit if any >
+notes:
+  - anything Copilot Agent should watch for (race conditions, logging, etc.)

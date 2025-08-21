@@ -313,7 +313,7 @@ namespace Kinectv1.Discord
                     Console.WriteLine($"?? STEP 2: No existing audio client to clean up");
                 }
 
-                await ReplyAsync($"?? Connecting to **{target.Name}**… (4006 Prevention Protocol v2 Active)");
+                await ReplyAsync($"?? Connecting to **{target.Name}**…");
 
                 // STEP 3: Connection attempt with enhanced 4006 prevention
                 Console.WriteLine($"?? STEP 3: Calling target.ConnectAsync with enhanced 4006 prevention...");

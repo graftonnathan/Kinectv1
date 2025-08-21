@@ -24,6 +24,9 @@ namespace Kinectv1
                 System.Diagnostics.Debug.WriteLine($"Console initialization failed: {ex.Message}");
             }
 
+            // Reduce native OpenMP duplicate runtime crashes when mixing libraries
+            try { Environment.SetEnvironmentVariable("KMP_DUPLICATE_LIB_OK", "TRUE", EnvironmentVariableTarget.Process); } catch { }
+
             base.OnStartup(e);
 
             try
@@ -32,28 +35,27 @@ namespace Kinectv1
                 Console.WriteLine("⚙️ Initializing app settings...");
                 AppSettings.InitializeSettingsOnStartup();
                 Console.WriteLine("✅ App settings initialized successfully");
-                
-                // Test conversation manager functionality
-                Console.WriteLine("🧪 Testing conversation manager on startup...");
-                OllamaService.TestConversationSaving();
-                Console.WriteLine("✅ Conversation manager test completed");
-                
-                // NOTE: Removed hanging DiagnoseConversationHistory() call from startup
-                // Use DiagnoseConversationHistoryAsync() manually when needed
-                Console.WriteLine("🔍 Conversation diagnostic available via DiagnoseConversationHistoryAsync()");
-                
-                // Load settings from Settings.settings on startup
-                AppSettings.InitializeSettingsOnStartup();
-                
-                // Initialize core components
-                MemoryStore.Init();
-                
+
+                // IMPORTANT: Start STT (Vosk) BEFORE creating MainWindow (which initializes TTS)
+                try
+                {
+                    var voiceModelPath = AppSettings.LoadSttModelPath();
+                    if (!string.IsNullOrWhiteSpace(voiceModelPath) && System.IO.Directory.Exists(voiceModelPath))
+                    {
+                        VoiceRecognizer.Start(voiceModelPath, "john");
+                    }
+                }
+                catch (Exception sttEx)
+                {
+                    Console.WriteLine($"❌ Early STT init failed: {sttEx.Message}");
+                }
+
                 // Create and show main window
                 var win = new MainWindow();
                 win.Show();
                 win.Activate();
                 
-                // Start background services
+                // Start remaining background services
                 StartServices();
             }
             catch (Exception ex)
@@ -71,55 +73,15 @@ namespace Kinectv1
             {
                 try
                 {
-                    // Load speaker model
-                    var embModel = AppSettings.LoadSpeakerEmbeddingModelPath();
-                    if (!string.IsNullOrWhiteSpace(embModel) && System.IO.File.Exists(embModel))
-                    {
-                        SpeakerEmbedder.Load(embModel);
-                    }
-
-                    // Start voice recognition
+                    // STT: Only start if not already started during early init
                     var voiceModelPath = AppSettings.LoadSttModelPath();
-                    if (!string.IsNullOrWhiteSpace(voiceModelPath) && System.IO.Directory.Exists(voiceModelPath))
+                    if (!VoiceRecognizer.IsReady() && !string.IsNullOrWhiteSpace(voiceModelPath) && System.IO.Directory.Exists(voiceModelPath))
                     {
                         VoiceRecognizer.Start(voiceModelPath, "john");
                     }
 
-                    // Initialize TTS system for testing
-                    try
-                    {
-                        var ttsModelPath = AppSettings.LoadTtsModelPath();
-                        var cmudictPath = AppSettings.LoadTtsCmudictPath();
-                        var symbolsPath = AppSettings.LoadTtsSymbolsPath();
-                        var vocoderPath = AppSettings.LoadTtsVocoderModelPath(); // Not used yet by CoquiTtsService but stored for future
-                        
-                        if (System.IO.File.Exists(ttsModelPath) && System.IO.File.Exists(cmudictPath) && System.IO.File.Exists(symbolsPath))
-                        {
-                            Console.WriteLine("🎤 Initializing TTS system...");
-                            if (CoquiTtsService.Initialize(ttsModelPath, cmudictPath, symbolsPath))
-                            {
-                                Console.WriteLine("✅ TTS system initialized successfully");
-                                
-                                // Test tokenization on startup to verify it's working
-                                CoquiTtsService.TestTokenization();
-                            }
-                            else
-                            {
-                                Console.WriteLine("❌ TTS system initialization failed");
-                            }
-                        }
-                        else
-                        {
-                            Console.WriteLine("⚠️ TTS model files not found - TTS features disabled");
-                            Console.WriteLine($"   Expected: {ttsModelPath}");
-                            Console.WriteLine($"   Expected: {cmudictPath}");
-                            Console.WriteLine($"   Expected: {symbolsPath}");
-                        }
-                    }
-                    catch (Exception ttsEx)
-                    {
-                        Console.WriteLine($"❌ TTS initialization error: {ttsEx.Message}");
-                    }
+                    // DEFER TTS initialization to first use (Kokoro adapter loads on demand)
+                    Console.WriteLine("🔊 TTS will initialize on first use (deferred)");
 
                     // Start Enhanced Kinect Face Tracker (shows ALL faces with tracking IDs)
                     EnhancedKinectFaceTracker.Start();
@@ -142,25 +104,24 @@ namespace Kinectv1
         {
             try
             {
-                // Save all settings before exiting
-                AppSettings.SaveAllSettings();
-                
-                EnhancedKinectFaceTracker.Stop();
-                VoiceRecognizer.Stop();
-                OllamaService.Dispose();
-                MemoryStore.Save();
-                
-                // Dispose all Vosk models to prevent memory leaks
-                VoskModelManager.DisposeAllModels();
-                
-                ConsoleManager.HideConsole();
+                Console.WriteLine("🔻 Application exiting - stopping services...");
+
+                // Stop voice recognizer first to prevent further use of Vosk native resources
+                try { VoiceRecognizer.Stop(); } catch (Exception ex) { Console.WriteLine($"VoiceRecognizer.Stop error: {ex.Message}"); }
+
+                // Dispose all shared Vosk models after recognizers are stopped
+                try { VoskModelManager.DisposeAllModels(); } catch (Exception ex) { Console.WriteLine($"DisposeAllModels error: {ex.Message}"); }
+
+                // Stop Kinect trackers
+                try { EnhancedKinectFaceTracker.Stop(); } catch { try { KinectFaceTracker.Stop(); } catch (Exception ex) { Console.WriteLine($"Kinect stop error: {ex.Message}"); } }
+
+                // Hide console
+                try { ConsoleManager.HideConsole(); } catch { }
             }
-            catch (Exception ex)
+            finally
             {
-                Console.WriteLine($"Shutdown error: {ex.Message}");
+                base.OnExit(e);
             }
-            
-            base.OnExit(e);
         }
     }
 }

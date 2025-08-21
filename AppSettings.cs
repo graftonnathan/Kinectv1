@@ -5,7 +5,6 @@ using System.Globalization;
 using System.Threading;
 using System.IO;
 using System.Linq;
-using Kinectv1.Properties;
 
 namespace Kinectv1
 {
@@ -18,28 +17,162 @@ namespace Kinectv1
         {
             Console.WriteLine($"Error: {name}: {detail}");
         }
-        
+
+        // Helpers to read/write settings without Properties.Settings.Default
+        private static ClientSettingsSection GetClientSettingsSection(Configuration config, string groupName)
+        {
+            // groupName expected: "applicationSettings" or "userSettings"
+            var sectionName = typeof(Kinectv1.Properties.Settings).FullName;
+            var group = config.SectionGroups[groupName];
+            if (group == null) return null;
+            return (group.Sections[sectionName] as ClientSettingsSection);
+        }
+
+        private static string ReadSettingRaw(string name)
+        {
+            try
+            {
+                lock (_configLock)
+                {
+                    var config = ConfigurationManager.OpenExeConfiguration(ConfigurationUserLevel.None);
+                    // Prefer applicationSettings only. If not found, migrate from userSettings/appSettings.
+                    var appSection = GetClientSettingsSection(config, "applicationSettings");
+                    var userSection = GetClientSettingsSection(config, "userSettings");
+
+                    string fromSection(ClientSettingsSection section)
+                    {
+                        if (section == null) return null;
+                        foreach (SettingElement element in section.Settings)
+                        {
+                            if (string.Equals(element.Name, name, StringComparison.Ordinal))
+                            {
+                                return element.Value?.ValueXml?.InnerText ?? string.Empty;
+                            }
+                        }
+                        return null;
+                    }
+
+                    var val = fromSection(appSection);
+                    if (val != null) return val;
+
+                    // Try userSettings (migrate if found)
+                    var userVal = fromSection(userSection);
+                    if (userVal != null)
+                    {
+                        // Migrate to applicationSettings for single source of truth
+                        WriteSettingRaw(name, userVal);
+                        return userVal;
+                    }
+
+                    // Fallback to appSettings (migrate if found)
+                    var appValue = ConfigurationManager.AppSettings[name];
+                    if (appValue != null)
+                    {
+                        WriteSettingRaw(name, appValue);
+                        return appValue;
+                    }
+
+                    return null;
+                }
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static void WriteSettingRaw(string name, string value)
+        {
+            lock (_configLock)
+            {
+                var config = ConfigurationManager.OpenExeConfiguration(ConfigurationUserLevel.None);
+                // Write into applicationSettings section
+                var groupName = "applicationSettings";
+                var section = GetClientSettingsSection(config, groupName);
+                if (section == null)
+                {
+                    // Create group/section if missing
+                    var appGroup = new ApplicationSettingsGroup();
+                    config.SectionGroups.Add(groupName, appGroup);
+                    var sectionName = typeof(Kinectv1.Properties.Settings).FullName;
+                    section = new ClientSettingsSection();
+                    appGroup.Sections.Add(sectionName, section);
+                }
+
+                SettingElement target = null;
+                foreach (SettingElement element in section.Settings)
+                {
+                    if (string.Equals(element.Name, name, StringComparison.Ordinal))
+                    {
+                        target = element;
+                        break;
+                    }
+                }
+                if (target == null)
+                {
+                    target = new SettingElement(name, SettingsSerializeAs.String);
+                    section.Settings.Add(target);
+                }
+                if (target.Value.ValueXml == null)
+                {
+                    var doc = new System.Xml.XmlDocument();
+                    target.Value.ValueXml = doc.CreateElement("value");
+                }
+                target.Value.ValueXml.InnerText = value ?? string.Empty;
+
+                config.Save(ConfigurationSaveMode.Modified);
+                ConfigurationManager.RefreshSection($"{groupName}/{typeof(Kinectv1.Properties.Settings).FullName}");
+            }
+        }
+
+        private static string GetString(string name)
+        {
+            return ReadSettingRaw(name);
+        }
+
+        private static bool GetBool(string name, bool fallback = false)
+        {
+            var s = ReadSettingRaw(name);
+            if (bool.TryParse(s, out var v)) return v;
+            return fallback;
+        }
+
+        private static int GetInt(string name, int fallback = 0)
+        {
+            var s = ReadSettingRaw(name);
+            if (int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) return v;
+            return fallback;
+        }
+
+        private static double GetDouble(string name, double fallback = 0)
+        {
+            var s = ReadSettingRaw(name);
+            if (double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return v;
+            return fallback;
+        }
+
+        private static float GetFloat(string name, float fallback = 0)
+        {
+            var s = ReadSettingRaw(name);
+            if (float.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return v;
+            return fallback;
+        }
+
+        private static void SetString(string name, string value) => WriteSettingRaw(name, value);
+        private static void SetBool(string name, bool value) => WriteSettingRaw(name, value ? "True" : "False");
+        private static void SetInt(string name, int value) => WriteSettingRaw(name, value.ToString(CultureInfo.InvariantCulture));
+        private static void SetDouble(string name, double value) => WriteSettingRaw(name, value.ToString(CultureInfo.InvariantCulture));
+        private static void SetFloat(string name, float value) => WriteSettingRaw(name, value.ToString(CultureInfo.InvariantCulture));
+
         /// <summary>
-        /// Initialize settings on application startup - loads from Settings.settings
-        /// Defaults-only mode: ignores user.config and uses design-time defaults.
+        /// Initialize settings on application startup - loads from App.config (no Settings.Default)
         /// </summary>
         public static void InitializeSettingsOnStartup()
         {
             try
             {
-                Console.WriteLine("📋 Initializing settings from Settings.settings...");
+                Console.WriteLine("📋 Initializing settings from App.config (Settings.settings-backed, no Settings.Default)...");
 
-                // Force runtime to use design-time defaults only (disable user-scoped overrides)
-                try
-                {
-                    Settings.Default.Reset(); // Reset in-memory values to defaults from Settings.settings
-                    Console.WriteLine("🔒 User settings ignored: using Settings.settings defaults only (no persistence)");
-                }
-                catch (Exception resetEx)
-                {
-                    Console.WriteLine($"⚠️ Unable to reset user settings: {resetEx.Message}");
-                }
-                
                 // Organized grouped summaries
                 Console.WriteLine(GetTtsSettingsSummary());
                 Console.WriteLine(GetSttSettingsSummary());
@@ -49,19 +182,19 @@ namespace Kinectv1
 
                 // Other settings remain grouped by feature
                 Console.WriteLine($"👤 Face Settings:\n   Face Threshold: {LoadFaceThreshold():F2}");
-                
+
                 Console.WriteLine($"🧠 Ollama Settings:\n   Model: {LoadOllamaModel()}\n   Enabled: {LoadOllamaEnabled()}\n   Memory Enabled: {LoadOllamaMemoryEnabled()}\n   Max Messages Per Speaker: {LoadOllamaMaxMessagesPerSpeaker()}\n   Max System Messages: {LoadOllamaMaxSystemMessages()}\n   Conversation Timeout: {LoadOllamaConversationTimeoutMinutes()} minutes\n   Conversation History Path: {LoadConversationHistoryPath()}");
-                
+
                 Console.WriteLine($"🎨 UI Settings:\n   Dark Mode: {LoadDarkMode()}");
-                
+
                 var (width, height, left, top, state) = LoadWindowSettings();
                 Console.WriteLine($"🪟 Window Settings:\n   Size: {width:F0}x{height:F0}\n   Position: ({left:F0}, {top:F0})\n   State: {state}");
-                
+
                 Console.WriteLine($"📁 System Settings:\n   Kinect Mode: {LoadKinectMode()}\n   System Prompt Path: {LoadSystemPromptPath()}");
-                
+
                 // Initialize and log audio devices
                 InitializeAudioDevices();
-                
+
                 Console.WriteLine("✅ Settings initialization complete!");
             }
             catch (Exception ex)
@@ -71,66 +204,11 @@ namespace Kinectv1
         }
 
         /// <summary>
-        /// Save all settings - writes to application config (Settings.settings/app.config)
+        /// Save all settings - retained for compatibility, but not required since each setter persists.
         /// </summary>
         public static void SaveAllSettings()
         {
-            try
-            {
-                lock (_configLock)
-                {
-                    var config = ConfigurationManager.OpenExeConfiguration(ConfigurationUserLevel.None);
-                    var group = config.SectionGroups["applicationSettings"] as ApplicationSettingsGroup;
-                    var sectionName = typeof(Settings).FullName; // e.g., Kinectv1.Properties.Settings
-                    var clientSection = group?.Sections[sectionName] as ClientSettingsSection;
-
-                    if (clientSection == null)
-                    {
-                        Console.WriteLine($"❌ ERROR: applicationSettings section '{sectionName}' not found in app.config");
-                        return;
-                    }
-
-                    foreach (SettingElement element in clientSection.Settings)
-                    {
-                        var name = element.Name;
-                        var valueObj = Settings.Default[name];
-                        string textValue;
-
-                        if (valueObj == null)
-                        {
-                            textValue = string.Empty;
-                        }
-                        else if (valueObj is bool b)
-                        {
-                            textValue = b ? "True" : "False";
-                        }
-                        else if (valueObj is IFormattable formattable)
-                        {
-                            textValue = formattable.ToString(null, System.Globalization.CultureInfo.InvariantCulture);
-                        }
-                        else
-                        {
-                            textValue = valueObj.ToString();
-                        }
-
-                        if (element.Value.ValueXml == null)
-                        {
-                            var doc = new System.Xml.XmlDocument();
-                            element.Value.ValueXml = doc.CreateElement("value");
-                        }
-
-                        element.Value.ValueXml.InnerText = textValue ?? string.Empty;
-                    }
-
-                    config.Save(ConfigurationSaveMode.Modified);
-                    ConfigurationManager.RefreshSection($"applicationSettings/{sectionName}");
-                    Console.WriteLine("💾 Settings saved to application configuration (Settings.settings)");
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"❌ ERROR: Error saving settings: {ex.Message}");
-            }
+            // No-op: individual setters persist directly to App.config
         }
 
         // Kinect Settings
@@ -138,7 +216,7 @@ namespace Kinectv1
         {
             try
             {
-                var mode = Settings.Default.KinectMode;
+                var mode = GetString("KinectMode");
                 if (string.IsNullOrWhiteSpace(mode))
                     LogSettingError("KinectMode", "EMPTY");
                 return mode;
@@ -155,7 +233,7 @@ namespace Kinectv1
         {
             try
             {
-                var value = Settings.Default.VoiceThreshold;
+                var value = GetFloat("VoiceThreshold");
                 if (value < 0.0f || value > 1.0f)
                     LogSettingError("VoiceThreshold", $"OUT OF RANGE (expected 0.0-1.0, got {value:F3})");
                 return value;
@@ -171,8 +249,7 @@ namespace Kinectv1
         {
             try
             {
-                Settings.Default.VoiceThreshold = threshold;
-                SaveAllSettings();
+                SetFloat("VoiceThreshold", threshold);
                 Console.WriteLine($"Saved voice threshold: {threshold:F3}");
             }
             catch (Exception ex)
@@ -188,7 +265,7 @@ namespace Kinectv1
         {
             try
             {
-                var value = Settings.Default.VoiceActivityThreshold;
+                var value = GetFloat("VoiceActivityThreshold");
                 if (value < 50f || value > 5000f)
                     LogSettingError("VoiceActivityThreshold", $"OUT OF RANGE (expected 50-5000, got {value:F0})");
                 return value;
@@ -207,8 +284,7 @@ namespace Kinectv1
         {
             try
             {
-                Settings.Default.VoiceActivityThreshold = threshold;
-                SaveAllSettings();
+                SetFloat("VoiceActivityThreshold", threshold);
                 Console.WriteLine($"Voice: Saved VAD threshold: {threshold:F0}");
             }
             catch (Exception ex)
@@ -224,7 +300,7 @@ namespace Kinectv1
         {
             try
             {
-                var value = Settings.Default.DiscordVoiceActivityThreshold;
+                var value = GetFloat("DiscordVoiceActivityThreshold");
                 if (value < 10f || value > 2000f)
                     LogSettingError("DiscordVoiceActivityThreshold", $"OUT OF RANGE (expected 10-2000, got {value:F0})");
                 return value;
@@ -243,8 +319,7 @@ namespace Kinectv1
         {
             try
             {
-                Settings.Default.DiscordVoiceActivityThreshold = threshold;
-                SaveAllSettings();
+                SetFloat("DiscordVoiceActivityThreshold", threshold);
                 Console.WriteLine($"Discord: Saved VAD threshold: {threshold:F0}");
             }
             catch (Exception ex)
@@ -257,7 +332,7 @@ namespace Kinectv1
         {
             try
             {
-                var value = Settings.Default.VoiceConfidenceThreshold;
+                var value = GetFloat("VoiceConfidenceThreshold");
                 if (value < 0f || value > 1f)
                     LogSettingError("VoiceConfidenceThreshold", $"OUT OF RANGE (expected 0.0-1.0, got {value:F2})");
                 return value;
@@ -273,8 +348,7 @@ namespace Kinectv1
         {
             try
             {
-                Settings.Default.VoiceConfidenceThreshold = threshold;
-                SaveAllSettings();
+                SetFloat("VoiceConfidenceThreshold", threshold);
                 Console.WriteLine($"Voice: Saved confidence threshold: {threshold:F2}");
             }
             catch (Exception ex)
@@ -287,10 +361,10 @@ namespace Kinectv1
         {
             try
             {
-                var value = Settings.Default.VoiceHighConfidenceThreshold;
+                var value = GetFloat("VoiceHighConfidenceThreshold");
                 if (value < 0f || value > 1f)
                     LogSettingError("VoiceHighConfidenceThreshold", $"OUT OF RANGE (expected 0.0-1.0, got {value:F2})");
-                var min = Settings.Default.VoiceConfidenceThreshold;
+                var min = GetFloat("VoiceConfidenceThreshold");
                 if (value < min)
                     LogSettingError("VoiceHighConfidenceThreshold", $"LESS THAN VoiceConfidenceThreshold (high={value:F2}, low={min:F2})");
                 return value;
@@ -306,8 +380,7 @@ namespace Kinectv1
         {
             try
             {
-                Settings.Default.VoiceHighConfidenceThreshold = threshold;
-                SaveAllSettings();
+                SetFloat("VoiceHighConfidenceThreshold", threshold);
                 Console.WriteLine($"Voice: Saved high confidence threshold: {threshold:F2}");
             }
             catch (Exception ex)
@@ -320,7 +393,7 @@ namespace Kinectv1
         {
             try
             {
-                var size = Settings.Default.VoiceConfidenceBufferSize;
+                var size = GetInt("VoiceConfidenceBufferSize");
                 if (size < 1 || size > 10)
                     LogSettingError("VoiceConfidenceBufferSize", $"OUT OF RANGE (expected 1-10, got {size})");
                 return size;
@@ -336,8 +409,7 @@ namespace Kinectv1
         {
             try
             {
-                Settings.Default.VoiceConfidenceBufferSize = bufferSize;
-                SaveAllSettings();
+                SetInt("VoiceConfidenceBufferSize", bufferSize);
                 Console.WriteLine($"Voice: Saved confidence buffer size: {bufferSize}");
             }
             catch (Exception ex)
@@ -350,7 +422,7 @@ namespace Kinectv1
         {
             try
             {
-                return Settings.Default.VoiceConfidenceLoggingEnabled;
+                return GetBool("VoiceConfidenceLoggingEnabled");
             }
             catch (Exception ex)
             {
@@ -363,8 +435,7 @@ namespace Kinectv1
         {
             try
             {
-                Settings.Default.VoiceConfidenceLoggingEnabled = enabled;
-                SaveAllSettings();
+                SetBool("VoiceConfidenceLoggingEnabled", enabled);
                 Console.WriteLine($"Voice: Saved confidence logging enabled: {enabled}");
             }
             catch (Exception ex)
@@ -381,7 +452,7 @@ namespace Kinectv1
         {
             try
             {
-                var deviceName = Settings.Default.SttInputDevice;
+                var deviceName = GetString("SttInputDevice");
                 if (string.IsNullOrWhiteSpace(deviceName))
                 {
                     LogSettingError("SttInputDevice", "EMPTY");
@@ -408,8 +479,7 @@ namespace Kinectv1
         {
             try
             {
-                Settings.Default.SttInputDevice = deviceName;
-                SaveAllSettings();
+                SetString("SttInputDevice", deviceName);
                 Console.WriteLine($"STT: Saved input device: {deviceName}");
             }
             catch (Exception ex)
@@ -425,7 +495,7 @@ namespace Kinectv1
         {
             try
             {
-                var deviceName = Settings.Default.TtsOutputDevice;
+                var deviceName = GetString("TtsOutputDevice");
                 if (string.IsNullOrWhiteSpace(deviceName))
                 {
                     LogSettingError("TtsOutputDevice", "EMPTY");
@@ -452,8 +522,7 @@ namespace Kinectv1
         {
             try
             {
-                Settings.Default.TtsOutputDevice = deviceName;
-                SaveAllSettings();
+                SetString("TtsOutputDevice", deviceName);
                 Console.WriteLine($"TTS: Saved output device: {deviceName}");
             }
             catch (Exception ex)
@@ -470,7 +539,7 @@ namespace Kinectv1
         {
             try
             {
-                var token = Settings.Default.DiscordBotToken;
+                var token = GetString("DiscordBotToken");
                 if (string.IsNullOrWhiteSpace(token))
                     LogSettingError("DiscordBotToken", "EMPTY");
                 return token;
@@ -489,8 +558,7 @@ namespace Kinectv1
         {
             try
             {
-                Settings.Default.DiscordBotToken = token;
-                SaveAllSettings();
+                SetString("DiscordBotToken", token);
                 Console.WriteLine($"Discord: Saved bot token (length: {(token?.Length ?? 0)} characters)");
             }
             catch (Exception ex)
@@ -506,7 +574,7 @@ namespace Kinectv1
         {
             try
             {
-                return Settings.Default.DiscordBotEnabled;
+                return GetBool("DiscordBotEnabled");
             }
             catch (Exception ex)
             {
@@ -522,8 +590,7 @@ namespace Kinectv1
         {
             try
             {
-                Settings.Default.DiscordBotEnabled = enabled;
-                SaveAllSettings();
+                SetBool("DiscordBotEnabled", enabled);
                 Console.WriteLine($"Discord: Saved bot enabled: {enabled}");
             }
             catch (Exception ex)
@@ -539,7 +606,7 @@ namespace Kinectv1
         {
             try
             {
-                var prefix = Settings.Default.DiscordBotPrefix;
+                var prefix = GetString("DiscordBotPrefix");
                 if (string.IsNullOrWhiteSpace(prefix))
                     LogSettingError("DiscordBotPrefix", "EMPTY");
                 return prefix;
@@ -558,8 +625,7 @@ namespace Kinectv1
         {
             try
             {
-                Settings.Default.DiscordBotPrefix = prefix;
-                SaveAllSettings();
+                SetString("DiscordBotPrefix", prefix);
                 Console.WriteLine($"Discord: Saved bot prefix: {prefix}");
             }
             catch (Exception ex)
@@ -575,7 +641,7 @@ namespace Kinectv1
         {
             try
             {
-                return Settings.Default.DiscordAutoJoinVoice;
+                return GetBool("DiscordAutoJoinVoice");
             }
             catch (Exception ex)
             {
@@ -591,8 +657,7 @@ namespace Kinectv1
         {
             try
             {
-                Settings.Default.DiscordAutoJoinVoice = autoJoin;
-                SaveAllSettings();
+                SetBool("DiscordAutoJoinVoice", autoJoin);
                 Console.WriteLine($"Discord: Saved auto-join voice: {autoJoin}");
             }
             catch (Exception ex)
@@ -606,7 +671,7 @@ namespace Kinectv1
         {
             try
             {
-                var value = Settings.Default.FaceThreshold;
+                var value = GetFloat("FaceThreshold");
                 if (value < 0f || value > 1f)
                     LogSettingError("FaceThreshold", $"OUT OF RANGE (expected 0.0-1.0, got {value:F2})");
                 return value;
@@ -622,8 +687,7 @@ namespace Kinectv1
         {
             try
             {
-                Settings.Default.FaceThreshold = threshold;
-                SaveAllSettings();
+                SetFloat("FaceThreshold", threshold);
                 Console.WriteLine($"Saved face threshold: {threshold:F2}");
             }
             catch (Exception ex)
@@ -637,7 +701,7 @@ namespace Kinectv1
         {
             try
             {
-                var model = Settings.Default.OllamaModel;
+                var model = GetString("OllamaModel");
                 if (string.IsNullOrWhiteSpace(model))
                     LogSettingError("OllamaModel", "EMPTY");
                 return model;
@@ -653,8 +717,7 @@ namespace Kinectv1
         {
             try
             {
-                Settings.Default.OllamaModel = model;
-                SaveAllSettings();
+                SetString("OllamaModel", model);
                 Console.WriteLine($"Saved Ollama model: {model}");
             }
             catch (Exception ex)
@@ -667,7 +730,7 @@ namespace Kinectv1
         {
             try
             {
-                return Settings.Default.OllamaEnabled;
+                return GetBool("OllamaEnabled");
             }
             catch (Exception ex)
             {
@@ -680,8 +743,7 @@ namespace Kinectv1
         {
             try
             {
-                Settings.Default.OllamaEnabled = enabled;
-                SaveAllSettings();
+                SetBool("OllamaEnabled", enabled);
                 Console.WriteLine($"Saved Ollama enabled: {enabled}");
             }
             catch (Exception ex)
@@ -694,7 +756,7 @@ namespace Kinectv1
         {
             try
             {
-                var value = Settings.Default.OllamaMaxMessagesPerSpeaker;
+                var value = GetInt("OllamaMaxMessagesPerSpeaker");
                 if (value <= 0 || value > 100)
                     LogSettingError("OllamaMaxMessagesPerSpeaker", $"OUT OF RANGE (expected 1-100, got {value})");
                 return value;
@@ -710,7 +772,7 @@ namespace Kinectv1
         {
             try
             {
-                var value = Settings.Default.OllamaMaxSystemMessages;
+                var value = GetInt("OllamaMaxSystemMessages");
                 if (value <= 0 || value > 10)
                     LogSettingError("OllamaMaxSystemMessages", $"OUT OF RANGE (expected 1-10, got {value})");
                 return value;
@@ -726,7 +788,7 @@ namespace Kinectv1
         {
             try
             {
-                var value = Settings.Default.OllamaConversationTimeoutMinutes;
+                var value = GetInt("OllamaConversationTimeoutMinutes");
                 if (value <= 0 || value > 1440)
                     LogSettingError("OllamaConversationTimeoutMinutes", $"OUT OF RANGE (expected 1-1440, got {value})");
                 return value;
@@ -742,7 +804,7 @@ namespace Kinectv1
         {
             try
             {
-                return Settings.Default.OllamaMemoryEnabled;
+                return GetBool("OllamaMemoryEnabled");
             }
             catch (Exception ex)
             {
@@ -755,8 +817,7 @@ namespace Kinectv1
         {
             try
             {
-                Settings.Default.OllamaMemoryEnabled = enabled;
-                SaveAllSettings();
+                SetBool("OllamaMemoryEnabled", enabled);
                 Console.WriteLine($"Ollama: Saved memory enabled: {enabled}");
             }
             catch (Exception ex)
@@ -770,7 +831,7 @@ namespace Kinectv1
         {
             try
             {
-                var path = Settings.Default.ConversationHistoryPath;
+                var path = GetString("ConversationHistoryPath");
                 if (string.IsNullOrWhiteSpace(path))
                 {
                     LogSettingError("ConversationHistoryPath", "EMPTY");
@@ -793,8 +854,7 @@ namespace Kinectv1
         {
             try
             {
-                Settings.Default.ConversationHistoryPath = path;
-                SaveAllSettings();
+                SetString("ConversationHistoryPath", path);
                 Console.WriteLine($"Saved conversation history path: {path}");
             }
             catch (Exception ex)
@@ -808,7 +868,7 @@ namespace Kinectv1
         {
             try
             {
-                var path = Settings.Default.SystemPromptPath;
+                var path = GetString("SystemPromptPath");
                 if (string.IsNullOrWhiteSpace(path))
                 {
                     LogSettingError("SystemPromptPath", "EMPTY");
@@ -830,8 +890,7 @@ namespace Kinectv1
         {
             try
             {
-                Settings.Default.SystemPromptPath = path;
-                SaveAllSettings();
+                SetString("SystemPromptPath", path);
                 Console.WriteLine($"Saved system prompt path: {path}");
             }
             catch (Exception ex)
@@ -845,7 +904,7 @@ namespace Kinectv1
         {
             try
             {
-                return Settings.Default.TtsEnabled;
+                return GetBool("TtsEnabled");
             }
             catch (Exception ex)
             {
@@ -858,8 +917,7 @@ namespace Kinectv1
         {
             try
             {
-                Settings.Default.TtsEnabled = enabled;
-                SaveAllSettings();
+                SetBool("TtsEnabled", enabled);
                 Console.WriteLine($"TTS: Saved TTS enabled: {enabled}");
             }
             catch (Exception ex)
@@ -868,19 +926,49 @@ namespace Kinectv1
             }
         }
 
+        public static string LoadTtsModelFolder()
+        {
+            try
+            {
+                var folder = GetString("ttsmodelfolder");
+                if (string.IsNullOrWhiteSpace(folder))
+                {
+                    // Default folder for Kokoro
+                    folder = Path.Combine("models", "tts", "kokoro");
+                }
+                return folder;
+            }
+            catch (Exception ex)
+            {
+                LogSettingError("ttsmodelfolder", $"READ FAILED: {ex.Message}");
+                return null;
+            }
+        }
+
+        public static void SaveTtsModelFolder(string folder)
+        {
+            try
+            {
+                SetString("ttsmodelfolder", folder);
+                Console.WriteLine($"TTS: Saved TTS model folder: {folder}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"ERROR: Error saving TTS model folder: {ex.Message}");
+            }
+        }
+
         public static string LoadTtsModelPath()
         {
             try
             {
-                var path = Settings.Default.TtsModelPath;
+                var path = GetString("TtsModelPath");
                 if (string.IsNullOrWhiteSpace(path))
                 {
-                    LogSettingError("TtsModelPath", "EMPTY");
+                    // Default to Kokoro-82M ONNX path without error noise
+                    path = Path.Combine("models", "tts", "kokoro-82M", "onnx", "model_q8f16.onnx");
                 }
-                else if (!File.Exists(path))
-                {
-                    LogSettingError("TtsModelPath", "NOT FOUND");
-                }
+                // Do not log errors if file doesn't exist; Kokoro service handles this gracefully
                 return path;
             }
             catch (Exception ex)
@@ -894,8 +982,7 @@ namespace Kinectv1
         {
             try
             {
-                Settings.Default.TtsModelPath = path;
-                SaveAllSettings();
+                SetString("TtsModelPath", path);
                 Console.WriteLine($"TTS: Saved TTS model path: {path}");
             }
             catch (Exception ex)
@@ -908,16 +995,8 @@ namespace Kinectv1
         {
             try
             {
-                var path = Settings.Default.TtsCmudictPath;
-                if (string.IsNullOrWhiteSpace(path))
-                {
-                    LogSettingError("TtsCmudictPath", "EMPTY");
-                }
-                else if (!File.Exists(path))
-                {
-                    LogSettingError("TtsCmudictPath", "NOT FOUND");
-                }
-                return path;
+                // Kokoro doesn't require CMU dict; return as-is without error logging
+                return GetString("TtsCmudictPath");
             }
             catch (Exception ex)
             {
@@ -930,8 +1009,7 @@ namespace Kinectv1
         {
             try
             {
-                Settings.Default.TtsCmudictPath = path;
-                SaveAllSettings();
+                SetString("TtsCmudictPath", path);
                 Console.WriteLine($"TTS: Saved CMU dict path: {path}");
             }
             catch (Exception ex)
@@ -944,16 +1022,8 @@ namespace Kinectv1
         {
             try
             {
-                var path = Settings.Default.TtsSymbolsPath;
-                if (string.IsNullOrWhiteSpace(path))
-                {
-                    LogSettingError("TtsSymbolsPath", "EMPTY");
-                }
-                else if (!File.Exists(path))
-                {
-                    LogSettingError("TtsSymbolsPath", "NOT FOUND");
-                }
-                return path;
+                // Kokoro doesn't require symbols; return as-is without error logging
+                return GetString("TtsSymbolsPath");
             }
             catch (Exception ex)
             {
@@ -966,8 +1036,7 @@ namespace Kinectv1
         {
             try
             {
-                Settings.Default.TtsSymbolsPath = path;
-                SaveAllSettings();
+                SetString("TtsSymbolsPath", path);
                 Console.WriteLine($"TTS: Saved symbols path: {path}");
             }
             catch (Exception ex)
@@ -980,15 +1049,13 @@ namespace Kinectv1
         {
             try
             {
-                var path = Settings.Default.TtsVocoderModelPath;
+                var path = GetString("TtsVocoderModelPath");
                 if (string.IsNullOrWhiteSpace(path))
                 {
-                    LogSettingError("TtsVocoderModelPath", "EMPTY");
+                    // Default to Kokoro-82M ONNX path without error noise
+                    path = Path.Combine("models", "tts", "kokoro-82M", "onnx", "model_q8f16.onnx");
                 }
-                else if (!File.Exists(path))
-                {
-                    LogSettingError("TtsVocoderModelPath", "NOT FOUND");
-                }
+                // Do not log errors if file doesn't exist; Kokoro service handles this gracefully
                 return path;
             }
             catch (Exception ex)
@@ -1002,8 +1069,7 @@ namespace Kinectv1
         {
             try
             {
-                Settings.Default.TtsVocoderModelPath = path;
-                SaveAllSettings();
+                SetString("TtsVocoderModelPath", path);
                 Console.WriteLine($"TTS: Saved vocoder model path: {path}");
             }
             catch (Exception ex)
@@ -1016,23 +1082,20 @@ namespace Kinectv1
         {
             try
             {
-                var speaker = Settings.Default.TtsSpeaker;
+                var speaker = GetString("TtsSpeaker");
                 if (string.IsNullOrWhiteSpace(speaker))
                 {
-                    LogSettingError("TtsSpeaker", "EMPTY");
+                    // Default to Kokoro's English male voice if not set
+                    speaker = "em_alex";
+                    SetString("TtsSpeaker", speaker);
                 }
-                else
-                {
-                    int dummy;
-                    if (!int.TryParse(speaker, out dummy))
-                        LogSettingError("TtsSpeaker", $"INVALID '{speaker}' (expected numeric id)");
-                }
+                // No numeric validation: Kokoro uses named voice keys like 'em_alex'
                 return speaker;
             }
             catch (Exception ex)
             {
                 LogSettingError("TtsSpeaker", $"READ FAILED: {ex.Message}");
-                return null;
+                return "em_alex";
             }
         }
 
@@ -1040,8 +1103,7 @@ namespace Kinectv1
         {
             try
             {
-                Settings.Default.TtsSpeaker = speaker;
-                SaveAllSettings();
+                SetString("TtsSpeaker", speaker);
                 Console.WriteLine($"TTS: Saved TTS speaker: {speaker}");
             }
             catch (Exception ex)
@@ -1054,11 +1116,20 @@ namespace Kinectv1
         {
             try
             {
-                return Settings.Default.TtsUseGpu;
+                // Prefer exact settings.settings key: 'ttsusegpu'
+                var v = GetBool("ttsusegpu");
+                if (v) return true; // if true, short-circuit
+                if (!v)
+                {
+                    // If false could be default; try legacy key as fallback
+                    var legacy = GetBool("TtsUseGpu");
+                    return legacy;
+                }
+                return v;
             }
             catch (Exception ex)
             {
-                LogSettingError("TtsUseGpu", $"READ FAILED: {ex.Message}");
+                LogSettingError("ttsusegpu", $"READ FAILED: {ex.Message}");
                 return false;
             }
         }
@@ -1067,8 +1138,10 @@ namespace Kinectv1
         {
             try
             {
-                Settings.Default.TtsUseGpu = useGpu;
-                SaveAllSettings();
+                // Write primary key as requested
+                SetBool("ttsusegpu", useGpu);
+                // Also write legacy key for backward compatibility
+                SetBool("TtsUseGpu", useGpu);
                 Console.WriteLine($"TTS: Saved TTS GPU preference: {useGpu}");
             }
             catch (Exception ex)
@@ -1077,6 +1150,44 @@ namespace Kinectv1
             }
         }
 
+        // GPU device selection (CUDA)
+        public static int LoadTtsGpuDeviceId()
+        {
+            try
+            {
+                // Prefer exact key 'ttsgpudeviceid', fallback to 'TtsGpuDeviceId'
+                var id = GetInt("ttsgpudeviceid", 0);
+                if (id == 0)
+                {
+                    var legacy = GetInt("TtsGpuDeviceId", 0);
+                    if (legacy != 0) id = legacy;
+                }
+                if (id < 0) id = 0;
+                return id;
+            }
+            catch (Exception ex)
+            {
+                LogSettingError("ttsgpudeviceid", $"READ FAILED: {ex.Message}");
+                return 0;
+            }
+        }
+
+        public static void SaveTtsGpuDeviceId(int deviceId)
+        {
+            try
+            {
+                if (deviceId < 0) deviceId = 0;
+                SetInt("ttsgpudeviceid", deviceId);
+                // Write legacy for compatibility
+                SetInt("TtsGpuDeviceId", deviceId);
+                Console.WriteLine($"TTS: Saved CUDA GPU device id: {deviceId}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"ERROR: Error saving CUDA GPU device id: {ex.Message}");
+            }
+        }
+        
         /// <summary>
         /// Load local TTS volume setting (0.0 to 1.0)
         /// </summary>
@@ -1084,7 +1195,7 @@ namespace Kinectv1
         {
             try
             {
-                var value = Settings.Default.LocalTtsVolume;
+                var value = GetDouble("LocalTtsVolume");
                 if (value < 0.0 || value > 1.0)
                     LogSettingError("LocalTtsVolume", $"OUT OF RANGE (expected 0.0-1.0, got {value:F3})");
                 return value;
@@ -1103,8 +1214,7 @@ namespace Kinectv1
         {
             try
             {
-                Settings.Default.LocalTtsVolume = volume;
-                SaveAllSettings();
+                SetDouble("LocalTtsVolume", volume);
                 Console.WriteLine($"TTS: Saved local volume: {volume * 100:F0}%");
             }
             catch (Exception ex)
@@ -1120,7 +1230,7 @@ namespace Kinectv1
         {
             try
             {
-                var value = Settings.Default.DiscordTtsVolume;
+                var value = GetDouble("DiscordTtsVolume");
                 if (value < 0.0 || value > 1.0)
                     LogSettingError("DiscordTtsVolume", $"OUT OF RANGE (expected 0.0-1.0, got {value:F3})");
                 return value;
@@ -1139,8 +1249,7 @@ namespace Kinectv1
         {
             try
             {
-                Settings.Default.DiscordTtsVolume = volume;
-                SaveAllSettings();
+                SetDouble("DiscordTtsVolume", volume);
                 Console.WriteLine($"TTS: Saved Discord volume: {volume * 100:F0}%");
             }
             catch (Exception ex)
@@ -1154,7 +1263,7 @@ namespace Kinectv1
         {
             try
             {
-                return Settings.Default.DarkMode;
+                return GetBool("DarkMode");
             }
             catch (Exception ex)
             {
@@ -1167,8 +1276,7 @@ namespace Kinectv1
         {
             try
             {
-                Settings.Default.DarkMode = darkMode;
-                SaveAllSettings();
+                SetBool("DarkMode", darkMode);
                 Console.WriteLine($"Saved dark mode: {darkMode}");
             }
             catch (Exception ex)
@@ -1182,11 +1290,11 @@ namespace Kinectv1
         {
             try
             {
-                double width = Settings.Default.WindowWidth;
-                double height = Settings.Default.WindowHeight;
-                double left = Settings.Default.WindowLeft;
-                double top = Settings.Default.WindowTop;
-                string state = Settings.Default.WindowState;
+                double width = GetDouble("WindowWidth");
+                double height = GetDouble("WindowHeight");
+                double left = GetDouble("WindowLeft");
+                double top = GetDouble("WindowTop");
+                string state = GetString("WindowState");
 
                 if (width < 300) LogSettingError("WindowWidth", $"OUT OF RANGE (value {width:F0} < 300)");
                 if (height < 200) LogSettingError("WindowHeight", $"OUT OF RANGE (value {height:F0} < 200)");
@@ -1217,12 +1325,11 @@ namespace Kinectv1
         {
             try
             {
-                Settings.Default.WindowWidth = width;
-                Settings.Default.WindowHeight = height;
-                Settings.Default.WindowLeft = left;
-                Settings.Default.WindowTop = top;
-                Settings.Default.WindowState = state;
-                SaveAllSettings();
+                SetDouble("WindowWidth", width);
+                SetDouble("WindowHeight", height);
+                SetDouble("WindowLeft", left);
+                SetDouble("WindowTop", top);
+                SetString("WindowState", state);
                 Console.WriteLine($"Saved window settings: {width:F0}x{height:F0} at ({left:F0},{top:F0}) state={state}");
             }
             catch (Exception ex)
@@ -1252,7 +1359,7 @@ namespace Kinectv1
                 SaveVoiceHighConfidenceThreshold(highConfidenceThreshold);
                 SaveVoiceConfidenceBufferSize(bufferSize);
                 SaveVoiceConfidenceLoggingEnabled(enableLogging);
-                
+
                 Console.WriteLine($"🎤 Voice confidence settings configured:");
                 Console.WriteLine($"   Confidence threshold: {confidenceThreshold:F2} (min quality level)");
                 Console.WriteLine($"   High confidence threshold: {highConfidenceThreshold:F2} (high quality level)");
@@ -1276,7 +1383,7 @@ namespace Kinectv1
                 SaveVoiceActivityThreshold(vadThreshold);
                 SaveDiscordVoiceActivityThreshold(discordVadThreshold);
                 AudioUtils.RefreshVadThreshold(); // Update cached value immediately
-                
+
                 Console.WriteLine($"🎙️ Voice Activity Detection configured:");
                 Console.WriteLine($"   Microphone VAD threshold: {vadThreshold:F0} (RMS level for voice detection)");
                 Console.WriteLine($"   Discord VAD threshold: {discordVadThreshold:F0} (RMS level for Discord audio)");
@@ -1300,7 +1407,7 @@ namespace Kinectv1
             {
                 SaveSttInputDevice(sttInputDevice);
                 SaveTtsOutputDevice(ttsOutputDevice);
-                
+
                 Console.WriteLine($"🎧 Audio device settings configured:");
                 Console.WriteLine($"   STT input device: {sttInputDevice}");
                 Console.WriteLine($"   TTS output device: {ttsOutputDevice}");
@@ -1333,7 +1440,7 @@ namespace Kinectv1
                 SaveDiscordBotPrefix(prefix);
                 SaveDiscordAutoJoinVoice(autoJoinVoice);
                 SaveDiscordVoiceActivityThreshold(discordVadThreshold);
-                
+
                 Console.WriteLine($"🤖 Discord settings configured:");
                 Console.WriteLine($"   Bot enabled: {enabled}");
                 Console.WriteLine($"   Token configured: {!string.IsNullOrEmpty(token)}");
@@ -1363,7 +1470,7 @@ namespace Kinectv1
                 var prefix = LoadDiscordBotPrefix();
                 var autoJoin = LoadDiscordAutoJoinVoice();
                 var discordVadThreshold = LoadDiscordVoiceActivityThreshold();
-                
+
                 return $"🤖 Discord Bot Settings:\n" +
                        $"   Enabled: {enabled}\n" +
                        $"   Token configured: {(!string.IsNullOrEmpty(token) ? "Yes" : "No")}\n" +
@@ -1389,7 +1496,7 @@ namespace Kinectv1
                 var loggingEnabled = LoadVoiceConfidenceLoggingEnabled();
                 var vadThreshold = LoadVoiceActivityThreshold();
                 var discordVadThreshold = LoadDiscordVoiceActivityThreshold();
-                
+
                 return $"🎤 Voice Recognition Settings:\n" +
                        $"   Microphone VAD threshold: {vadThreshold:F0} (voice activity detection)\n" +
                        $"   Discord VAD threshold: {discordVadThreshold:F0} (Discord voice activity detection)\n" +
@@ -1416,7 +1523,7 @@ namespace Kinectv1
             {
                 var sttInputDevice = LoadSttInputDevice();
                 var ttsOutputDevice = LoadTtsOutputDevice();
-                
+
                 return $"🎧 Audio Device Settings:\n" +
                        $"   STT Input Device: {sttInputDevice}\n" +
                        $"   TTS Output Device: {ttsOutputDevice}";
@@ -1435,7 +1542,7 @@ namespace Kinectv1
             try
             {
                 Console.WriteLine("🎧🎤🔊 === AUDIO DEVICE CONFIGURATION DEMO ===");
-                
+
                 // Show all available input devices
                 Console.WriteLine("\n🎤 Available STT Input Devices (Microphones):");
                 var inputDevices = AudioDeviceManager.GetInputDevices();
@@ -1447,7 +1554,7 @@ namespace Kinectv1
                         var testResult = AudioDeviceManager.TestInputDevice(device.DeviceNumber);
                         var statusIcon = testResult ? "✅" : "❌";
                         var defaultIcon = device.IsDefault ? " 🌟" : "";
-                        
+
                         Console.WriteLine($"   [{device.DeviceNumber}] {device.DeviceName}{defaultIcon} {statusIcon}");
                         Console.WriteLine($"       Channels: {device.Channels}, Product: {device.ProductName}");
                     }
@@ -1456,7 +1563,7 @@ namespace Kinectv1
                 {
                     Console.WriteLine("   ❌ No input devices found");
                 }
-                
+
                 // Show all available output devices
                 Console.WriteLine("\n🔊 Available TTS Output Devices (Speakers/Headphones):");
                 var outputDevices = AudioDeviceManager.GetOutputDevices();
@@ -1468,7 +1575,7 @@ namespace Kinectv1
                         var testResult = AudioDeviceManager.TestOutputDevice(device.DeviceNumber);
                         var statusIcon = testResult ? "✅" : "❌";
                         var defaultIcon = device.IsDefault ? " 🌟" : "";
-                        
+
                         Console.WriteLine($"   [{device.DeviceNumber}] {device.DeviceName}{defaultIcon} {statusIcon}");
                         Console.WriteLine($"       Channels: {device.Channels}, Product: {device.ProductName}");
                     }
@@ -1477,15 +1584,15 @@ namespace Kinectv1
                 {
                     Console.WriteLine("   ❌ No output devices found");
                 }
-                
+
                 // Show current configuration
                 Console.WriteLine("\n⚙️ Current Configuration:");
                 Console.WriteLine($"   STT Input Device Setting: '{LoadSttInputDevice()}'");
                 Console.WriteLine($"   TTS Output Device Setting: '{LoadTtsOutputDevice()}'");
-                
+
                 var currentInput = AudioDeviceManager.GetConfiguredInputDevice();
                 var currentOutput = AudioDeviceManager.GetConfiguredOutputDevice();
-                
+
                 if (currentInput != null)
                 {
                     Console.WriteLine($"   ✅ Configured STT Input: {currentInput.DeviceName} (Device #{currentInput.DeviceNumber})");
@@ -1494,7 +1601,7 @@ namespace Kinectv1
                 {
                     Console.WriteLine($"   ⚠️ STT Input: Using system default");
                 }
-                
+
                 if (currentOutput != null)
                 {
                     Console.WriteLine($"   ✅ Configured TTS Output: {currentOutput.DeviceName} (Device #{currentOutput.DeviceNumber})");
@@ -1503,20 +1610,20 @@ namespace Kinectv1
                 {
                     Console.WriteLine($"   ⚠️ TTS Output: Using system default");
                 }
-                
+
                 // Demo configuration changes
                 Console.WriteLine("\n🔧 Configuration Examples:");
                 Console.WriteLine("   To set STT input device:");
                 Console.WriteLine("   AppSettings.SaveSttInputDevice(\"Microphone Name\");");
                 Console.WriteLine("   AppSettings.SaveSttInputDevice(\"Default\"); // Use system default");
-                
+
                 Console.WriteLine("\n   To set TTS output device:");
                 Console.WriteLine("   AppSettings.SaveTtsOutputDevice(\"Speaker Name\");");
                 Console.WriteLine("   AppSettings.SaveTtsOutputDevice(\"Default\"); // Use system default");
-                
+
                 Console.WriteLine("\n   To configure both devices:");
                 Console.WriteLine("   AppSettings.ConfigureAudioDeviceSettings(\"Mic Name\", \"Speaker Name\");");
-                
+
                 Console.WriteLine("\n🎧🎤🔊 === END AUDIO DEVICE DEMO ===");
             }
             catch (Exception ex)
@@ -1530,7 +1637,7 @@ namespace Kinectv1
         {
             try
             {
-                var path = Settings.Default.SttModelPath;
+                var path = GetString("SttModelPath");
                 if (string.IsNullOrWhiteSpace(path)) LogSettingError("SttModelPath", "EMPTY");
                 else if (!Directory.Exists(path)) LogSettingError("SttModelPath", $"NOT FOUND '{path}'");
                 return path;
@@ -1544,7 +1651,7 @@ namespace Kinectv1
 
         public static void SaveSttModelPath(string path)
         {
-            try { Settings.Default.SttModelPath = path; SaveAllSettings(); Console.WriteLine($"STT: Saved model path: {path}"); }
+            try { SetString("SttModelPath", path); Console.WriteLine($"STT: Saved model path: {path}"); }
             catch (Exception ex) { Console.WriteLine($"ERROR: Error saving STT model path: {ex.Message}"); }
         }
 
@@ -1552,7 +1659,7 @@ namespace Kinectv1
         {
             try
             {
-                var path = Settings.Default.SpeakerEmbeddingModelPath;
+                var path = GetString("SpeakerEmbeddingModelPath");
                 if (string.IsNullOrWhiteSpace(path)) LogSettingError("SpeakerEmbeddingModelPath", "EMPTY");
                 else if (!File.Exists(path)) LogSettingError("SpeakerEmbeddingModelPath", "NOT FOUND");
                 return path;
@@ -1566,7 +1673,7 @@ namespace Kinectv1
 
         public static void SaveSpeakerEmbeddingModelPath(string path)
         {
-            try { Settings.Default.SpeakerEmbeddingModelPath = path; SaveAllSettings(); Console.WriteLine($"Saved speaker embedding model path: {path}"); }
+            try { SetString("SpeakerEmbeddingModelPath", path); Console.WriteLine($"Saved speaker embedding model path: {path}"); }
             catch (Exception ex) { Console.WriteLine($"ERROR: Error saving speaker embedding model path: {ex.Message}"); }
         }
 
@@ -1581,6 +1688,7 @@ namespace Kinectv1
                        $"   Enabled: {LoadTtsEnabled()}\n" +
                        $"   Speaker: {LoadTtsSpeaker()}\n" +
                        $"   Execution: {(LoadTtsUseGpu() ? "GPU" : "CPU")}\n" +
+                       $"   Model Folder: {LoadTtsModelFolder()}\n" +
                        $"   Model: {LoadTtsModelPath()}\n" +
                        $"   Vocoder: {LoadTtsVocoderModelPath()}\n" +
                        $"   CMU Dict: {LoadTtsCmudictPath()}\n" +
@@ -1623,29 +1731,63 @@ namespace Kinectv1
             try
             {
                 Console.WriteLine("🎧 Initializing audio devices...");
-                
-                // Log all available devices
-                AudioDeviceManager.LogAllDevices();
-                
-                // Log current STT configuration
-                AudioInputHelper.LogCurrentConfiguration();
-                
-                // Log current TTS output device
-                var outputDevice = AudioDeviceManager.GetConfiguredOutputDevice();
-                if (outputDevice != null)
+
+                // Suppress verbose enumeration
+                // AudioDeviceManager.LogAllDevices();
+
+                // Log current STT configuration (selection only)
+                var input = AudioDeviceManager.GetConfiguredInputDevice();
+                if (input != null)
                 {
-                    Console.WriteLine($"🔊 Current TTS Output: {outputDevice.DeviceName} (Device #{outputDevice.DeviceNumber})");
+                    Console.WriteLine($"🎤 Using STT input device: {input.DeviceName} (Device #{input.DeviceNumber})");
                 }
                 else
                 {
-                    Console.WriteLine("🔊 Current TTS Output: Default device");
+                    Console.WriteLine("🎤 STT input device: Default");
                 }
-                
+
+                // Log current TTS output device (selection only)
+                var outputDevice = AudioDeviceManager.GetConfiguredOutputDevice();
+                if (outputDevice != null)
+                {
+                    Console.WriteLine($"🔊 Using TTS output device: {outputDevice.DeviceName} (Device #{outputDevice.DeviceNumber})");
+                }
+                else
+                {
+                    Console.WriteLine("🔊 TTS output device: Default");
+                }
+
                 Console.WriteLine("🎧 Audio device initialization complete!");
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"❌ ERROR: Audio device initialization failed: {ex.Message}");
+            }
+        }
+
+        public static bool LoadTtsPreferDirectML()
+        {
+            try
+            {
+                return GetBool("TtsPreferDirectML");
+            }
+            catch (Exception ex)
+            {
+                LogSettingError("TtsPreferDirectML", $"READ FAILED: {ex.Message}");
+                return false;
+            }
+        }
+
+        public static void SaveTtsPreferDirectML(bool preferDml)
+        {
+            try
+            {
+                SetBool("TtsPreferDirectML", preferDml);
+                Console.WriteLine($"TTS: Saved Prefer DirectML: {preferDml}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"ERROR: Error saving Prefer DirectML: {ex.Message}");
             }
         }
     }

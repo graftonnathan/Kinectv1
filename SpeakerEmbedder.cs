@@ -8,6 +8,7 @@ public static class SpeakerEmbedder
 {
     private static InferenceSession? _model;
     private static bool _usingGpu = false;
+    private static string _lastModelPath = null;
 
     public static void Load(string modelPath)
     {
@@ -16,11 +17,16 @@ public static class SpeakerEmbedder
             if (!File.Exists(modelPath))
                 throw new FileNotFoundException($"Speaker model not found: {modelPath}");
 
-            // TEMPORARY: Use CPU-only to avoid CUDA issues
-            _model = CreateCpuOnlySession(modelPath);
-            
+            // Dispose previous session if any before recreating
+            try { _model?.Dispose(); } catch { }
+
+            // TEMP: Force CPU for isolation (avoid GPU EP for embedder)
+            var requestedGpu = false;
+            _model = Kinectv1.OnnxSessionFactory.Create(modelPath, requestedGpu, out _usingGpu);
+            _lastModelPath = modelPath;
+
             var meta = _model.InputMetadata;
-            Console.WriteLine($"SpeakerEmbedder loaded (CPU-ONLY) - {modelPath}");
+            Console.WriteLine($"SpeakerEmbedder loaded (FORCED CPU) - {modelPath}");
             Console.WriteLine("Speaker model input nodes:");
             foreach (var name in meta.Keys)
             {
@@ -34,16 +40,23 @@ public static class SpeakerEmbedder
         }
     }
 
-    private static InferenceSession CreateCpuOnlySession(string modelPath)
+    public static bool ReloadFromSettings()
     {
-        // CPU-only for maximum stability
-        var cpuOptions = new SessionOptions();
-        cpuOptions.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL;
-        
-        var session = new InferenceSession(modelPath, cpuOptions);
-        _usingGpu = false;
-        Console.WriteLine("💻 SpeakerEmbedder using CPU (stable mode)");
-        return session;
+        try
+        {
+            var path = Kinectv1.AppSettings.LoadSpeakerEmbeddingModelPath();
+            if (string.IsNullOrWhiteSpace(path)) return false;
+            var baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            var fullPath = Path.IsPathRooted(path) ? path : Path.Combine(baseDir, path);
+            if (!File.Exists(fullPath)) return false;
+            Load(fullPath);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SpeakerEmbedder reload failed: {ex.Message}");
+            return false;
+        }
     }
 
     public static float[] Embed(float[] pcm)
@@ -53,15 +66,8 @@ public static class SpeakerEmbedder
 
         try
         {
-            // Pyannote model expects 3D tensor: [batch_size, channels, samples]
-            // For mono audio: [1, 1, samples]
             var input = new DenseTensor<float>(new[] { 1, 1, pcm.Length });
-            
-            // Copy PCM data into the tensor
-            for (int i = 0; i < pcm.Length; i++)
-            {
-                input[0, 0, i] = pcm[i];
-            }
+            for (int i = 0; i < pcm.Length; i++) input[0, 0, i] = pcm[i];
 
             var inputs = new[]
             {
@@ -70,18 +76,18 @@ public static class SpeakerEmbedder
 
             using var results = _model.Run(inputs);
             var output = results.First().AsEnumerable<float>().ToArray();
-            
             Console.WriteLine($"🔊 Generated speaker embedding of size: {output.Length}");
             return output;
         }
         catch (Exception ex)
         {
             Console.WriteLine($"Speaker embedding failed: {ex.Message}");
-            return new float[512]; // Return dummy embedding as fallback
+            return new float[512];
         }
     }
 
-    public static bool IsUsingGpu => _usingGpu; // Always false for now
+    public static bool IsUsingGpu => _usingGpu;
+    public static bool IsLoaded => _model != null;
 }
 
 

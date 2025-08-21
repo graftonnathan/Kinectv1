@@ -1096,8 +1096,8 @@ namespace Kinectv1
                             Console.WriteLine($"🎤 Using selected TTS speaker: {currentSpeakerRefId}");
 
                             // CONDITIONAL OUTPUT: Based on which input sources are enabled
-                            Task localTtsTask = Task.CompletedTask;
-                            Task discordTtsTask = Task.CompletedTask;
+                            Task<bool> localTtsTask = Task.FromResult(true);
+                            Task<bool> discordTtsTask = Task.FromResult(false);
 
                             // Only play locally if microphone input is enabled
                             if (_isMicrophoneInputEnabled)
@@ -1129,6 +1129,9 @@ namespace Kinectv1
 
                             // Wait for enabled outputs to complete
                             await Task.WhenAll(localTtsTask, discordTtsTask);
+
+                            var localOk = await localTtsTask;
+                            var discordOk = await discordTtsTask;
                             
                             var outputSummary = "";
                             if (_isMicrophoneInputEnabled && _isDiscordInputEnabled)
@@ -1141,6 +1144,11 @@ namespace Kinectv1
                                 outputSummary = "no output (both inputs disabled)";
                                 
                             Console.WriteLine($"✅ TTS completed for {outputSummary}");
+
+                            if (!discordOk && _isDiscordInputEnabled)
+                            {
+                                Console.WriteLine("❗ Discord TTS failed or did not play. Check voice connection and native libs (opus/libsodium).");
+                            }
                         }
                         catch (OperationCanceledException)
                         {
@@ -1931,15 +1939,15 @@ namespace Kinectv1
                 // Fallback to first speaker if none selected
                 if (TtsSpeakerComboBox.Items.Count > 0 && TtsSpeakerComboBox.Items[0] is ComboBoxItem firstItem)
                 {
-                    return firstItem.Tag?.ToString() ?? "225"; // Default to Speaker 1's REF ID
+                    return firstItem.Tag?.ToString() ?? "em_alex"; // Default to Kokoro default voice
                 }
 
-                return "225"; // Ultimate fallback
+                return "em_alex"; // Ultimate fallback
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Error getting current TTS speaker: {ex.Message}");
-                return "225"; // Fallback to Speaker 1's REF ID
+                return "em_alex"; // Fallback to Kokoro default voice
             }
         }
 
@@ -2272,14 +2280,15 @@ namespace Kinectv1
         {
             try
             {
-                var speakers = TtsSpeakerData.GetAllSpeakers();
-                if (speakers == null || speakers.Count == 0)
+                // Ensure Kokoro is initialized so voices are loaded
+                KokoroTtsService.Initialize();
+                var voices = KokoroTtsService.GetVoices()?.ToList() ?? new List<string>();
+                if (voices.Count == 0)
                 {
-                    return; // No speakers, skip statistics
+                    return; // No voices, skip statistics
                 }
 
-                // Only show brief speaker count - remove detailed statistics
-                Console.WriteLine($"📋 {speakers.Count} TTS speakers loaded");
+                Console.WriteLine($"📋 {voices.Count} TTS voices loaded (Kokoro)");
             }
             catch (Exception ex)
             {
@@ -2288,7 +2297,7 @@ namespace Kinectv1
         }
 
         /// <summary>
-        /// Populate TTS speaker dropdown with VCTK speakers from SpeakerList.txt (without auto-selecting)
+        /// Populate TTS speaker dropdown with Kokoro voices (without auto-selecting)
         /// </summary>
         private void PopulateTtsSpeakerDropdownWithoutSelection()
         {
@@ -2296,36 +2305,35 @@ namespace Kinectv1
             {
                 TtsSpeakerComboBox.Items.Clear();
 
-                // Load speakers from the SpeakerList.txt file
-                var speakers = TtsSpeakerData.LoadSpeakers();
+                // Ensure Kokoro voices are available
+                KokoroTtsService.Initialize();
+                var voices = KokoroTtsService.GetVoices()?.ToList();
 
-                if (speakers == null || speakers.Count == 0)
+                if (voices == null || voices.Count == 0)
                 {
-                    // Add a default item indicating no speakers are available
+                    // Add a default item indicating no voices are available
                     TtsSpeakerComboBox.Items.Add(new ComboBoxItem
                     {
-                        Content = "No speakers available",
-                        Tag = "225" // Default to Speaker 1's REF ID
+                        Content = "No voices available",
+                        Tag = "em_alex" // Default Kokoro voice key
                     });
                 }
                 else
                 {
-                    // Add speakers to dropdown in the order they appear in the file
-                    foreach (var speaker in speakers)
+                    foreach (var voiceKey in voices)
                     {
-                        var comboBoxItem = new ComboBoxItem
+                        // Display a friendly name (replace underscores with spaces)
+                        var display = voiceKey.Replace('_', ' ');
+                        var item = new ComboBoxItem
                         {
-                            Content = speaker.DisplayText,  // e.g., "8 - 23 M English Southern England"
-                            Tag = speaker.RefId.ToString(), // The REF ID that the model expects (e.g., "232")
-                            IsEnabled = true,
-                            ToolTip = $"Speaker {speaker.SpeakerId}, REF ID: {speaker.RefId}, Age: {speaker.Age}, {speaker.Gender}, {speaker.Accent}" +
-                                     (string.IsNullOrEmpty(speaker.Region) ? "" : $", {speaker.Region}")
+                            Content = display,
+                            Tag = voiceKey,
+                            ToolTip = voiceKey
                         };
-
-                        TtsSpeakerComboBox.Items.Add(comboBoxItem);
+                        TtsSpeakerComboBox.Items.Add(item);
                     }
 
-                    Console.WriteLine($"✅ Populated {speakers.Count} TTS speakers");
+                    Console.WriteLine($"✅ Populated {voices.Count} Kokoro voices");
                 }
             }
             catch (Exception ex)
@@ -2336,8 +2344,8 @@ namespace Kinectv1
                 TtsSpeakerComboBox.Items.Clear();
                 TtsSpeakerComboBox.Items.Add(new ComboBoxItem
                 {
-                    Content = "No speakers available",
-                    Tag = "225"
+                    Content = "No voices available",
+                    Tag = "em_alex"
                 });
             }
         }

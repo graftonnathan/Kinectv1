@@ -21,10 +21,12 @@ namespace Kinectv1
         private static readonly Timer _audioProcessingTimer;
         private static readonly object _processingLock = new object();
         private static volatile bool _isProcessing = false;
+        private static volatile bool _shutdownRequested = false; // NEW: prevent processing during shutdown
 
         // NEW: Per-user Discord buffering to avoid interleaving/overwriting
         private static readonly ConcurrentDictionary<string, ConcurrentQueue<(byte[] data, int length)>> _discordUserQueues = new ConcurrentDictionary<string, ConcurrentQueue<(byte[], int)>>();
         private static volatile string _activeDiscordSource = null;
+        private static int _queueWorkRunning = 0; // prevent re-entrant timer callbacks
 
         // Events
         public static Action<float> OnRmsLevel;
@@ -39,6 +41,9 @@ namespace Kinectv1
         private static bool _discordInputEnabled = true;
         private static bool _microphoneRecording = false;
 
+        // Ensure SpeakerEmbedder loads only once
+        private static volatile bool _speakerEmbedderLoaded = false;
+
         static VoiceRecognizer()
         {
             // Faster timer for any remaining queued items (immediate processing is primary path)
@@ -49,9 +54,13 @@ namespace Kinectv1
         {
             try
             {
+                _shutdownRequested = false;
+
                 if (!Directory.Exists(modelPath))
                 {
                     Console.WriteLine($"[Vosk] Model path not found: {modelPath}");
+                    // Still start microphone capture for RMS visualization
+                    EnsureWaveInInitialized();
                     return;
                 }
 
@@ -64,14 +73,15 @@ namespace Kinectv1
                 if (_recognizer == null)
                 {
                     Console.WriteLine($"❌ VoiceRecognizer: Failed to create recognizer via VoskModelManager");
+                    // Start mic for RMS even if STT not ready
+                    EnsureWaveInInitialized();
                     return;
                 }
 
-                _waveIn = new WaveInEvent
-                {
-                    DeviceNumber = 0,
-                    WaveFormat = new WaveFormat(16000, 1)
-                };
+                // Ensure the speaker embedding model is loaded once
+                EnsureSpeakerEmbedderLoaded();
+
+                EnsureWaveInInitialized();
 
                 _voiceProcessor = new VoiceProcessor(
                     _recognizer,
@@ -94,35 +104,11 @@ namespace Kinectv1
                     {
                         // Pass voice embeddings for debugging
                         OnVoiceEmbedding?.Invoke(embedding);
-                    }
-                    // Removed Discord RMS callback - Discord audio is processed separately
+                    },
+                    // NEW: Wire Discord RMS callback so UI updates from VoiceProcessor too
+                    OnDiscordRmsLevel
                 );
 
-                _waveIn.DataAvailable += (s, a) =>
-                {
-                    // Process microphone audio directly (synchronously) only if enabled
-                    if (_microphoneInputEnabled)
-                    {
-                        lock (_processingLock)
-                        {
-                            if (!_isProcessing)
-                            {
-                                _isProcessing = true;
-                                try
-                                {
-                                    _voiceProcessor.ProcessAudio(a.Buffer, a.BytesRecorded);
-                                }
-                                finally
-                                {
-                                    _isProcessing = false;
-                                }
-                            }
-                        }
-                    }
-                };
-
-                _waveIn.StartRecording();
-                _microphoneRecording = true;
                 Console.WriteLine("✅ VoiceRecognizer: Clean pipeline active - microphone and Discord audio separated");
             }
             catch (Exception ex)
@@ -131,22 +117,123 @@ namespace Kinectv1
             }
         }
 
+        private static void EnsureSpeakerEmbedderLoaded()
+        {
+            if (_speakerEmbedderLoaded) return;
+            try
+            {
+                var modelPath = AppSettings.LoadSpeakerEmbeddingModelPath();
+                if (!string.IsNullOrWhiteSpace(modelPath))
+                {
+                    var baseDir = AppDomain.CurrentDomain.BaseDirectory;
+                    var fullPath = Path.IsPathRooted(modelPath) ? modelPath : Path.Combine(baseDir, modelPath);
+                    if (File.Exists(fullPath))
+                    {
+                        SpeakerEmbedder.Load(fullPath);
+                        _speakerEmbedderLoaded = true;
+                    }
+                    else
+                    {
+                        Console.WriteLine($"SpeakerEmbedder model not found at: {fullPath}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"SpeakerEmbedder load error: {ex.Message}");
+            }
+        }
+
+        private static void EnsureWaveInInitialized()
+        {
+            if (_waveIn != null) return;
+
+            _waveIn = new WaveInEvent
+            {
+                DeviceNumber = 0,
+                WaveFormat = new WaveFormat(16000, 1)
+            };
+
+            _waveIn.DataAvailable += (s, a) =>
+            {
+                if (_shutdownRequested) return;
+                if (!_microphoneInputEnabled) return;
+
+                // If STT pipeline isn't ready, still publish RMS so UI meters work
+                if (_voiceProcessor == null)
+                {
+                    try
+                    {
+                        float rms = AudioUtils.CalculateRms(a.Buffer, a.BytesRecorded);
+                        OnRmsLevel?.Invoke(rms);
+                    }
+                    catch { }
+                    return;
+                }
+
+                // Process microphone audio directly (synchronously) only if enabled
+                lock (_processingLock)
+                {
+                    if (_shutdownRequested) return;
+                    if (!_isProcessing && _voiceProcessor != null)
+                    {
+                        _isProcessing = true;
+                        try
+                        {
+                            _voiceProcessor.ProcessAudio(a.Buffer, a.BytesRecorded);
+                        }
+                        finally
+                        {
+                            _isProcessing = false;
+                        }
+                    }
+                }
+            };
+
+            _waveIn.StartRecording();
+            _microphoneRecording = true;
+            Console.WriteLine("🎤 Microphone recording started (RMS ready)");
+        }
+
         public static void Stop()
         {
             try
             {
-                _waveIn?.StopRecording();
-                _microphoneRecording = false;
-                _waveIn?.Dispose();
-                _recognizer?.Dispose();
-                
+                _shutdownRequested = true;
+
+                // Pause external processing timer
+                try { _audioProcessingTimer?.Change(Timeout.Infinite, Timeout.Infinite); } catch { }
+
+                // Stop microphone first to prevent further callbacks
+                try
+                {
+                    _waveIn?.StopRecording();
+                    _microphoneRecording = false;
+                }
+                catch { }
+
+                // Ensure no processing is in-flight and prevent new processing
+                lock (_processingLock)
+                {
+                    _isProcessing = false;
+                    // Drop processor reference so no one uses disposed recognizer
+                    _voiceProcessor = null;
+                }
+
+                // Dispose recognizer safely
+                try { _recognizer?.Dispose(); } catch { }
+
                 // Release reference to shared model
                 if (!string.IsNullOrEmpty(_currentModelPath))
                 {
                     VoskModelManager.ReleaseModel(_currentModelPath);
                 }
-                
-                _microphoneRecording = false;
+
+                // Dispose waveIn after stopping
+                try { _waveIn?.Dispose(); } catch { }
+                _waveIn = null;
+                _recognizer = null;
+
                 Console.WriteLine("✅ VoiceRecognizer: Stopped and released shared model reference");
             }
             catch (Exception ex)
@@ -163,6 +250,7 @@ namespace Kinectv1
         {
             try
             {
+                if (_shutdownRequested) return;
                 if (_voiceProcessor == null || audioData == null || bytesRecorded <= 0)
                 {
                     return;
@@ -187,7 +275,8 @@ namespace Kinectv1
                 // Non-Discord external audio: immediate processing
                 lock (_processingLock)
                 {
-                    if (!_isProcessing)
+                    if (_shutdownRequested) return;
+                    if (!_isProcessing && _voiceProcessor != null)
                     {
                         _isProcessing = true;
                         try
@@ -221,10 +310,14 @@ namespace Kinectv1
         /// </summary>
         private static void ProcessExternalAudioQueue(object state)
         {
+            // Reentrancy guard: ensure only one timer callback runs at a time
+            if (Interlocked.CompareExchange(ref _queueWorkRunning, 1, 0) != 0)
+                return;
             try
             {
+                if (_shutdownRequested) return;
                 // Only process if we're not already processing microphone audio
-                if (_isProcessing || _voiceProcessor == null)
+                if (_isProcessing || _voiceProcessor == null || _recognizer == null)
                 {
                     return;
                 }
@@ -243,20 +336,24 @@ namespace Kinectv1
                     }
                 }
 
-                if (!string.IsNullOrEmpty(_activeDiscordSource) && _discordUserQueues.TryGetValue(_activeDiscordSource, out var userQueue))
+                var activeSource = _activeDiscordSource; // capture to avoid races
+                if (!string.IsNullOrEmpty(activeSource) && _discordUserQueues.TryGetValue(activeSource, out var userQueue))
                 {
                     int processedForUser = 0;
                     // Process a generous batch for the active user to keep phrases intact
-                    while (processedForUser < 50 && userQueue.TryDequeue(out var item))
+                    while (!_shutdownRequested && processedForUser < 50 && userQueue.TryDequeue(out var item))
                     {
                         lock (_processingLock)
                         {
-                            if (_isProcessing) break;
+                            if (_shutdownRequested) break;
+                            if (_isProcessing || _voiceProcessor == null) break;
                             _isProcessing = true;
                             try
                             {
                                 // Update speaker hint based on active source
-                                var username = _activeDiscordSource.Substring("Discord:".Length);
+                                var username = activeSource.StartsWith("Discord:") && activeSource.Length > 8
+                                    ? activeSource.Substring("Discord:".Length)
+                                    : activeSource;
                                 SpeakerIdentifier.SetDiscordSpeakerHint(username);
                                 _voiceProcessor.ProcessAudio(item.data, item.length);
                                 processedForUser++;
@@ -280,7 +377,7 @@ namespace Kinectv1
                                 var silence = new byte[1600]; // 50ms of 16kHz mono s16 (approx)
                                 lock (_processingLock)
                                 {
-                                    if (!_isProcessing && _voiceProcessor != null)
+                                    if (!_shutdownRequested && !_isProcessing && _voiceProcessor != null)
                                     {
                                         _isProcessing = true;
                                         try
@@ -305,18 +402,19 @@ namespace Kinectv1
 
                 // 2) Fallback: Process any remaining generic external items (non-Discord)
                 int processed = 0;
-                while (processed < 10 && _externalAudioQueue.TryDequeue(out var audioItem))
+                while (!_shutdownRequested && processed < 10 && _externalAudioQueue.TryDequeue(out var audioItem))
                 {
                     lock (_processingLock)
                     {
-                        if (!_isProcessing)
+                        if (_shutdownRequested) return;
+                        if (!_isProcessing && _voiceProcessor != null)
                         {
                             _isProcessing = true;
                             try
                             {
                                 if (audioItem.source.StartsWith("Discord:") && _discordInputEnabled)
                                 {
-                                    var username = audioItem.source.Substring("Discord:".Length);
+                                    var username = audioItem.source.Length > 8 ? audioItem.source.Substring("Discord:".Length) : audioItem.source;
                                     SpeakerIdentifier.SetDiscordSpeakerHint(username);
                                 }
                                 
@@ -343,31 +441,26 @@ namespace Kinectv1
                 // Reset processing flag in case of error
                 _isProcessing = false;
             }
+            finally
+            {
+                Interlocked.Exchange(ref _queueWorkRunning, 0);
+            }
         }
 
-        /// <summary>
-        /// Check if the voice recognition system is ready to process external audio
-        /// </summary>
         public static bool IsReady()
         {
             return _voiceProcessor != null && _recognizer != null;
         }
 
-        /// <summary>
-        /// Get statistics about external audio processing
-        /// </summary>
         public static (int queueSize, bool isProcessing) GetExternalAudioStats()
         {
             return (_externalAudioQueue.Count, _isProcessing);
         }
 
-        /// <summary>
-        /// Enable or disable microphone input processing
-        /// </summary>
         public static void SetMicrophoneInputEnabled(bool enabled)
         {
             _microphoneInputEnabled = enabled;
-            Console.WriteLine($"🎤 Microphone input {(enabled ? "enabled" : "disabled")}");
+            Console.WriteLine($"🎤 Microphone input {(enabled ? "enabled" : "disabled")}" );
             
             if (_waveIn != null)
             {
@@ -386,26 +479,17 @@ namespace Kinectv1
             }
         }
 
-        /// <summary>
-        /// Enable or disable Discord input processing
-        /// </summary>
         public static void SetDiscordInputEnabled(bool enabled)
         {
             _discordInputEnabled = enabled;
             Console.WriteLine($"🤖 Discord input {(enabled ? "enabled" : "disabled")}");
         }
 
-        /// <summary>
-        /// Get current microphone input state
-        /// </summary>
         public static bool IsMicrophoneInputEnabled()
         {
             return _microphoneInputEnabled;
         }
 
-        /// <summary>
-        /// Get current Discord input state
-        /// </summary>
         public static bool IsDiscordInputEnabled()
         {
             return _discordInputEnabled;

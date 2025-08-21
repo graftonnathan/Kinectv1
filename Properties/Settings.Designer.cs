@@ -35,9 +35,9 @@ namespace Kinectv1.Properties {
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
         [global::System.Configuration.DefaultSettingValueAttribute("0.2")]
-        public float VoiceThreshold {
+        public double VoiceThreshold {
             get {
-                return ((float)(this["VoiceThreshold"]));
+                return ((double)(this["VoiceThreshold"]));
             }
             set {
                 this["VoiceThreshold"] = value;
@@ -46,34 +46,10 @@ namespace Kinectv1.Properties {
         
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("50")]
-        public float VoiceActivityThreshold {
-            get {
-                return ((float)(this["VoiceActivityThreshold"]));
-            }
-            set {
-                this["VoiceActivityThreshold"] = value;
-            }
-        }
-        
-        [global::System.Configuration.UserScopedSettingAttribute()]
-        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("25")]
-        public float DiscordVoiceActivityThreshold {
-            get {
-                return ((float)(this["DiscordVoiceActivityThreshold"]));
-            }
-            set {
-                this["DiscordVoiceActivityThreshold"] = value;
-            }
-        }
-        
-        [global::System.Configuration.UserScopedSettingAttribute()]
-        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
         [global::System.Configuration.DefaultSettingValueAttribute("0.7")]
-        public float VoiceConfidenceThreshold {
+        public double VoiceConfidenceThreshold {
             get {
-                return ((float)(this["VoiceConfidenceThreshold"]));
+                return ((double)(this["VoiceConfidenceThreshold"]));
             }
             set {
                 this["VoiceConfidenceThreshold"] = value;
@@ -83,9 +59,9 @@ namespace Kinectv1.Properties {
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
         [global::System.Configuration.DefaultSettingValueAttribute("0.9")]
-        public float VoiceHighConfidenceThreshold {
+        public double VoiceHighConfidenceThreshold {
             get {
-                return ((float)(this["VoiceHighConfidenceThreshold"]));
+                return ((double)(this["VoiceHighConfidenceThreshold"]));
             }
             set {
                 this["VoiceHighConfidenceThreshold"] = value;
@@ -119,9 +95,9 @@ namespace Kinectv1.Properties {
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
         [global::System.Configuration.DefaultSettingValueAttribute("0.45")]
-        public float FaceThreshold {
+        public double FaceThreshold {
             get {
-                return ((float)(this["FaceThreshold"]));
+                return ((double)(this["FaceThreshold"]));
             }
             set {
                 this["FaceThreshold"] = value;
@@ -238,19 +214,7 @@ namespace Kinectv1.Properties {
         
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("314")]
-        public string TtsSpeaker {
-            get {
-                return ((string)(this["TtsSpeaker"]));
-            }
-            set {
-                this["TtsSpeaker"] = value;
-            }
-        }
-        
-        [global::System.Configuration.UserScopedSettingAttribute()]
-        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
         public bool TtsUseGpu {
             get {
                 return ((bool)(this["TtsUseGpu"]));
@@ -286,7 +250,7 @@ namespace Kinectv1.Properties {
         
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("MTQwNjAwODUyNzYzMzM4NzU2Mg.Go4qyl.ZRjaXwb9RgkOil8q0mHhYvsnpcQlOVnScPHOMc")]
+        [global::System.Configuration.DefaultSettingValueAttribute("MTQwNjAwODUyNzYzMzM4NzU2Mg.GcEjb1.yvMA3GmSKEO97VAAugrDqXgPSXa4PPjYHmwbJw")]
         public string DiscordBotToken {
             get {
                 return ((string)(this["DiscordBotToken"]));
@@ -346,6 +310,102 @@ namespace Kinectv1.Properties {
         
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("Normal")]
+        public string WindowState {
+            get {
+                return ((string)(this["WindowState"]));
+            }
+            set {
+                this["WindowState"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("models\\vosk-model-en-us-0.22")]
+        public string SttModelPath {
+            get {
+                return ((string)(this["SttModelPath"]));
+            }
+            set {
+                this["SttModelPath"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("models\\pyannote_embedding.onnx")]
+        public string SpeakerEmbeddingModelPath {
+            get {
+                return ((string)(this["SpeakerEmbeddingModelPath"]));
+            }
+            set {
+                this["SpeakerEmbeddingModelPath"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("af_aoede")]
+        public string TtsSpeaker {
+            get {
+                return ((string)(this["TtsSpeaker"]));
+            }
+            set {
+                this["TtsSpeaker"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("models\\tts\\kokoro\\onnx\\model.onnx")]
+        public string TtsModelPath {
+            get {
+                return ((string)(this["TtsModelPath"]));
+            }
+            set {
+                this["TtsModelPath"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("models\\tts\\kokoro")]
+        public string TtsModelFolder {
+            get {
+                return ((string)(this["TtsModelFolder"]));
+            }
+            set {
+                this["TtsModelFolder"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("300")]
+        public double VoiceActivityThreshold {
+            get {
+                return ((double)(this["VoiceActivityThreshold"]));
+            }
+            set {
+                this["VoiceActivityThreshold"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("25")]
+        public double DiscordVoiceActivityThreshold {
+            get {
+                return ((double)(this["DiscordVoiceActivityThreshold"]));
+            }
+            set {
+                this["DiscordVoiceActivityThreshold"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
         [global::System.Configuration.DefaultSettingValueAttribute("900")]
         public double WindowWidth {
             get {
@@ -394,18 +454,6 @@ namespace Kinectv1.Properties {
         
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("Normal")]
-        public string WindowState {
-            get {
-                return ((string)(this["WindowState"]));
-            }
-            set {
-                this["WindowState"] = value;
-            }
-        }
-        
-        [global::System.Configuration.UserScopedSettingAttribute()]
-        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
         [global::System.Configuration.DefaultSettingValueAttribute("1")]
         public double LocalTtsVolume {
             get {
@@ -425,78 +473,6 @@ namespace Kinectv1.Properties {
             }
             set {
                 this["DiscordTtsVolume"] = value;
-            }
-        }
-        
-        [global::System.Configuration.UserScopedSettingAttribute()]
-        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("models\\tts\\model.onnx")]
-        public string TtsModelPath {
-            get {
-                return ((string)(this["TtsModelPath"]));
-            }
-            set {
-                this["TtsModelPath"] = value;
-            }
-        }
-        
-        [global::System.Configuration.UserScopedSettingAttribute()]
-        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("models\\tts\\cmudict.dict")]
-        public string TtsCmudictPath {
-            get {
-                return ((string)(this["TtsCmudictPath"]));
-            }
-            set {
-                this["TtsCmudictPath"] = value;
-            }
-        }
-        
-        [global::System.Configuration.UserScopedSettingAttribute()]
-        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("models\\tts\\symbols.txt")]
-        public string TtsSymbolsPath {
-            get {
-                return ((string)(this["TtsSymbolsPath"]));
-            }
-            set {
-                this["TtsSymbolsPath"] = value;
-            }
-        }
-        
-        [global::System.Configuration.UserScopedSettingAttribute()]
-        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("models\\tts\\vocoder.onnx")]
-        public string TtsVocoderModelPath {
-            get {
-                return ((string)(this["TtsVocoderModelPath"]));
-            }
-            set {
-                this["TtsVocoderModelPath"] = value;
-            }
-        }
-        
-        [global::System.Configuration.UserScopedSettingAttribute()]
-        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("models\\vosk-model-small-en-us-0.15")]
-        public string SttModelPath {
-            get {
-                return ((string)(this["SttModelPath"]));
-            }
-            set {
-                this["SttModelPath"] = value;
-            }
-        }
-        
-        [global::System.Configuration.UserScopedSettingAttribute()]
-        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("models\\pyannote_embedding.onnx")]
-        public string SpeakerEmbeddingModelPath {
-            get {
-                return ((string)(this["SpeakerEmbeddingModelPath"]));
-            }
-            set {
-                this["SpeakerEmbeddingModelPath"] = value;
             }
         }
     }
