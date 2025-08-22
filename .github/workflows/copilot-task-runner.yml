@@ -1,128 +1,112 @@
-name: Copilot Dispatcher
+name: Copilot Task Runner
 
 on:
-  pull_request:
-    branches: [dev]
-    types: [opened, reopened, ready_for_review, synchronize, labeled, unlabeled, closed]
-  workflow_dispatch: {}
+  # Reusable workflow: called by the dispatcher
+  workflow_call:
+    inputs:
+      task:
+        description: "Optional task identifier/name"
+        required: false
+        type: string
+    secrets: {}  # allow secrets: inherit
 
 permissions:
   contents: read
   pull-requests: write
 
 jobs:
-  gatekeeper:
-    name: Gatekeeper (one Copilot PR at a time)
+  summarize-and-notify:
+    name: Build PR summary (+ optional Discord)
     runs-on: ubuntu-latest
-    outputs:
-      proceed: ${{ steps.gate.outputs.proceed }}
+
+    env:
+      # Expose webhook as env; we'll test for emptiness inside the step.
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+
     steps:
-      - name: Decide queue status
-        id: gate
-        uses: actions/github-script@v7
+      - name: Debug event
+        run: |
+          echo "event_name=${{ github.event_name }}"
+          echo "base_ref=${{ github.base_ref }}"
+          echo "head_ref=${{ github.head_ref }}"
+          echo "ref=${{ github.ref }}"
+
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
         with:
-          script: |
-            const core = require('@actions/core');
-            const pr = context.payload.pull_request;
-            if (!pr) {
-              core.setOutput('proceed','false');
-              return;
-            }
-            const owner = context.repo.owner;
-            const repo  = context.repo.repo;
-            const prNumber = pr.number;
+          fetch-depth: 0
 
-            const IN_PROGRESS = 'copilot:in-progress';
-            const QUEUED      = 'copilot:queued';
+      - name: Ensure base ref is available
+        run: |
+          # Make sure the base branch exists locally (works for private repos too)
+          git fetch --no-tags origin "${{ github.base_ref }}:${{ github.base_ref }}" || \
+          git fetch --no-tags origin "${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
 
-            // helper: ensure a label exists on repo
-            async function ensureLabel(name, color, description) {
-              try {
-                await github.rest.issues.getLabel({ owner, repo, name });
-              } catch {
-                await github.rest.issues.createLabel({ owner, repo, name, color, description });
-              }
-            }
+      - name: Create diffstat summary
+        run: |
+          set -euo pipefail
 
-            await ensureLabel(IN_PROGRESS, '0e8a16', 'Currently being processed by Copilot automation');
-            await ensureLabel(QUEUED,      'c2e0c6', 'Waiting turn for Copilot automation');
+          BASE="origin/${{ github.base_ref }}"
+          if ! git rev-parse --verify "$BASE" >/dev/null 2>&1; then
+            # Fallback if origin/<base> isn't available under that refname
+            BASE="${{ github.base_ref }}"
+          fi
 
-            // List open PRs labeled "in-progress"
-            const { data: inProg } = await github.rest.search.issuesAndPullRequests({
-              q: `repo:${owner}/${repo} is:open is:pr label:"${IN_PROGRESS}"`
-            });
+          echo "### Change summary" > summary.md
+          echo "" >> summary.md
+          echo '```' >> summary.md
+          git diff --stat "$BASE...HEAD" >> summary.md || true
+          echo '```' >> summary.md
+          echo "" >> summary.md
 
-            const someoneElseInProgress = inProg.items.some(i => i.number !== prNumber);
+          echo "### Files touched" >> summary.md
+          echo "" >> summary.md
+          echo '```' >> summary.md
+          git diff --name-only "$BASE...HEAD" >> summary.md || true
+          echo '```' >> summary.md
 
-            if (someoneElseInProgress) {
-              // Mark this PR as queued and skip
-              await github.rest.issues.addLabels({ owner, repo, issue_number: prNumber, labels: [QUEUED] });
-              await github.rest.issues.createComment({
-                owner, repo, issue_number: prNumber,
-                body: `⏳ Another PR is marked **${IN_PROGRESS}**. This PR is **queued** and will run when the current one finishes.`
-              });
-              core.setOutput('proceed','false');
-              return;
-            }
-
-            // We can proceed. Make this PR "in-progress".
-            // Remove "queued" if present, add "in-progress" if missing.
-            const { data: labels } = await github.rest.issues.listLabelsOnIssue({ owner, repo, issue_number: prNumber });
-            const names = labels.map(l => l.name);
-            if (names.includes(QUEUED)) {
-              await github.rest.issues.removeLabel({ owner, repo, issue_number: prNumber, name: QUEUED }).catch(() => {});
-            }
-            if (!names.includes(IN_PROGRESS)) {
-              await github.rest.issues.addLabels({ owner, repo, issue_number: prNumber, labels: [IN_PROGRESS] });
-            }
-
-            core.setOutput('proceed','true');
-
-  run-copilot:
-    name: Run Copilot worker
-    needs: [gatekeeper]
-    if: ${{ needs.gatekeeper.outputs.proceed == 'true' }}
-    # Double-guard: never run more than one across the repo at a time.
-    concurrency:
-      group: copilot-queue
-      cancel-in-progress: false
-    uses: ./.github/workflows/copilot-task-runner.yml
-    with:
-      task: "auto"
-    secrets: inherit
-
-  tidy-labels:
-    name: Tidy labels on close/merge
-    if: ${{ github.event.action == 'closed' }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/github-script@v7
+      - name: Post sticky comment
+        uses: marocchino/sticky-pull-request-comment@v2
         with:
-          script: |
-            const owner = context.repo.owner;
-            const repo  = context.repo.repo;
-            const pr = context.payload.pull_request;
-            if (!pr) return;
+          path: summary.md
 
-            const IN_PROGRESS = 'copilot:in-progress';
-            const QUEUED      = 'copilot:queued';
+      - name: Mirror summary to Discord (if configured)
+        run: |
+          if [ -z "${DISCORD_WEBHOOK_URL:-}" ]; then
+            echo "No DISCORD_WEBHOOK_URL set; skipping Discord notify."
+            exit 0
+          fi
 
-            // Remove labels from the closed PR
-            for (const name of [IN_PROGRESS, QUEUED]) {
-              try {
-                await github.rest.issues.removeLabel({ owner, repo, issue_number: pr.number, name });
-              } catch {}
-            }
+          # Trim summary to Discord-safe chunks (~1900 chars) and send sequentially.
+          python - <<'PY'
+import os, json, textwrap, requests
+webhook = os.environ.get("DISCORD_WEBHOOK_URL","").strip()
+if not webhook:
+    raise SystemExit(0)
 
-            // Optional: nudge queued PRs with a comment so maintainers see what's next.
-            const { data: queued } = await github.rest.search.issuesAndPullRequests({
-              q: `repo:${owner}/${repo} is:open is:pr label:"${QUEUED}" sort:created-asc`
-            });
-            if (queued.items.length) {
-              const next = queued.items[0];
-              await github.rest.issues.createComment({
-                owner, repo, issue_number: next.number,
-                body: `✅ A previously active PR just closed. You are next in queue for Copilot automation. Push a new commit or reopen to trigger the dispatcher.`
-              });
-            }
+with open("summary.md","r",encoding="utf-8", errors="ignore") as f:
+    body = f.read().strip()
+
+prefix = f"[{os.environ.get('GITHUB_REPOSITORY')}] PR #{os.environ.get('GITHUB_REF_NAME','')} → {os.environ.get('GITHUB_BASE_REF','dev')} by @{os.environ.get('GITHUB_ACTOR')}\n"
+title  = os.environ.get("GITHUB_EVENT_PULL_REQUEST_TITLE","") or os.environ.get("GITHUB_HEAD_REF","")
+header = f"{prefix}{title}\n\n"
+
+msg = (header + body).strip()
+# Discord hard limit ~2000, keep margin
+chunks = textwrap.wrap(msg, width=1900, replace_whitespace=False, drop_whitespace=False)
+
+for part in chunks:
+    payload = {"content": part}
+    resp = requests.post(webhook, json=payload, timeout=15)
+    try:
+        resp.raise_for_status()
+    except Exception as e:
+        print("Discord post failed:", e, "status:", resp.status_code, "text:", resp.text)
+PY
+        env:
+          GITHUB_EVENT_PULL_REQUEST_TITLE: ${{ github.event.pull_request.title || '' }}
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+          GITHUB_HEAD_REF: ${{ github.head_ref }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_ACTOR: ${{ github.actor }}
 
