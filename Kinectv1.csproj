@@ -183,7 +183,7 @@
 		<PackageReference Include="Vosk" />
 		<PackageReference Include="System.Management" />
 		<PackageReference Include="Newtonsoft.Json" />
-		<PackageReference Include="System.Net.Http" />
+		<!-- Remove explicit System.Net.Http; rely on inbox framework assembly on .NET Framework 4.8.1 -->
 		<PackageReference Include="System.Configuration.ConfigurationManager" />
 		<PackageReference Include="Discord.Net" />
 		<PackageReference Include="Discord.Net.Commands" />
@@ -195,6 +195,7 @@
 	<!-- Framework references for WPF and Windows Forms -->
 	<ItemGroup>
 		<Reference Include="System.Windows.Forms" />
+		<Reference Include="System.Net.Http" />
 	</ItemGroup>
 	
 	<!-- Remove legacy Coqui TTS file copies (not used with Kokoro) -->
