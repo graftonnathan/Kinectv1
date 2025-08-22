@@ -1,64 +1,8 @@
-name: Agent Bridge
+name: Agent Bridge (Wrapper → Orchestrator)
+
 on:
-  push:
-    paths:
-      - ".guidance/tasks/*.yml"
   workflow_dispatch:
 
-permissions:
-  contents: read
-  issues: write
-
 jobs:
-  open-tracker:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Create/Update Agent Task Issues
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const path = require('path');
-
-            const folder = '.guidance/tasks';
-            if (!fs.existsSync(folder)) {
-              core.info('No tasks folder found, nothing to do.');
-              return;
-            }
-
-            const files = fs.readdirSync(folder).filter(f => f.endsWith('.yml') || f.endsWith('.yaml'));
-            core.info(`Found ${files.length} task files.`);
-
-            for (const f of files) {
-              const body = fs.readFileSync(path.join(folder, f), 'utf8');
-              const title = `Agent Task: ${f}`;
-
-              // Find existing issue by title (no label dependency)
-              const { data: issues } = await github.rest.issues.listForRepo({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                state: 'open',
-                per_page: 100
-              });
-
-              let existing = issues.find(i => i.title === title);
-              if (existing) {
-                core.info(`Updating issue #${existing.number} for ${f}`);
-                await github.rest.issues.update({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: existing.number,
-                  body
-                });
-              } else {
-                core.info(`Creating issue for ${f}`);
-                await github.rest.issues.create({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  title,
-                  body
-                });
-              }
-            }
+  forward:
+    uses: ./.github/workflows/copilot-task-runner.yml

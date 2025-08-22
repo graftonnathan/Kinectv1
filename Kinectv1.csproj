@@ -206,6 +206,8 @@
 	<ItemGroup>
 	  <None Include=".github\copilot-instructions.md" />
 	  <None Include=".github\workflows\agent-bridge.yml" />
+	  <None Include=".github\workflows\asr-testing.yml" />
+	  <None Include=".github\workflows\copilot-task-runner.yml" />
 	  <None Include=".github\workflows\pr-summary.yml" />
 	  <None Include=".guidance\tasks\0000-template.yml" />
 	  <None Include=".guidance\tasks\0001-vad-dispatch-hardening.yml" />

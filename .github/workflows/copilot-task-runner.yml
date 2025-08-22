@@ -1,112 +1,118 @@
-name: Copilot Task Runner
+name: Copilot Task Runner (Minimal Orchestrator)
 
 on:
-  # Reusable workflow: called by the dispatcher
-  workflow_call:
-    inputs:
-      task:
-        description: "Optional task identifier/name"
-        required: false
-        type: string
-    secrets: {}  # allow secrets: inherit
+  workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
+
+concurrency:
+  group: copilot-merge-queue
+  cancel-in-progress: false
 
 permissions:
-  contents: read
+  contents: write
   pull-requests: write
+  checks: read
+  statuses: read
+  issues: write
+
+env:
+  QUEUE_LABEL: "copilot:todo"
+  INPROGRESS_LABEL: "copilot:in-progress"
+  WAITING_LABEL: "copilot:waiting"
+  MERGE_METHOD: "squash"
+  DELETE_BRANCH: "true"
 
 jobs:
-  summarize-and-notify:
-    name: Build PR summary (+ optional Discord)
+  run-queue:
+    name: Process PR queue (one at a time)
     runs-on: ubuntu-latest
-
-    env:
-      # Expose webhook as env; we'll test for emptiness inside the step.
-      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-
     steps:
-      - name: Debug event
-        run: |
-          echo "event_name=${{ github.event_name }}"
-          echo "base_ref=${{ github.base_ref }}"
-          echo "head_ref=${{ github.head_ref }}"
-          echo "ref=${{ github.ref }}"
-
-      - name: Checkout (full history)
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Ensure base ref is available
+      - name: Setup gh auth
         run: |
-          # Make sure the base branch exists locally (works for private repos too)
-          git fetch --no-tags origin "${{ github.base_ref }}:${{ github.base_ref }}" || \
-          git fetch --no-tags origin "${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
+          echo "GH_TOKEN=${{ github.token }}" >> "$GITHUB_ENV"
+          gh --version
+          jq --version || true
 
-      - name: Create diffstat summary
+      - name: Select PR (in-progress first, else queued)
+        id: select
         run: |
           set -euo pipefail
+          REPO="${GITHUB_REPOSITORY}"
+          OWNER="${REPO%/*}"
+          NAME="${REPO#*/}"
 
-          BASE="origin/${{ github.base_ref }}"
-          if ! git rev-parse --verify "$BASE" >/dev/null 2>&1; then
-            # Fallback if origin/<base> isn't available under that refname
-            BASE="${{ github.base_ref }}"
+          pick_inprog() {
+            gh pr list --state open --label "$INPROGRESS_LABEL" --json number,updatedAt \
+              | jq -r 'sort_by(.updatedAt) | .[0].number // empty'
+          }
+          pick_next() {
+            local json
+            json="$(gh pr list --state open --label "$QUEUE_LABEL" --json number,updatedAt,labels)"
+            jq -r --arg inprog "$INPROGRESS_LABEL" '
+              map(select(.labels | map(.name) | index($inprog) | not))
+              | sort_by(.updatedAt) | .[0].number // empty
+            ' <<<"$json"
+          }
+
+          PR="$(pick_inprog)"
+          if [[ -z "$PR" ]]; then
+            PR="$(pick_next)"
+            if [[ -n "$PR" ]]; then
+              gh pr edit "$PR" --add-label "$INPROGRESS_LABEL"
+              gh pr comment "$PR" --body "🤖 Copilot queue picked this PR. Marked as **in-progress**."
+            fi
           fi
 
-          echo "### Change summary" > summary.md
-          echo "" >> summary.md
-          echo '```' >> summary.md
-          git diff --stat "$BASE...HEAD" >> summary.md || true
-          echo '```' >> summary.md
-          echo "" >> summary.md
+          echo "pr=$PR" >> "$GITHUB_OUTPUT"
 
-          echo "### Files touched" >> summary.md
-          echo "" >> summary.md
-          echo '```' >> summary.md
-          git diff --name-only "$BASE...HEAD" >> summary.md || true
-          echo '```' >> summary.md
+      - name: Stop if nothing to do
+        if: steps.select.outputs.pr == ''
+        run: echo "Queue empty."
 
-      - name: Post sticky comment
-        uses: marocchino/sticky-pull-request-comment@v2
-        with:
-          path: summary.md
-
-      - name: Mirror summary to Discord (if configured)
+      - name: Process PR
+        if: steps.select.outputs.pr != ''
         run: |
-          if [ -z "${DISCORD_WEBHOOK_URL:-}" ]; then
-            echo "No DISCORD_WEBHOOK_URL set; skipping Discord notify."
+          set -euo pipefail
+          PR=${{ steps.select.outputs.pr }}
+          OWNER="${GITHUB_REPOSITORY%/*}"
+          NAME="${GITHUB_REPOSITORY#*/}"
+
+          ms_json="$(gh api graphql -f owner="$OWNER" -f name="$NAME" -F pr="$PR" -f query='
+            query($owner:String!,$name:String!,$pr:Int!){
+              repository(owner:$owner, name:$name) {
+                pullRequest(number:$pr) {
+                  state merged isDraft mergeStateStatus headRefOid
+                }
+              }
+            }')"
+          state="$(jq -r '.data.repository.pullRequest.state' <<<"$ms_json")"
+          merged="$(jq -r '.data.repository.pullRequest.merged' <<<"$ms_json")"
+          isDraft="$(jq -r '.data.repository.pullRequest.isDraft' <<<"$ms_json")"
+          mergeStateStatus="$(jq -r '.data.repository.pullRequest.mergeStateStatus' <<<"$ms_json")"
+
+          if [[ "$merged" == "true" || "$state" == "CLOSED" ]]; then
+            gh pr edit "$PR" --remove-label "$INPROGRESS_LABEL" || true
+            gh pr edit "$PR" --remove-label "$WAITING_LABEL" || true
+            gh pr edit "$PR" --remove-label "$QUEUE_LABEL" || true
             exit 0
           fi
 
-          # Trim summary to Discord-safe chunks (~1900 chars) and send sequentially.
-          python - <<'PY'
-import os, json, textwrap, requests
-webhook = os.environ.get("DISCORD_WEBHOOK_URL","").strip()
-if not webhook:
-    raise SystemExit(0)
+          if [[ "$mergeStateStatus" != "BLOCKED" && "$isDraft" == "false" ]]; then
+            args=( "--${MERGE_METHOD}" )
+            [[ "$DELETE_BRANCH" == "true" ]] && args+=( "--delete-branch" )
+            gh pr merge "$PR" "${args[@]}"
+            gh pr comment "$PR" --body "✅ Merged by Copilot queue."
+            gh pr edit "$PR" --remove-label "$INPROGRESS_LABEL" || true
+            gh pr edit "$PR" --remove-label "$WAITING_LABEL" || true
+            gh pr edit "$PR" --remove-label "$QUEUE_LABEL" || true
+            exit 0
+          fi
 
-with open("summary.md","r",encoding="utf-8", errors="ignore") as f:
-    body = f.read().strip()
-
-prefix = f"[{os.environ.get('GITHUB_REPOSITORY')}] PR #{os.environ.get('GITHUB_REF_NAME','')} → {os.environ.get('GITHUB_BASE_REF','dev')} by @{os.environ.get('GITHUB_ACTOR')}\n"
-title  = os.environ.get("GITHUB_EVENT_PULL_REQUEST_TITLE","") or os.environ.get("GITHUB_HEAD_REF","")
-header = f"{prefix}{title}\n\n"
-
-msg = (header + body).strip()
-# Discord hard limit ~2000, keep margin
-chunks = textwrap.wrap(msg, width=1900, replace_whitespace=False, drop_whitespace=False)
-
-for part in chunks:
-    payload = {"content": part}
-    resp = requests.post(webhook, json=payload, timeout=15)
-    try:
-        resp.raise_for_status()
-    except Exception as e:
-        print("Discord post failed:", e, "status:", resp.status_code, "text:", resp.text)
-PY
-        env:
-          GITHUB_EVENT_PULL_REQUEST_TITLE: ${{ github.event.pull_request.title || '' }}
-          GITHUB_BASE_REF: ${{ github.base_ref }}
-          GITHUB_HEAD_REF: ${{ github.head_ref }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_ACTOR: ${{ github.actor }}
-
+          args=( --auto "--${MERGE_METHOD}" )
+          [[ "$DELETE_BRANCH" == "true" ]] && args+=( "--delete-branch" )
+          gh pr merge "$PR" "${args[@]}" || true
+          gh pr edit "$PR" --add-label "$WAITING_LABEL" || true
