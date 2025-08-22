@@ -44,7 +44,7 @@ namespace Kinectv1
                 this.ShowInTaskbar = true;
                 this.Title = "Kinect Face & Voice Recognition";
 
-                // Add keyboard shortcut for testing fusion (Ctrl+F)
+                // Add keyboard shortcuts for testing
                 this.KeyDown += (sender, e) =>
                 {
                     if (e.Key == Key.F && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
@@ -57,6 +57,21 @@ namespace Kinectv1
                         catch (Exception ex)
                         {
                             Console.WriteLine($"Error testing fusion: {ex.Message}");
+                        }
+                    }
+                    else if (e.Key == Key.H && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
+                    {
+                        try
+                        {
+                            Console.WriteLine("🧪 Testing Hosted Services Manager (Ctrl+H pressed)");
+                            Task.Run(async () =>
+                            {
+                                await HostedServicesTest.RunAllTests();
+                            });
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"Error testing hosted services: {ex.Message}");
                         }
                     }
                 };
@@ -2031,18 +2046,18 @@ namespace Kinectv1
         }
 
         /// <summary>
-        /// Enhanced clean shutdown handler - Blocks until all Discord operations complete
+        /// Enhanced clean shutdown handler - Uses centralized HostedServicesManager for coordinated shutdown
         /// Implements the 3-step clean exit pattern:
-        /// 1. Leave voice & stop audio
-        /// 2. Stop & logout Discord client
-        /// 3. Block until completion (exit handlers aren't async-friendly)
+        /// 1. Cancel background tasks
+        /// 2. Stop all hosted services through centralized manager
+        /// 3. Save essential settings and cleanup
         /// </summary>
         private void MainWindow_Closing(object sender, System.ComponentModel.CancelEventArgs e) 
         {
             _isClosing = true; // Set flag to prevent new operations
             
             Console.WriteLine("🔴 === APPLICATION SHUTDOWN INITIATED ===");
-            Console.WriteLine("🔴 Implementing clean Discord shutdown with blocking pattern...");
+            Console.WriteLine("🔴 Using centralized hosted services manager for clean shutdown...");
 
             try
             {
@@ -2058,71 +2073,46 @@ namespace Kinectv1
                     Console.WriteLine($"⚠️ Error canceling background tasks: {ex.Message}");
                 }
 
-                // STEP 2: Stop Discord bot with BLOCKING pattern (NOT async-friendly)
+                // STEP 2: Stop all hosted services through centralized manager
                 try
                 {
-                    if (DiscordNetBotManager.IsRunning)
+                    if (App.ServicesManager != null && App.ServicesManager.IsStarted)
                     {
-                        Console.WriteLine("🔴 STEP 2: Discord bot is running - initiating clean shutdown...");
+                        Console.WriteLine("🔴 STEP 2: Stopping all hosted services through centralized manager...");
                         Console.WriteLine("🔴 Performing blocking shutdown (exit handlers require synchronous completion)");
                         
                         // Use blocking Wait() pattern as recommended for exit handlers
-                        var shutdownTask = DiscordNetBotManager.ShutdownAsync();
+                        var stopTask = App.ServicesManager.StopAllAsync(TimeSpan.FromSeconds(30));
                         
                         // Block until shutdown completes (with timeout for safety)
-                        Console.WriteLine("🔴 Blocking on Discord shutdown task...");
-                        bool completedInTime = shutdownTask.Wait(10000); // 10 second timeout
+                        Console.WriteLine("🔴 Blocking on hosted services shutdown task...");
+                        bool completedInTime = stopTask.Wait(35000); // 35 second timeout
                         
                         if (completedInTime)
                         {
-                            Console.WriteLine("✅ Discord bot shut down successfully within timeout");
+                            Console.WriteLine("✅ All hosted services shut down successfully within timeout");
                         }
                         else
                         {
-                            Console.WriteLine("⚠️ Discord bot shutdown timed out after 10 seconds");
+                            Console.WriteLine("⚠️ Hosted services shutdown timed out after 35 seconds");
                             // Continue with shutdown anyway - don't block application exit indefinitely
                         }
                     }
                     else
                     {
-                        Console.WriteLine("🔴 STEP 2: Discord bot not running - skipping Discord shutdown");
+                        Console.WriteLine("🔴 STEP 2: Hosted services manager not started - skipping centralized shutdown");
                     }
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"❌ Error during Discord shutdown: {ex.Message}");
-                    // Don't let Discord shutdown errors prevent application exit
+                    Console.WriteLine($"❌ Error during hosted services shutdown: {ex.Message}");
+                    // Don't let service shutdown errors prevent application exit
                 }
 
-                // STEP 3: Stop other services with blocking pattern
+                // STEP 3: Reset atomic flags to ensure clean state
                 try
                 {
-                    Console.WriteLine("🔴 STEP 3: Stopping TTS service...");
-                    // Use SetEnabled(false) instead of Shutdown() to safely stop TTS
-                    CoquiTtsService.SetEnabled(false);
-                    Console.WriteLine("✅ TTS service stopped");
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"⚠️ Error stopping TTS service: {ex.Message}");
-                }
-
-                try
-                {
-                    Console.WriteLine("🔴 STEP 3: Stopping VoiceRecognizer...");
-                    // VoiceRecognizer doesn't have a public Stop() method, so we skip this
-                    // The service will be stopped when the process exits
-                    Console.WriteLine("✅ VoiceRecognizer will stop with process exit");
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"⚠️ Error stopping VoiceRecognizer: {ex.Message}");
-                }
-
-                // STEP 4: Reset atomic flags to ensure clean state
-                try
-                {
-                    Console.WriteLine("🔴 STEP 4: Resetting atomic flags...");
+                    Console.WriteLine("🔴 STEP 3: Resetting atomic flags...");
                     Interlocked.Exchange(ref _discordInitInProgress, 0);
                     Console.WriteLine("✅ Atomic flags reset");
                 }
@@ -2131,10 +2121,10 @@ namespace Kinectv1
                     Console.WriteLine($"⚠️ Error resetting atomic flags: {ex.Message}");
                 }
 
-                // STEP 5: Save essential settings (keep this minimal for speed)
+                // STEP 4: Save essential settings (keep this minimal for speed)
                 try
                 {
-                    Console.WriteLine("🔴 STEP 5: Saving essential settings...");
+                    Console.WriteLine("🔴 STEP 4: Saving essential settings...");
                     var windowState = this.WindowState == WindowState.Maximized ? "Maximized" : "Normal";
                     AppSettings.SaveWindowSettings(this.Width, this.Height, this.Left, this.Top, windowState);
                     AppSettings.SaveVoiceThreshold(_currentThreshold);
@@ -2147,7 +2137,7 @@ namespace Kinectv1
                 }
 
                 Console.WriteLine("🔴 === CLEAN SHUTDOWN COMPLETED ===");
-                Console.WriteLine("🔴 All Discord voice + gateway sessions closed cleanly");
+                Console.WriteLine("🔴 All services stopped cleanly through centralized management");
             }
             catch (Exception ex)
             {
@@ -2157,7 +2147,7 @@ namespace Kinectv1
             }
             finally
             {
-                // STEP 6: Final cleanup (always execute)
+                // STEP 5: Final cleanup (always execute)
                 try
                 {
                     Console.WriteLine("🔴 FINAL: Disposing cancellation token...");
@@ -2170,7 +2160,7 @@ namespace Kinectv1
                 }
 
                 Console.WriteLine("🔴 === APPLICATION EXIT READY ===");
-                Console.WriteLine("🔴 Clean shutdown pattern completed - application can now exit safely");
+                Console.WriteLine("🔴 Centralized shutdown pattern completed - application can now exit safely");
             }
         }
 
