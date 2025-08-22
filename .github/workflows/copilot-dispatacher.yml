@@ -1,46 +1,114 @@
-name: Copilot Dispatcher
-
 on:
-  workflow_dispatch:
-    inputs:
-      glob:
-        description: Task glob
-        default: ".guidance/tasks/*.yml"
-        required: true
+  pull_request:
+    branches: [dev]
+    types: [opened, reopened, ready_for_review, synchronize, closed]
 
 permissions:
   contents: read
-  actions: write
+  pull-requests: write
 
 jobs:
-  dispatch-all:
+  gatekeeper:
     runs-on: ubuntu-latest
+    outputs:
+      proceed: ${{ steps.gate.outputs.proceed }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/github-script@v7
+        id: gate
+        with:
+          script: |
+            const core   = require('@actions/core');
+            const pr     = context.payload.pull_request;
+            const action = context.payload.action;
+            const owner  = context.repo.owner;
+            const repo   = context.repo.repo;
 
-      - name: List tasks
-        id: list
-        run: |
-          ls -1 "${{ inputs.glob }}" | sort | tee tasks.txt
+            // Helper: ensure labels exist (no-op if they already do)
+            async function ensureLabel(name, color, description){
+              try { await github.rest.issues.getLabel({owner, repo, name}); }
+              catch {
+                try {
+                  await github.rest.issues.createLabel({owner, repo, name, color, description});
+                } catch {}
+              }
+            }
+            await ensureLabel('copilot:task',       '1f6feb','Copilot-generated task PR');
+            await ensureLabel('copilot:queued',     '6e7681','Queued behind another Copilot PR');
+            await ensureLabel('copilot:in-progress','d29922','Current Copilot PR being processed');
 
-      - name: Dispatch each task (will be serialized by runner)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          while read -r t; do
-            echo "Dispatching $t"
-            gh api repos/${{ github.repository }}/dispatches \
-              -f event_type=copilot-task \
-              -f client_payload:='{"task_path":"'"$t"'"}'
-            sleep 2
-          done < tasks.txt
+            // GraphQL helpers for draft/ready toggles
+            const gql = github.graphql;
+            async function convertToDraft(nodeId){
+              const m=`mutation($id:ID!){ convertPullRequestToDraft(input:{pullRequestId:$id}){ clientMutationId }}`;
+              try { await gql(m, { id: nodeId }); } catch {}
+            }
+            async function markReady(nodeId){
+              const m=`mutation($id:ID!){ markPullRequestReadyForReview(input:{pullRequestId:$id}){ clientMutationId }}`;
+              try { await gql(m, { id: nodeId }); } catch {}
+            }
 
-      - name: Discord notify (queued)
-        if: secrets.DISCORD_WEBHOOK_URL != ''
-        run: |
-          COUNT=$(wc -l < tasks.txt)
-          MSG="🧾 Queued ${COUNT} task(s) for Copilot. They will run one at a time."
-          python - <<'PY' > payload.json
-          import json, os; print(json.dumps({"content": os.environ["MSG"]}))
-          PY
-          curl -sS -X POST -H "Content-Type: application/json" --data-binary @payload.json "$DISCORD_WEBHOOK_URL" || true
+            // When *any* Copilot PR closes, promote the oldest queued one
+            if (action === 'closed') {
+              const q = `repo:${owner}/${repo} is:pr is:open base:dev label:"copilot:queued" sort:created-asc`;
+              const res = await github.rest.search.issuesAndPullRequests({ q, per_page: 10 });
+              if (!res.data.items.length) { core.setOutput('proceed','false'); return; }
+
+              const next = res.data.items[0];
+              const { data: full } = await github.rest.pulls.get({ owner, repo, pull_number: next.number });
+
+              // labels: queued -> in-progress
+              try { await github.rest.issues.removeLabel({ owner, repo, issue_number: next.number, name: 'copilot:queued' }); } catch {}
+              await github.rest.issues.addLabels({ owner, repo, issue_number: next.number, labels: ['copilot:in-progress'] });
+
+              if (full.draft) await markReady(full.node_id);
+
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: next.number,
+                body: "⏫ Queue promotion: previous Copilot PR finished. This one is now in progress."
+              });
+
+              core.setOutput('proceed','false'); // nothing else to do on 'closed'
+              return;
+            }
+
+            // For open/sync events: check if this is a Copilot PR
+            if (!pr) { core.setOutput('proceed','false'); return; }
+            const labels = pr.labels?.map(l => l.name) ?? [];
+            const isCopilot = pr.head.ref.startsWith('copilot/') || labels.includes('copilot:task');
+
+            if (isCopilot && !labels.includes('copilot:task')) {
+              await github.rest.issues.addLabels({ owner, repo, issue_number: pr.number, labels: ['copilot:task'] });
+            }
+            if (!isCopilot) { core.setOutput('proceed','true'); return; } // let non-Copilot PRs pass
+
+            // Is another Copilot PR already in progress?
+            const qInProg = `repo:${owner}/${repo} is:pr is:open base:dev label:"copilot:in-progress"`;
+            const inProg = await github.rest.search.issuesAndPullRequests({ q: qInProg, per_page: 10 });
+            const someoneElseInProg = inProg.data.items.some(i => i.number !== pr.number);
+
+            if (someoneElseInProg) {
+              // Queue THIS PR
+              if (!labels.includes('copilot:queued')) {
+                await github.rest.issues.addLabels({
+                  owner, repo, issue_number: pr.number, labels: ['copilot:queued']
+                }).catch(()=>{});
+              }
+              await convertToDraft(pr.node_id).catch(()=>{});
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: pr.number,
+                body: "⏳ Queued: another Copilot PR is in progress. I’ll auto-promote this one when that PR closes."
+              });
+              // Ensure not in-progress
+              try { await github.rest.issues.removeLabel({ owner, repo, issue_number: pr.number, name: 'copilot:in-progress' }); } catch {}
+              core.setOutput('proceed','false');
+              return;
+            }
+
+            // Otherwise, mark THIS PR in-progress and undraft if needed
+            if (!labels.includes('copilot:in-progress')) {
+              await github.rest.issues.addLabels({ owner, repo, issue_number: pr.number, labels: ['copilot:in-progress'] }).catch(()=>{});
+            }
+            if (pr.draft) { await markReady(pr.node_id).catch(()=>{}); }
+
+            core.setOutput('proceed','true');
+
