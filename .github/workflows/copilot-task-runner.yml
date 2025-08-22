@@ -135,6 +135,15 @@ jobs:
           PR="${{ steps.focus.outputs.pr }}"
           gh pr review -R "$REPO" "$PR" --approve -b "Auto-approved by orchestrator"
 
+      - name: Enable auto-merge (squash + delete branch)
+        if: ${{ steps.focus.outputs.pr != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          PR="${{ steps.focus.outputs.pr }}"
+          # Flip "merge when green" now; ignore error if auto-merge not allowed
+          gh pr merge -R "$REPO" "$PR" --auto --squash --delete-branch || true
+
       - name: Wait for checks to pass, then merge
         if: ${{ steps.focus.outputs.pr != '' }}
         shell: bash
