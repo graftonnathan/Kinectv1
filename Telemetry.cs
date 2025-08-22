@@ -158,6 +158,33 @@ namespace Kinectv1
         }
 
         /// <summary>
+        /// Record a timer value in milliseconds
+        /// </summary>
+        /// <param name="name">Timer name</param>
+        /// <param name="milliseconds">Duration in milliseconds</param>
+        public static void Timer(string name, long milliseconds)
+        {
+            if (!_enabled)
+                return;
+
+            Counter($"{name}.count");
+            Accumulator($"{name}.total_ms", milliseconds);
+        }
+
+        /// <summary>
+        /// Set a gauge value (current state metric)
+        /// </summary>
+        /// <param name="name">Gauge name</param>
+        /// <param name="value">Current value</param>
+        public static void Gauge(string name, double value)
+        {
+            if (!_enabled)
+                return;
+
+            _accumulators[name] = value; // Gauges are point-in-time values, not cumulative
+        }
+
+        /// <summary>
         /// Take a snapshot of all counters and accumulators
         /// </summary>
         /// <returns>Dictionary of all current values</returns>
