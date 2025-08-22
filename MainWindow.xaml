@@ -694,9 +694,6 @@
                 </Grid>
             </TabItem>
 
-
-            </TabItem>
-
             <!-- Diagnostics Tab -->
             <TabItem Header="🔍 Diagnostics">
                 <Grid Margin="0,10,0,0">

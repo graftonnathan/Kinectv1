@@ -5,7 +5,6 @@ using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Threading.Channels;
 using NAudio.Wave;
 using Vosk;
 
@@ -18,15 +17,32 @@ namespace Kinectv1
         private static VoiceProcessor _voiceProcessor;
         private static string _currentModelPath;
 
-        // Bounded audio channels with backpressure - using System.Threading.Channels for proper flow control
-        private static readonly Channel<(byte[] data, int length, string source)> _externalAudioChannel = Channel.CreateBounded<(byte[], int, string)>(new BoundedChannelOptions(50)
+        // Bounded audio queues with backpressure using BlockingCollection for .NET Framework compatibility
+        private class BoundedQueue<T>
         {
-            FullMode = BoundedChannelFullMode.DropOldest,
-            SingleReader = true,
-            SingleWriter = false
-        });
-        private static readonly ChannelWriter<(byte[] data, int length, string source)> _externalAudioWriter = _externalAudioChannel.Writer;
-        private static readonly ChannelReader<(byte[] data, int length, string source)> _externalAudioReader = _externalAudioChannel.Reader;
+            private readonly BlockingCollection<T> _queue;
+            private readonly int _capacity;
+            public BoundedQueue(int capacity)
+            {
+                _capacity = Math.Max(1, capacity);
+                _queue = new BlockingCollection<T>(new ConcurrentQueue<T>());
+            }
+            public bool TryAdd(T item)
+            {
+                // DropOldest-like behavior: if we exceed capacity, try to remove one before adding
+                while (_queue.Count >= _capacity)
+                {
+                    T _;
+                    _queue.TryTake(out _);
+                }
+                return _queue.TryAdd(item);
+            }
+            public bool TryTake(out T item) => _queue.TryTake(out item);
+            public int Count => _queue.Count;
+            public void CompleteAdding() { try { _queue.CompleteAdding(); } catch { } }
+        }
+
+        private static readonly BoundedQueue<Tuple<byte[], int, string>> _externalAudioQueue = new BoundedQueue<Tuple<byte[], int, string>>(50);
         private static readonly Timer _audioProcessingTimer;
         private static readonly Timer _healthSnapshotTimer; // NEW: Periodic health snapshots
         private static readonly object _processingLock = new object();
@@ -34,7 +50,7 @@ namespace Kinectv1
         private static volatile bool _shutdownRequested = false; // NEW: prevent processing during shutdown
 
         // Bounded per-user Discord buffering with backpressure - prevents runaway memory usage
-        private static readonly ConcurrentDictionary<string, Channel<(byte[] data, int length)>> _discordUserChannels = new ConcurrentDictionary<string, Channel<(byte[], int)>>();
+        private static readonly ConcurrentDictionary<string, BoundedQueue<Tuple<byte[], int>>> _discordUserQueues = new ConcurrentDictionary<string, BoundedQueue<Tuple<byte[], int>>>();
         private static volatile string _activeDiscordSource = null;
         private static int _queueWorkRunning = 0; // prevent re-entrant timer callbacks
         
@@ -117,8 +133,6 @@ namespace Kinectv1
                         Console.WriteLine($"🎤 Matched speaker: {speaker} (score={score:F3})");
                         
                         // Update identity fusion tracker with voice recognition
-                        // For now, we don't have direct tracking ID association, so pass null
-                        // The fusion tracker will handle proximity matching
                         IdentityFusionTracker.UpdateVoice(null, speaker, score);
                         
                         OnSpeakerMatch?.Invoke(speaker, score);
@@ -278,23 +292,14 @@ namespace Kinectv1
                 _waveIn = null;
                 _recognizer = null;
 
-                // Clean up bounded channels with proper disposal
-                try 
-                { 
-                    _externalAudioWriter?.Complete();
-                } 
-                catch { }
+                // Clean up queues
+                try { _externalAudioQueue.CompleteAdding(); } catch { }
                 
-                // Clean up per-user Discord channels
-                foreach (var kvp in _discordUserChannels)
+                foreach (var kvp in _discordUserQueues)
                 {
-                    try 
-                    { 
-                        kvp.Value?.Writer?.Complete();
-                    } 
-                    catch { }
+                    try { kvp.Value.CompleteAdding(); } catch { }
                 }
-                _discordUserChannels.Clear();
+                _discordUserQueues.Clear();
 
                 Console.WriteLine("✅ VoiceRecognizer: Stopped and released shared model reference");
             }
@@ -329,28 +334,19 @@ namespace Kinectv1
                 {
                     var copy = new byte[bytesRecorded];
                     Array.Copy(audioData, copy, bytesRecorded);
-                    var channel = _discordUserChannels.GetOrAdd(source, _ => Channel.CreateBounded<(byte[], int)>(new BoundedChannelOptions(MAX_PER_USER_QUEUE_SIZE)
+                    var queue = _discordUserQueues.GetOrAdd(source, _ => new BoundedQueue<Tuple<byte[], int>>(MAX_PER_USER_QUEUE_SIZE));
+
+                    if (!queue.TryAdd(Tuple.Create(copy, bytesRecorded)))
                     {
-                        FullMode = BoundedChannelFullMode.DropOldest,
-                        SingleReader = true,
-                        SingleWriter = false
-                    }));
-                    
-                    // Backpressure: DropOldest policy automatically handles overflow
-                    if (!channel.Writer.TryWrite((copy, bytesRecorded)))
-                    {
-                        // Channel is closed
                         Interlocked.Increment(ref _totalDiscordDrops);
                         Telemetry.Counter("counter.queue.drop.discord");
-                        Console.WriteLine($"⚠️ Discord audio backpressure: Channel closed for {source} (total drops: {_totalDiscordDrops})");
+                        Console.WriteLine($"⚠️ Discord audio backpressure: Queue add failed for {source} (total drops: {_totalDiscordDrops})");
                     }
                     else
                     {
-                        // Update telemetry
-                        var queueDepth = channel.Reader.CanRead ? 1 : 0; // Simplified depth check
-                        Telemetry.Gauge($"gauge.queue.depth.discord", queueDepth);
+                        Telemetry.Gauge("gauge.queue.depth.discord", queue.Count);
                     }
-                    return; // Let timer process per-user channels
+                    return; // Let timer process per-user queues
                 }
 
                 // Non-Discord external audio: immediate processing
@@ -374,20 +370,15 @@ namespace Kinectv1
                         // If currently processing microphone audio, queue for later with backpressure
                         var audioCopy = new byte[bytesRecorded];
                         Array.Copy(audioData, audioCopy, bytesRecorded);
-                        
-                        // Backpressure: DropOldest policy automatically handles overflow
-                        if (!_externalAudioWriter.TryWrite((audioCopy, bytesRecorded, source)))
+                        if (!_externalAudioQueue.TryAdd(Tuple.Create(audioCopy, bytesRecorded, source)))
                         {
-                            // Channel is closed
                             Interlocked.Increment(ref _totalAudioDrops);
                             Telemetry.Counter("counter.queue.drop.mic");
-                            Console.WriteLine($"⚠️ External audio backpressure: Channel closed (total drops: {_totalAudioDrops})");
+                            Console.WriteLine($"⚠️ External audio backpressure: Queue add failed (total drops: {_totalAudioDrops})");
                         }
                         else
                         {
-                            // Update telemetry
-                            var queueDepth = _externalAudioReader.CanRead ? 1 : 0; // Simplified depth check
-                            Telemetry.Gauge($"gauge.queue.depth.mic", queueDepth);
+                            Telemetry.Gauge("gauge.queue.depth.mic", _externalAudioQueue.Count);
                         }
                     }
                 }
@@ -418,12 +409,11 @@ namespace Kinectv1
                 }
 
                 // 1) Handle Discord per-user queues first
-                // Choose or maintain the active Discord source
                 if (_activeDiscordSource == null)
                 {
-                    foreach (var kvp in _discordUserChannels)
+                    foreach (var kvp in _discordUserQueues)
                     {
-                        if (kvp.Value != null && kvp.Value.Reader.CanRead)
+                        if (kvp.Value != null && kvp.Value.Count > 0)
                         {
                             _activeDiscordSource = kvp.Key;
                             break;
@@ -432,11 +422,12 @@ namespace Kinectv1
                 }
 
                 var activeSource = _activeDiscordSource; // capture to avoid races
-                if (!string.IsNullOrEmpty(activeSource) && _discordUserChannels.TryGetValue(activeSource, out var userChannel))
+                if (!string.IsNullOrEmpty(activeSource) && _discordUserQueues.TryGetValue(activeSource, out var userQueue))
                 {
                     int processedForUser = 0;
                     // Process a generous batch for the active user to keep phrases intact
-                    while (!_shutdownRequested && processedForUser < 50 && userChannel.Reader.TryRead(out var item))
+                    Tuple<byte[], int> item;
+                    while (!_shutdownRequested && processedForUser < 50 && userQueue.TryTake(out item))
                     {
                         lock (_processingLock)
                         {
@@ -445,12 +436,11 @@ namespace Kinectv1
                             _isProcessing = true;
                             try
                             {
-                                // Update speaker hint based on active source
                                 var username = activeSource.StartsWith("Discord:") && activeSource.Length > 8
                                     ? activeSource.Substring("Discord:".Length)
                                     : activeSource;
                                 SpeakerIdentifier.SetDiscordSpeakerHint(username);
-                                _voiceProcessor.ProcessAudio(item.data, item.length);
+                                _voiceProcessor.ProcessAudio(item.Item1, item.Item2);
                                 processedForUser++;
                             }
                             finally
@@ -460,16 +450,15 @@ namespace Kinectv1
                         }
                     }
 
-                    // If we've drained this user's channel, inject a short silence to force flush and switch users
-                    if (!userChannel.Reader.CanRead)
+                    // If we've drained this user's queue, inject a short silence to force flush and switch users
+                    if (userQueue.Count == 0)
                     {
-                        // Schedule a short silence injection to allow VAD flush inside VoiceProcessor
                         Task.Run(() =>
                         {
                             try
                             {
                                 Thread.Sleep(200); // allow silence timeout window
-                                var silence = new byte[1600]; // 50ms of 16kHz mono s16 (approx)
+                                var silence = new byte[1600]; // ~50ms at 16kHz mono s16
                                 lock (_processingLock)
                                 {
                                     if (!_shutdownRequested && !_isProcessing && _voiceProcessor != null)
@@ -497,7 +486,8 @@ namespace Kinectv1
 
                 // 2) Fallback: Process any remaining generic external items (non-Discord)
                 int processed = 0;
-                while (!_shutdownRequested && processed < 10 && _externalAudioReader.TryRead(out var audioItem))
+                Tuple<byte[], int, string> audioItem;
+                while (!_shutdownRequested && processed < 10 && _externalAudioQueue.TryTake(out audioItem))
                 {
                     lock (_processingLock)
                     {
@@ -507,13 +497,13 @@ namespace Kinectv1
                             _isProcessing = true;
                             try
                             {
-                                if (audioItem.source.StartsWith("Discord:") && _discordInputEnabled)
+                                if (audioItem.Item3.StartsWith("Discord:") && _discordInputEnabled)
                                 {
-                                    var username = audioItem.source.Length > 8 ? audioItem.source.Substring("Discord:".Length) : audioItem.source;
+                                    var username = audioItem.Item3.Length > 8 ? audioItem.Item3.Substring("Discord:".Length) : audioItem.Item3;
                                     SpeakerIdentifier.SetDiscordSpeakerHint(username);
                                 }
                                 
-                                _voiceProcessor.ProcessAudio(audioItem.data, audioItem.length);
+                                _voiceProcessor.ProcessAudio(audioItem.Item1, audioItem.Item2);
                                 processed++;
                             }
                             finally
@@ -523,8 +513,8 @@ namespace Kinectv1
                         }
                         else
                         {
-                            // Re-queue for later; if bounded channel is full, drop with counter
-                            if (!_externalAudioWriter.TryWrite(audioItem))
+                            // Re-queue for later; Drop if cannot add
+                            if (!_externalAudioQueue.TryAdd(audioItem))
                             {
                                 Interlocked.Increment(ref _totalAudioDrops);
                                 Telemetry.Counter("counter.queue.drop.mic");
@@ -538,7 +528,6 @@ namespace Kinectv1
             catch (Exception ex)
             {
                 Console.WriteLine($"❌ Error processing external audio queue: {ex.Message}");
-                // Reset processing flag in case of error
                 _isProcessing = false;
             }
             finally
@@ -554,7 +543,7 @@ namespace Kinectv1
 
         public static (int queueSize, bool isProcessing) GetExternalAudioStats()
         {
-            return (_externalAudioReader.CanRead ? 1 : 0, _isProcessing);
+            return (_externalAudioQueue.Count, _isProcessing);
         }
 
         public static void SetMicrophoneInputEnabled(bool enabled)
@@ -687,14 +676,13 @@ namespace Kinectv1
         {
             try
             {
-                var externalCount = _externalAudioReader?.CanRead == true ? 1 : 0;
-                var discordQueueCount = _discordUserChannels.Count;
+                var externalCount = _externalAudioQueue?.Count ?? 0;
+                var discordQueueCount = _discordUserQueues.Count;
                 var totalDiscordItems = 0;
                 
-                foreach (var kvp in _discordUserChannels)
+                foreach (var kvp in _discordUserQueues)
                 {
-                    if (kvp.Value?.Reader?.CanRead == true)
-                        totalDiscordItems++;
+                    totalDiscordItems += kvp.Value?.Count ?? 0;
                 }
                 
                 return (externalCount, discordQueueCount, totalDiscordItems, _totalAudioDrops, _totalDiscordDrops);

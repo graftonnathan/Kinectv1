@@ -23,26 +23,19 @@
 		<ImplicitUsings>disable</ImplicitUsings>
 	</PropertyGroup>
 
-	<!-- Exclude tool sources and their obj outputs from compilation -->
+	<!-- Exclude tool and test sources and their obj outputs from compilation -->
 	<ItemGroup>
 		<Compile Remove="tools\**\*.cs" />
 		<Compile Remove="tools\obj\**\*.cs" />
+		<Compile Remove="tests\**\*.cs" />
 		<None Include="tools\**\*" Exclude="tools\obj\**\*" />
+		<None Include="tests\**\*" />
 	</ItemGroup>
 
-	<!-- Include UI files -->
+	<!-- Remove explicit XAML includes to avoid duplicate Page items; rely on SDK implicit items -->
 	<ItemGroup>
-		<Compile Include="src\UI\Settings\Editors\GeneralSettingsVM.cs" />
-		<Compile Include="src\UI\Settings\Editors\GeneralSettingsView.xaml.cs">
-			<DependentUpon>GeneralSettingsView.xaml</DependentUpon>
-		</Compile>
-	</ItemGroup>
-
-	<ItemGroup>
-		<Page Include="src\UI\Settings\Editors\GeneralSettingsView.xaml">
-			<SubType>Designer</SubType>
-			<Generator>MSBuild:Compile</Generator>
-		</Page>
+		<Compile Remove="src\UI\Settings\Editors\GeneralSettingsView.xaml.cs" />
+		<Page Remove="src\UI\Settings\Editors\GeneralSettingsView.xaml" />
 	</ItemGroup>
 
 	<!-- Organize developer-provided DLLs from lib/ into structured lib/ subfolders -->

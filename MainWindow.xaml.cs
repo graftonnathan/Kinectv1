@@ -501,7 +501,6 @@ namespace Kinectv1
                     {
                         try
                         {
-
                             if (_isClosing) return; // Double check inside dispatcher
 
                             // Get the latest value (may have been updated since dispatch was scheduled)
@@ -2453,1142 +2452,149 @@ namespace Kinectv1
             }
         }
 
-        private void OllamaModelComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e) 
+        private OllamaService.PromptTone GetSelectedTone()
+        {
+            try
+            {
+                // Get the selected tone from the combo box
+                return (OllamaService.PromptTone)ToneComboBox.SelectedItem;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error getting selected tone: {ex.Message}");
+                return OllamaService.PromptTone.Neutral; // Default tone
+            }
+        }
+
+        private void SetDefaultOllamaModelButton_Click(object sender, RoutedEventArgs e)
         {
             try
             {
                 if (OllamaModelComboBox.SelectedItem != null)
                 {
-                    var selectedModel = OllamaModelComboBox.SelectedItem.ToString();
-                    
-                    // Save the selected model immediately using the correct method
-                    OllamaService.SetDefaultModel(selectedModel);
-                    
-                    Console.WriteLine($"🤖 Ollama model changed to: {selectedModel}");
-                    
-                    // Update status
-                    OllamaStatusText.Text = $"🤖 Ollama: Model set to {selectedModel}";
+                    var modelName = OllamaModelComboBox.SelectedItem.ToString();
+
+                    // Save the default model
+                    AppSettings.SaveOllamaModel(modelName);
+                    Console.WriteLine($"🤖 Default Ollama model set to: {modelName}");
+
+                    // Optional: Immediate feedback in UI
+                    OllamaStatusText.Text = $"🤖 Default model set: {modelName}";
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error changing Ollama model: {ex.Message}");
-                MessageBox.Show($"Error changing Ollama model: {ex.Message}", "Error",
+                Console.WriteLine($"Error setting default Ollama model: {ex.Message}");
+            }
+        }
+
+        private void LoadDefaultOllamaModelButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                // Get the default model from settings
+                var modelName = AppSettings.LoadOllamaModel();
+
+                if (!string.IsNullOrEmpty(modelName))
+                {
+                    // Select the model in the combo box
+                    for (int i = 0; i < OllamaModelComboBox.Items.Count; i++)
+                    {
+                        if (OllamaModelComboBox.Items[i].ToString() == modelName)
+                        {
+                            OllamaModelComboBox.SelectedIndex = i;
+                            Console.WriteLine($"🤖 Loaded default Ollama model: {modelName}");
+                            return;
+                        }
+                    }
+                }
+
+                Console.WriteLine("⚠️ No valid default model found in settings");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error loading default Ollama model: {ex.Message}");
+            }
+        }
+
+        private void TestOllamaButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                // Get the test prompt from the text box
+                var prompt = TestOllamaPromptTextBox.Text;
+
+                if (string.IsNullOrWhiteSpace(prompt))
+                {
+                    MessageBox.Show("Please enter a prompt to test Ollama.", "Prompt Required",
+                        MessageBoxButton.OK, MessageBoxImage.Warning);
+                    TestOllamaPromptTextBox.Focus();
+                    return;
+                }
+
+                // Get the selected tone
+                var tone = GetSelectedTone();
+
+                // Send the prompt to Ollama with the selected tone
+                OllamaService.SendPrompt(prompt, tone);
+
+                Console.WriteLine($"🤖 Test prompt sent to Ollama: '{prompt}' with tone {tone}");
+
+                // Show a temporary status in the UI
+                OllamaStatusText.Text = "🤖 Ollama: Processing test prompt...";
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error testing Ollama prompt: {ex.Message}");
+                MessageBox.Show($"Error testing Ollama prompt: {ex.Message}", "Error",
                     MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 
-        private void RefreshModelsButton_Click(object sender, RoutedEventArgs e) 
-        {
-            try
-            {
-                Console.WriteLine("🔄 Refreshing Ollama models...");
-                RefreshOllamaModels();
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error refreshing Ollama models: {ex.Message}");
-                MessageBox.Show($"Error refreshing Ollama models: {ex.Message}", "Error",
-                    MessageBoxButton.OK, MessageBoxImage.Error);
-            }
-        }
-
         /// <summary>
-        /// Update microphone status display
+        /// Enhanced cleanup for voice enrollment samples
         /// </summary>
-        private void UpdateMicrophoneStatus()
-        {
-            if (_isClosing) return;
-
-            try
-            {
-                Dispatcher.Invoke(() =>
-                {
-                    if (_isClosing) return;
-
-                    if (RmsBar != null && RmsText != null)
-                    {
-                        if (!_isMicrophoneInputEnabled)
-                        {
-                            // Clear RMS display when disabled
-                            RmsBar.Value = 0;
-                            RmsText.Text = "DISABLED";
-                            RmsBar.Foreground = this.TryFindResource("BorderBrush") as SolidColorBrush ?? Brushes.Gray;
-                        }
-                        // If enabled, the UpdateRmsLevel method handles the display
-                    }
-                });
-            }
-            catch (Exception ex)
-            {
-                if (!_isClosing)
-                {
-                    Console.WriteLine($"Error updating microphone status: {ex.Message}");
-                }
-            }
-        }
-
-        /// <summary>
-        /// Update Discord status display
-        /// </summary>
-        private void UpdateDiscordStatus()
-        {
-            if (_isClosing) return;
-
-            try
-            {
-                Dispatcher.Invoke(() =>
-                {
-                    if (_isClosing) return;
-
-                    if (DiscordRmsBar != null && DiscordRmsText != null)
-                    {
-                        if (!_isDiscordInputEnabled)
-                        {
-                            // Clear RMS display when disabled
-                            DiscordRmsBar.Value = 0;
-                            DiscordRmsText.Text = "DISABLED";
-                            DiscordRmsBar.Foreground = this.TryFindResource("BorderBrush") as SolidColorBrush ?? Brushes.Gray;
-                        }
-                        // If enabled, the UpdateDiscordRmsLevel method handles the display
-                    }
-                });
-            }
-            catch (Exception ex)
-            {
-                if (!_isClosing)
-                {
-                    Console.WriteLine($" Error updating Discord status: {ex.Message}");
-                }
-            }
-        }
-
-        /// <summary>
-        /// Show speaker statistics in console (for debugging)
-        /// </summary>
-        private void ShowSpeakerStatistics()
+        private void CleanupVoiceEnrollment()
         {
             try
             {
-                // Ensure Kokoro is initialized so voices are loaded
-                KokoroTtsService.Initialize();
-                var voices = KokoroTtsService.GetVoices()?.ToList() ?? new List<string>();
-                if (voices.Count == 0)
-                {
-                    return; // No voices, skip statistics
-                }
-
-                Console.WriteLine($"📋 {voices.Count} TTS voices loaded (Kokoro)");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"❌ Error loading speaker statistics: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Populate TTS speaker dropdown with Kokoro voices (without auto-selecting)
-        /// </summary>
-        private void PopulateTtsSpeakerDropdownWithoutSelection()
-        {
-            try
-            {
-                TtsSpeakerComboBox.Items.Clear();
-
-                // Ensure Kokoro voices are available
-                KokoroTtsService.Initialize();
-                var voices = KokoroTtsService.GetVoices()?.ToList();
-
-                if (voices == null || voices.Count == 0)
-                {
-                    // Add a default item indicating no voices are available
-                    TtsSpeakerComboBox.Items.Add(new ComboBoxItem
-                    {
-                        Content = "No voices available",
-                        Tag = "em_alex" // Default Kokoro voice key
-                    });
-                }
-                else
-                {
-                    foreach (var voiceKey in voices)
-                    {
-                        // Display a friendly name (replace underscores with spaces)
-                        var display = voiceKey.Replace('_', ' ');
-                        var item = new ComboBoxItem
-                        {
-                            Content = display,
-                            Tag = voiceKey,
-                            ToolTip = voiceKey
-                        };
-                        TtsSpeakerComboBox.Items.Add(item);
-                    }
-
-                    Console.WriteLine($"✅ Populated {voices.Count} Kokoro voices");
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"❌ Failed to populate TTS speaker dropdown: {ex.Message}");
-
-                // Emergency fallback: add default item
-                TtsSpeakerComboBox.Items.Clear();
-                TtsSpeakerComboBox.Items.Add(new ComboBoxItem
-                {
-                    Content = "No voices available",
-                    Tag = "em_alex"
-                });
-            }
-        }
-
-        /// <summary>
-        /// Select TTS speaker in dropdown and save immediately
-        /// </summary>
-        private bool SelectTtsSpeaker(string speakerValue)
-        {
-            try
-            {
-                for (int i = 0; i < TtsSpeakerComboBox.Items.Count; i++)
-                {
-                    if (TtsSpeakerComboBox.Items[i] is ComboBoxItem item &&
-                        item.Tag?.ToString() == speakerValue)
-                    {
-                        TtsSpeakerComboBox.SelectedIndex = i;
-
-                        // The SelectionChanged event will handle the saving automatically
-                        Console.WriteLine($"🎤 Selected TTS speaker: {speakerValue} ({item.Content})");
-                        Console.WriteLine($"💾 Speaker will be saved automatically via SelectionChanged event");
-                        return true; // Found and selected
-                    }
-                }
-
-                // Speaker not found in existing dropdown, add it as custom
-                var customItem = new ComboBoxItem
-                {
-                    Content = $"Custom: {speakerValue}",
-                    Tag = speakerValue
-                };
-                TtsSpeakerComboBox.Items.Add(customItem);
-                TtsSpeakerComboBox.SelectedIndex = TtsSpeakerComboBox.Items.Count - 1;
-
-                // The SelectionChanged event will handle the saving automatically
-                Console.WriteLine($"🎤 Added and selected custom TTS speaker: {speakerValue}");
-                Console.WriteLine($"💾 Custom speaker will be saved automatically via SelectionChanged event");
-                return true; // Added and selected
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"❌ Failed to select TTS speaker '{speakerValue}': {ex.Message}");
-
-                if (TtsSpeakerComboBox.Items.Count > 0)
-                {
-                    TtsSpeakerComboBox.SelectedIndex = 0;
-                    Console.WriteLine($"🔄 Fallback to first speaker (will auto-save)");
-                }
-
-                return false; // Failed to select
-            }
-        }
-
-        /// <summary>
-        /// Handle local volume slider changes
-        /// </summary>
-        private void LocalVolumeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
-        {
-            try
-            {
-                _localTtsVolume = e.NewValue / 100.0; // Convert percentage to 0.0-1.0 range
+                // Simple delay to allow any lingering audio threads to complete
+                Task.Delay(500).Wait();
                 
-                var localVolumeLabel = this.FindName("LocalVolumeLabel") as TextBlock;
-                if (localVolumeLabel != null)
+                // Flush any remaining samples for the enrolled voice
+                var name = EnrollNameBox.Text?.Trim();
+                if (!string.IsNullOrWhiteSpace(name))
                 {
-                    localVolumeLabel.Text = $"{(int)e.NewValue}%";
+                    var speakerId = SpeakerIdentifier.GetSpeakerId(name);
+                    MemoryStore.FlushSpeakerData(speakerId);
+                    Console.WriteLine($"🗑️ Cleared cached samples for enrolled voice: {name}");
                 }
-                
-                // Save the setting
-                AppSettings.SaveLocalTtsVolume(_localTtsVolume);
-                
-                Console.WriteLine($"🔊 Local TTS volume set to: {(int)e.NewValue}% ({_localTtsVolume:F2})");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error updating local TTS volume: {ex.Message}");
+                Console.WriteLine($"Error during voice enrollment cleanup: {ex.Message}");
             }
         }
 
         /// <summary>
-        /// Handle Discord volume slider changes  
+        /// Centralized error logging for critical errors
         /// </summary>
-        private void DiscordVolumeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+        private void LogCriticalError(string message)
         {
             try
             {
-                _discordTtsVolume = e.NewValue / 100.0; // Convert percentage to 0.0-1.0 range
+                // Always log to console
+                Console.WriteLine($"❌ Critical Error: {message}");
                 
-                var discordVolumeLabel = this.FindName("DiscordVolumeLabel") as TextBlock;
-                if (discordVolumeLabel != null)
-                {
-                    discordVolumeLabel.Text = $"{(int)e.NewValue}%";
-                }
+                // TODO: Send to remote logging server or service
                 
-                // Save the setting
-                AppSettings.SaveDiscordTtsVolume(_discordTtsVolume);
-                
-                Console.WriteLine($"🤖 Discord TTS volume set to: {(int)e.NewValue}% ({_discordTtsVolume:F2})");
+                // TODO: Show user notification for critical errors
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error updating Discord TTS volume: {ex.Message}");
+                // Prevent recursion or additional errors in logging
+                Console.WriteLine($"Error in LogCriticalError: {ex.Message}");
             }
         }
-
-        /// <summary>
-        /// Initialize volume controls with saved settings
-        /// </summary>
-        private void InitializeVolumeControls()
-        {
-            try
-            {
-                // Load saved volume levels
-                _localTtsVolume = AppSettings.LoadLocalTtsVolume();
-                _discordTtsVolume = AppSettings.LoadDiscordTtsVolume();
-                
-                // Set slider values (convert 0.0-1.0 to 0-100 percentage)
-                var localVolumeSlider = this.FindName("LocalVolumeSlider") as Slider;
-                var localVolumeLabel = this.FindName("LocalVolumeLabel") as TextBlock;
-                if (localVolumeSlider != null)
-                {
-                    localVolumeSlider.Value = _localTtsVolume * 100.0;
-                    if (localVolumeLabel != null)
-                    {
-                        localVolumeLabel.Text = $"{(int)(_localTtsVolume * 100)}%";
-                    }
-                }
-                
-                var discordVolumeSlider = this.FindName("DiscordVolumeSlider") as Slider;
-                var discordVolumeLabel = this.FindName("DiscordVolumeLabel") as TextBlock;
-                if (discordVolumeSlider != null)
-                {
-                    discordVolumeSlider.Value = _discordTtsVolume * 100.0;
-                    if (discordVolumeLabel != null)
-                    {
-                        discordVolumeLabel.Text = $"{(int)(_discordTtsVolume * 100)}%";
-                    }
-                }
-                
-                Console.WriteLine($"🔊 Volume controls initialized:");
-                Console.WriteLine($"   Local TTS: {_localTtsVolume * 100:F0}%");
-                Console.WriteLine($"   Discord TTS: {_discordTtsVolume * 100:F0}%");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error initializing volume controls: {ex.Message}");
-                // Set defaults if initialization fails
-                _localTtsVolume = 1.0;
-                _discordTtsVolume = 1.0;
-            }
-        }
-
-        /// <summary>
-        /// Initialize identity fusion cleanup timer
-        /// </summary>
-        private void InitializeIdentityFusionCleanup()
-        {
-            try
-            {
-                // Set up periodic cleanup timer for old identity entries
-                var cleanupTimer = new DispatcherTimer
-                {
-                    Interval = TimeSpan.FromSeconds(10) // Clean up every 10 seconds
-                };
-                
-                cleanupTimer.Tick += (sender, e) =>
-                {
-                    try
-                    {
-                        IdentityFusionTracker.CleanupOldEntries();
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"Error during identity fusion cleanup: {ex.Message}");
-                    }
-                };
-                
-                cleanupTimer.Start();
-                
-                // Set up periodic status logging timer
-                var statusTimer = new DispatcherTimer
-                {
-                    Interval = TimeSpan.FromSeconds(15) // Log status every 15 seconds
-                };
-                
-                statusTimer.Tick += (sender, e) =>
-                {
-                    try
-                    {
-                        var status = IdentityFusionTracker.GetFusionStatus();
-                        if (!status.Contains("No active identities"))
-                        {
-                            Console.WriteLine("--- Identity Fusion Status ---");
-                            Console.WriteLine(status);
-                            Console.WriteLine("-----------------------------");
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"Error during identity fusion status logging: {ex.Message}");
-                    }
-                };
-                
-                statusTimer.Start();
-                
-                Console.WriteLine("🔀 Identity fusion cleanup timer initialized (10s interval)");
-                Console.WriteLine("🔀 Identity fusion status logging initialized (15s interval)");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error initializing identity fusion cleanup: {ex.Message}");
-            }
-        }
-
-        #region Diagnostics Tab Event Handlers
-
-        /// <summary>
-        /// Load diagnostics tab with current scenario and validation
-        /// </summary>
-        public void LoadDiagnosticsTab()
-        {
-            try
-            {
-                // Load current scenario into combo box
-                var currentScenario = AppSettings.LoadAppScenario();
-                
-                // Find and select the matching combo box item
-                foreach (ComboBoxItem item in ScenarioComboBox.Items)
-                {
-                    if (item.Tag.ToString() == currentScenario.ToString())
-                    {
-                        ScenarioComboBox.SelectedItem = item;
-                        break;
-                    }
-                }
-
-                // Update scenario description
-                UpdateScenarioDescription(currentScenario);
-
-                // Load validation results
-                RefreshValidationResults();
-
-                // Load full diagnostics report
-                RefreshDiagnosticsReport();
-
-                DiagnosticsStatusText.Text = $"Diagnostics loaded - Current scenario: {currentScenario}";
-            }
-            catch (Exception ex)
-            {
-                DiagnosticsStatusText.Text = $"Error loading diagnostics: {ex.Message}";
-                Console.WriteLine($"Error loading diagnostics tab: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Handle scenario combo box selection change
-        /// </summary>
-        private void ScenarioComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
-        {
-            try
-            {
-                if (ScenarioComboBox.SelectedItem is ComboBoxItem selectedItem)
-                {
-                    var scenarioStr = selectedItem.Tag.ToString();
-                    if (Enum.TryParse<AppScenario>(scenarioStr, out var scenario))
-                    {
-                        // Save the selected scenario
-                        AppSettings.SaveAppScenario(scenario);
-
-                        // Update description
-                        UpdateScenarioDescription(scenario);
-
-                        // Refresh validation since scenario changed
-                        RefreshValidationResults();
-                        RefreshDiagnosticsReport();
-
-                        DiagnosticsStatusText.Text = $"Scenario changed to: {scenario}";
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                DiagnosticsStatusText.Text = $"Error changing scenario: {ex.Message}";
-                Console.WriteLine($"Error in scenario selection: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Apply scenario defaults button click
-        /// </summary>
-        private void ApplyScenarioButton_Click(object sender, RoutedEventArgs e)
-        {
-            try
-            {
-                if (ScenarioComboBox.SelectedItem is ComboBoxItem selectedItem)
-                {
-                    var scenarioStr = selectedItem.Tag.ToString();
-                    if (Enum.TryParse<AppScenario>(scenarioStr, out var scenario))
-                    {
-                        // Apply scenario defaults
-                        AppSettings.ApplyScenarioDefaults(scenario);
-
-                        // Refresh validation and diagnostics to reflect changes
-                        RefreshValidationResults();
-                        RefreshDiagnosticsReport();
-
-                        DiagnosticsStatusText.Text = $"Applied {scenario} scenario defaults successfully";
-                        
-                        // Show confirmation message
-                        MessageBox.Show($"Applied {scenario} scenario defaults successfully!\n\nPlease check the validation results for any remaining issues.", 
-                                      "Scenario Defaults Applied", MessageBoxButton.OK, MessageBoxImage.Information);
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                DiagnosticsStatusText.Text = $"Error applying scenario defaults: {ex.Message}";
-                MessageBox.Show($"Error applying scenario defaults: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                Console.WriteLine($"Error applying scenario defaults: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Refresh validation results button click
-        /// </summary>
-        private void RefreshValidationButton_Click(object sender, RoutedEventArgs e)
-        {
-            RefreshValidationResults();
-        }
-
-        /// <summary>
-        /// Refresh diagnostics report button click
-        /// </summary>
-        private void RefreshDiagnosticsButton_Click(object sender, RoutedEventArgs e)
-        {
-            RefreshDiagnosticsReport();
-        }
-
-        /// <summary>
-        /// Copy diagnostics report to clipboard
-        /// </summary>
-        private void CopyDiagnosticsButton_Click(object sender, RoutedEventArgs e)
-        {
-            try
-            {
-                if (!string.IsNullOrEmpty(DiagnosticsReportTextBox.Text))
-                {
-                    Clipboard.SetText(DiagnosticsReportTextBox.Text);
-                    DiagnosticsStatusText.Text = "Diagnostics report copied to clipboard";
-                }
-                else
-                {
-                    DiagnosticsStatusText.Text = "No diagnostics report to copy";
-                }
-            }
-            catch (Exception ex)
-            {
-                DiagnosticsStatusText.Text = $"Error copying to clipboard: {ex.Message}";
-                Console.WriteLine($"Error copying diagnostics to clipboard: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Update scenario description text
-        /// </summary>
-        private void UpdateScenarioDescription(AppScenario scenario)
-        {
-            try
-            {
-                switch (scenario)
-                {
-                    case AppScenario.Local:
-                        ScenarioDescriptionText.Text = "Local scenario: Optimized for local TTS and voice processing. Discord bot disabled, moderate confidence thresholds, CPU processing for stability.";
-                        break;
-                    case AppScenario.Discord:
-                        ScenarioDescriptionText.Text = "Discord scenario: Full bot integration enabled with voice commands. Higher confidence thresholds, optimized for Discord voice activity detection.";
-                        break;
-                    case AppScenario.Kiosk:
-                        ScenarioDescriptionText.Text = "Kiosk scenario: Public-facing mode with AI disabled for privacy. High accuracy thresholds, stable CPU processing, telemetry disabled.";
-                        break;
-                    default:
-                        ScenarioDescriptionText.Text = "Select a scenario to see its description.";
-                        break;
-                }
-            }
-            catch (Exception ex)
-            {
-                ScenarioDescriptionText.Text = $"Error updating description: {ex.Message}";
-            }
-        }
-
-        /// <summary>
-        /// Refresh validation results
-        /// </summary>
-        private void RefreshValidationResults()
-        {
-            try
-            {
-                var validationIssues = AppSettings.Validate();
-                ValidationResultsList.ItemsSource = validationIssues;
-                
-                var issueCount = validationIssues.Count(issue => issue.StartsWith("❌") || issue.StartsWith("⚠️"));
-                if (issueCount == 0)
-                {
-                    DiagnosticsStatusText.Text = "✅ All validation checks passed";
-                }
-                else
-                {
-                    DiagnosticsStatusText.Text = $"Found {issueCount} configuration issues";
-                }
-            }
-            catch (Exception ex)
-            {
-                ValidationResultsList.ItemsSource = new[] { $"❌ Validation failed: {ex.Message}" };
-                DiagnosticsStatusText.Text = $"Error during validation: {ex.Message}";
-                Console.WriteLine($"Error refreshing validation results: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Refresh full diagnostics report
-        /// </summary>
-        private void RefreshDiagnosticsReport()
-        {
-            try
-            {
-                var report = AppSettings.GetDiagnosticsReport();
-                DiagnosticsReportTextBox.Text = report;
-            }
-            catch (Exception ex)
-            {
-                DiagnosticsReportTextBox.Text = $"❌ ERROR: Could not generate diagnostics report: {ex.Message}";
-                Console.WriteLine($"Error refreshing diagnostics report: {ex.Message}");
-            }
-        }
-
-        #endregion
-
-        #region Audio Settings Tab Event Handlers
-
-        /// <summary>
-        /// Load and populate audio input devices
-        /// </summary>
-        private void InitializeAudioDevicesUI()
-        {
-            try
-            {
-                RefreshAudioInputDevices();
-                RefreshAudioOutputDevices();
-                LoadAudioSettings();
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error initializing audio devices UI: {ex.Message}");
-                if (AudioDeviceStatusText != null)
-                {
-                    AudioDeviceStatusText.Text = $"Error loading audio devices: {ex.Message}";
-                }
-            }
-        }
-
-        /// <summary>
-        /// Refresh audio input devices
-        /// </summary>
-        private void RefreshAudioInputDevices()
-        {
-            try
-            {
-                var devices = AudioDeviceManager.GetInputDevices();
-                AudioInputDeviceComboBox.Items.Clear();
-                
-                foreach (var device in devices)
-                {
-                    AudioInputDeviceComboBox.Items.Add(device);
-                }
-                
-                // Select saved device or default
-                var savedDeviceId = AppSettings.LoadAudioInputDeviceId();
-                if (savedDeviceId >= 0 && savedDeviceId < devices.Count)
-                {
-                    AudioInputDeviceComboBox.SelectedIndex = savedDeviceId;
-                }
-                else if (devices.Any())
-                {
-                    // Select first default device or first device
-                    var defaultDevice = devices.FirstOrDefault(d => d.IsDefault) ?? devices.First();
-                    AudioInputDeviceComboBox.SelectedItem = defaultDevice;
-                }
-                
-                Console.WriteLine($"🎤 Loaded {devices.Count} input devices");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error refreshing input devices: {ex.Message}");
-                if (AudioDeviceStatusText != null)
-                {
-                    AudioDeviceStatusText.Text = $"Error loading input devices: {ex.Message}";
-                }
-            }
-        }
-
-        /// <summary>
-        /// Refresh audio output devices
-        /// </summary>
-        private void RefreshAudioOutputDevices()
-        {
-            try
-            {
-                var devices = AudioDeviceManager.GetOutputDevices();
-                AudioOutputDeviceComboBox.Items.Clear();
-                
-                foreach (var device in devices)
-                {
-                    AudioOutputDeviceComboBox.Items.Add(device);
-                }
-                
-                // Select saved device or default
-                var savedDeviceId = AppSettings.LoadAudioOutputDeviceId();
-                if (savedDeviceId >= 0 && savedDeviceId < devices.Count)
-                {
-                    AudioOutputDeviceComboBox.SelectedIndex = savedDeviceId;
-                }
-                else if (devices.Any())
-                {
-                    // Select first default device or first device
-                    var defaultDevice = devices.FirstOrDefault(d => d.IsDefault) ?? devices.First();
-                    AudioOutputDeviceComboBox.SelectedItem = defaultDevice;
-                }
-                
-                Console.WriteLine($"🔊 Loaded {devices.Count} output devices");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error refreshing output devices: {ex.Message}");
-                if (AudioDeviceStatusText != null)
-                {
-                    AudioDeviceStatusText.Text = $"Error loading output devices: {ex.Message}";
-                }
-            }
-        }
-
-        /// <summary>
-        /// Load audio settings from configuration
-        /// </summary>
-        private void LoadAudioSettings()
-        {
-            try
-            {
-                // Load VAD thresholds
-                var micVadThreshold = AppSettings.LoadMicVadThreshold();
-                var discordVadThreshold = AppSettings.LoadDiscordVadThreshold();
-                
-                MicVadThresholdSlider.Value = micVadThreshold;
-                MicVadThresholdTextBox.Text = micVadThreshold.ToString();
-                
-                DiscordVadThresholdSlider.Value = discordVadThreshold;
-                DiscordVadThresholdTextBox.Text = discordVadThreshold.ToString();
-                
-                // Load volume settings (convert from 0.0-1.0 to 0-100)
-                var localTtsVolume = AppSettings.LoadLocalTtsVolume() * 100;
-                var discordTtsVolume = AppSettings.LoadDiscordTtsVolume() * 100;
-                
-                LocalTtsVolumeSlider.Value = localTtsVolume;
-                LocalTtsVolumeTextBox.Text = $"{localTtsVolume:F0}%";
-                
-                DiscordTtsVolumeSlider.Value = discordTtsVolume;
-                DiscordTtsVolumeTextBox.Text = $"{discordTtsVolume:F0}%";
-                
-                if (AudioDeviceStatusText != null)
-                {
-                    AudioDeviceStatusText.Text = "Audio settings loaded successfully";
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error loading audio settings: {ex.Message}");
-                if (AudioDeviceStatusText != null)
-                {
-                    AudioDeviceStatusText.Text = $"Error loading settings: {ex.Message}";
-                }
-            }
-        }
-
-        /// <summary>
-        /// Audio input device selection changed
-        /// </summary>
-        private void AudioInputDeviceComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
-        {
-            try
-            {
-                if (AudioInputDeviceComboBox.SelectedItem is AudioDeviceManager.AudioInputDevice device)
-                {
-                    AppSettings.SaveAudioInputDeviceId(device.DeviceNumber);
-                    Console.WriteLine($"🎤 Selected input device: {device.DeviceName}");
-                    
-                    if (AudioDeviceStatusText != null)
-                    {
-                        AudioDeviceStatusText.Text = $"Input device selected: {device.DeviceName}";
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error selecting input device: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Audio output device selection changed
-        /// </summary>
-        private void AudioOutputDeviceComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
-        {
-            try
-            {
-                if (AudioOutputDeviceComboBox.SelectedItem is AudioDeviceManager.AudioOutputDevice device)
-                {
-                    AppSettings.SaveAudioOutputDeviceId(device.DeviceNumber);
-                    Console.WriteLine($"🔊 Selected output device: {device.DeviceName}");
-                    
-                    if (AudioDeviceStatusText != null)
-                    {
-                        AudioDeviceStatusText.Text = $"Output device selected: {device.DeviceName}";
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error selecting output device: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Test input device
-        /// </summary>
-        private void TestInputDeviceButton_Click(object sender, RoutedEventArgs e)
-        {
-            try
-            {
-                if (AudioInputDeviceComboBox.SelectedItem is AudioDeviceManager.AudioInputDevice device)
-                {
-                    AudioDeviceStatusText.Text = "Testing input device...";
-                    
-                    Task.Run(async () =>
-                    {
-                        try
-                        {
-                            var isWorking = await AudioDeviceManager.TestInputDeviceAsync(device.DeviceNumber);
-                            
-                            await Dispatcher.InvokeAsync(() =>
-                            {
-                                if (isWorking)
-                                {
-                                    AudioDeviceStatusText.Text = $"✅ Input device '{device.DeviceName}' is working correctly";
-                                }
-                                else
-                                {
-                                    AudioDeviceStatusText.Text = $"❌ Input device '{device.DeviceName}' test failed";
-                                }
-                            });
-                        }
-                        catch (Exception ex)
-                        {
-                            await Dispatcher.InvokeAsync(() =>
-                            {
-                                AudioDeviceStatusText.Text = $"❌ Input device test error: {ex.Message}";
-                            });
-                        }
-                    });
-                }
-                else
-                {
-                    AudioDeviceStatusText.Text = "Please select an input device first";
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error testing input device: {ex.Message}");
-                AudioDeviceStatusText.Text = $"Error testing input device: {ex.Message}";
-            }
-        }
-
-        /// <summary>
-        /// Test output device
-        /// </summary>
-        private void TestOutputDeviceButton_Click(object sender, RoutedEventArgs e)
-        {
-            try
-            {
-                if (AudioOutputDeviceComboBox.SelectedItem is AudioDeviceManager.AudioOutputDevice device)
-                {
-                    AudioDeviceStatusText.Text = "Testing output device...";
-                    
-                    Task.Run(async () =>
-                    {
-                        try
-                        {
-                            var isWorking = await AudioDeviceManager.TestOutputDeviceAsync(device.DeviceNumber);
-                            
-                            await Dispatcher.InvokeAsync(() =>
-                            {
-                                if (isWorking)
-                                {
-                                    AudioDeviceStatusText.Text = $"✅ Output device '{device.DeviceName}' is working correctly";
-                                }
-                                else
-                                {
-                                    AudioDeviceStatusText.Text = $"❌ Output device '{device.DeviceName}' test failed";
-                                }
-                            });
-                        }
-                        catch (Exception ex)
-                        {
-                            await Dispatcher.InvokeAsync(() =>
-                            {
-                                AudioDeviceStatusText.Text = $"❌ Output device test error: {ex.Message}";
-                            });
-                        }
-                    });
-                }
-                else
-                {
-                    AudioDeviceStatusText.Text = "Please select an output device first";
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error testing output device: {ex.Message}");
-                AudioDeviceStatusText.Text = $"Error testing output device: {ex.Message}";
-            }
-        }
-
-        /// <summary>
-        /// Refresh input devices list
-        /// </summary>
-        private void RefreshInputDevicesButton_Click(object sender, RoutedEventArgs e)
-        {
-            RefreshAudioInputDevices();
-        }
-
-        /// <summary>
-        /// Refresh output devices list
-        /// </summary>
-        private void RefreshOutputDevicesButton_Click(object sender, RoutedEventArgs e)
-        {
-            RefreshAudioOutputDevices();
-        }
-
-        /// <summary>
-        /// Microphone VAD threshold slider changed
-        /// </summary>
-        private void MicVadThresholdSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
-        {
-            try
-            {
-                var value = (int)e.NewValue;
-                MicVadThresholdTextBox.Text = value.ToString();
-                AppSettings.SaveMicVadThreshold(value);
-                Console.WriteLine($"🎤 Microphone VAD threshold: {value}");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error updating mic VAD threshold: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Discord VAD threshold slider changed
-        /// </summary>
-        private void DiscordVadThresholdSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
-        {
-            try
-            {
-                var value = (int)e.NewValue;
-                DiscordVadThresholdTextBox.Text = value.ToString();
-                AppSettings.SaveDiscordVadThreshold(value);
-                Console.WriteLine($"🤖 Discord VAD threshold: {value}");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error updating Discord VAD threshold: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Microphone VAD threshold text changed
-        /// </summary>
-        private void MicVadThresholdTextBox_TextChanged(object sender, TextChangedEventArgs e)
-        {
-            try
-            {
-                if (int.TryParse(MicVadThresholdTextBox.Text, out int value))
-                {
-                    if (value >= MicVadThresholdSlider.Minimum && value <= MicVadThresholdSlider.Maximum)
-                    {
-                        MicVadThresholdSlider.Value = value;
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error parsing mic VAD threshold: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Discord VAD threshold text changed
-        /// </summary>
-        private void DiscordVadThresholdTextBox_TextChanged(object sender, TextChangedEventArgs e)
-        {
-            try
-            {
-                if (int.TryParse(DiscordVadThresholdTextBox.Text, out int value))
-                {
-                    if (value >= DiscordVadThresholdSlider.Minimum && value <= DiscordVadThresholdSlider.Maximum)
-                    {
-                        DiscordVadThresholdSlider.Value = value;
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error parsing Discord VAD threshold: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Local TTS volume slider changed
-        /// </summary>
-        private void LocalTtsVolumeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
-        {
-            try
-            {
-                var value = (int)e.NewValue;
-                LocalTtsVolumeTextBox.Text = $"{value}%";
-                // Convert from 0-100 to 0.0-1.0 for AppSettings
-                AppSettings.SaveLocalTtsVolume(value / 100.0);
-                Console.WriteLine($"🔊 Local TTS volume: {value}%");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error updating local TTS volume: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Discord TTS volume slider changed
-        /// </summary>
-        private void DiscordTtsVolumeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
-        {
-            try
-            {
-                var value = (int)e.NewValue;
-                DiscordTtsVolumeTextBox.Text = $"{value}%";
-                // Convert from 0-100 to 0.0-1.0 for AppSettings
-                AppSettings.SaveDiscordTtsVolume(value / 100.0);
-                Console.WriteLine($"🤖 Discord TTS volume: {value}%");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error updating Discord TTS volume: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Local TTS volume text changed
-        /// </summary>
-        private void LocalTtsVolumeTextBox_TextChanged(object sender, TextChangedEventArgs e)
-        {
-            try
-            {
-                var text = LocalTtsVolumeTextBox.Text.Replace("%", "");
-                if (int.TryParse(text, out int value))
-                {
-                    if (value >= LocalTtsVolumeSlider.Minimum && value <= LocalTtsVolumeSlider.Maximum)
-                    {
-                        LocalTtsVolumeSlider.Value = value;
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error parsing local TTS volume: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Discord TTS volume text changed
-        /// </summary>
-        private void DiscordTtsVolumeTextBox_TextChanged(object sender, TextChangedEventArgs e)
-        {
-            try
-            {
-                var text = DiscordTtsVolumeTextBox.Text.Replace("%", "");
-                if (int.TryParse(text, out int value))
-                {
-                    if (value >= DiscordTtsVolumeSlider.Minimum && value <= DiscordTtsVolumeSlider.Maximum)
-                    {
-                        DiscordTtsVolumeSlider.Value = value;
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error parsing Discord TTS volume: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Test audio output with custom text
-        /// </summary>
-        private void TestAudioOutputButton_Click(object sender, RoutedEventArgs e)
-        {
-            try
-            {
-                var testText = AudioTestTextBox?.Text ?? "Hello, this is an audio device test.";
-                AudioTestStatusText.Text = "Playing test audio...";
-                
-                Task.Run(async () =>
-                {
-                    try
-                    {
-                        var device = AudioOutputDeviceComboBox.SelectedItem as AudioDeviceManager.AudioOutputDevice;
-                        var success = await AudioDeviceManager.TestOutputWithTextAsync(device?.DeviceNumber ?? -1, testText);
-                        
-                        await Dispatcher.InvokeAsync(() =>
-                        {
-                            if (success)
-                            {
-                                AudioTestStatusText.Text = "✅ Test audio played successfully";
-                            }
-                            else
-                            {
-                                AudioTestStatusText.Text = "❌ Test audio playback failed";
-                            }
-                        });
-                    }
-                    catch (Exception ex)
-                    {
-                        await Dispatcher.InvokeAsync(() =>
-                        {
-                            AudioTestStatusText.Text = $"❌ Test audio error: {ex.Message}";
-                        });
-                    }
-                });
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error testing audio output: {ex.Message}");
-                AudioTestStatusText.Text = $"Error: {ex.Message}";
-            }
-        }
-
-        #endregion
-
     }
 }

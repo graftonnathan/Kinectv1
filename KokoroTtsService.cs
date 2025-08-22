@@ -849,22 +849,6 @@ namespace Kinectv1
             candidates.Add("espeak.exe");
             return candidates;
         }
-        {
-            var candidates = new List<string>();
-            try
-            {
-                var baseDir = AppDomain.CurrentDomain.BaseDirectory;
-                var localDir = Path.Combine(baseDir, "models", "tts", "Espeak NG");
-                var localNg = Path.Combine(localDir, "espeak-ng.exe");
-                var localClassic = Path.Combine(localDir, "espeak.exe");
-                if (File.Exists(localNg)) candidates.Add(localNg);
-                if (File.Exists(localClassic)) candidates.Add(localClassic);
-            }
-            catch { }
-            candidates.Add("espeak-ng.exe");
-            candidates.Add("espeak.exe");
-            return candidates;
-        }
 
         private static string NormalizeIpa(string ipa)
         {
@@ -885,9 +869,9 @@ namespace Kinectv1
         {
             if (string.IsNullOrWhiteSpace(text)) return text;
             
-            // Normalize smart quotes to ASCII
-            text = text.Replace(""", "\"").Replace(""", "\"");
-            text = text.Replace("'", "'").Replace("'", "'");
+            // Normalize smart quotes and punctuation to ASCII
+            text = text.Replace('\u201C', '"').Replace('\u201D', '"'); // “ ” -> "
+            text = text.Replace('\u2018', '\'').Replace('\u2019', '\''); // ‘ ’ -> '
             text = text.Replace("–", "-").Replace("—", "-");
             text = text.Replace("…", "...");
             

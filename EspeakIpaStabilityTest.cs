@@ -35,7 +35,7 @@ namespace Kinectv1.Tests
             
             var testCases = new Dictionary<string, string>
             {
-                {""Hello world"", "\"Hello world\""},
+                {"\"Hello world\"", "\"Hello world\""},
                 {"Smart 'quotes' test", "Smart 'quotes' test"},
                 {"Em—dash and en–dash", "Em-dash and en-dash"},
                 {"Ellipsis…", "Ellipsis..."},
@@ -136,8 +136,8 @@ namespace Kinectv1.Tests
             if (string.IsNullOrWhiteSpace(text)) return text;
             
             // Normalize smart quotes to ASCII
-            text = text.Replace(""", "\"").Replace(""", "\"");
-            text = text.Replace("'", "'").Replace("'", "'");
+            text = text.Replace('\u201C', '"').Replace('\u201D', '"'); // “ ” -> "
+            text = text.Replace('\u2018', '\'').Replace('\u2019', '\''); // ‘ ’ -> '
             text = text.Replace("–", "-").Replace("—", "-");
             text = text.Replace("…", "...");
             

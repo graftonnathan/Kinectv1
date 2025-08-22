@@ -150,6 +150,16 @@ namespace Kinectv1
             }
         }
 
+        // Application-level wrappers used by some settings helpers
+        private static string GetApplicationSetting(string name)
+        {
+            return ReadSettingRaw(name);
+        }
+        private static void SetApplicationSetting(string name, string value)
+        {
+            WriteSettingRaw(name, value);
+        }
+
         private static string GetString(string name)
         {
             return ReadSettingRaw(name);
