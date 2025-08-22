@@ -829,6 +829,36 @@ namespace Kinectv1
                     return;
                 }
 
+                // NEW: Check if TTS is currently speaking (ASR suppression during TTS playback)
+                // Only suppress ASR if barge-in is disabled (per requirements)
+                if (TtsPlaybackController.Instance.IsSpeaking && !AppSettings.LoadBargeInEnabled())
+                {
+                    Console.WriteLine($"?? DISPATCH BLOCKED: '{transcription}' from {source} (TTS currently speaking - ASR suppressed, barge-in disabled)");
+                    Telemetry.Counter("asr.dispatch_blocked_due_to_tts");
+                    return;
+                }
+
+                // NEW: Enhanced gating for Local scenario - require wake word or higher confidence
+                var currentScenario = AppSettings.LoadAppScenario();
+                if (currentScenario == AppScenario.Local)
+                {
+                    // For Local scenario, we want to be more conservative about LLM dispatch
+                    // Check if this was triggered by wake word detection
+                    var hasTriggerWord = !string.IsNullOrWhiteSpace(_triggerName) && 
+                                        transcription.IndexOf(_triggerName, StringComparison.OrdinalIgnoreCase) >= 0;
+                    
+                    if (!hasTriggerWord)
+                    {
+                        Console.WriteLine($"?? DISPATCH BLOCKED: '{transcription}' from {source} (Local scenario - no wake word detected)");
+                        Telemetry.Counter("asr.dispatch_blocked_no_wake_word");
+                        return;
+                    }
+                    else
+                    {
+                        Console.WriteLine($"?? WAKE WORD DETECTED: '{_triggerName}' in '{transcription}' - proceeding with dispatch");
+                    }
+                }
+
                 // Mark as processed and set dispatch flag
                 _processedTranscriptions.Add(transcription);
                 _ollamaDispatchInProgress = true;

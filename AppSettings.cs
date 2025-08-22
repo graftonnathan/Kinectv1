@@ -1615,6 +1615,38 @@ namespace Kinectv1
             }
         }
 
+        /// <summary>
+        /// Load barge-in setting (allows ASR to interrupt TTS when enabled)
+        /// </summary>
+        public static bool LoadBargeInEnabled()
+        {
+            try
+            {
+                return GetBool("BargeInEnabled");
+            }
+            catch (Exception ex)
+            {
+                LogSettingError("BargeInEnabled", $"READ FAILED: {ex.Message}");
+                return false; // Default: barge-in disabled
+            }
+        }
+
+        /// <summary>
+        /// Save barge-in setting
+        /// </summary>
+        public static void SaveBargeInEnabled(bool enabled)
+        {
+            try
+            {
+                SetBool("BargeInEnabled", enabled);
+                Console.WriteLine($"ASR: Saved barge-in enabled: {enabled}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"ERROR: Error saving barge-in setting: {ex.Message}");
+            }
+        }
+
         // UI Theme Settings
         public static bool LoadDarkMode()
         {
