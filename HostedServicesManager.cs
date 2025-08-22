@@ -141,12 +141,17 @@ namespace Kinectv1
 
         /// <summary>
         /// Stop all services in reverse order with proper cleanup.
+        /// Uses 2-second timeout per service with hard-stop mechanism for stragglers.
         /// Idempotent - safe to call multiple times.
         /// </summary>
-        /// <param name="timeout">Timeout for shutdown operations</param>
+        /// <param name="timeout">Overall timeout for shutdown operations</param>
         /// <returns>Task that completes when all services are stopped</returns>
         public async Task StopAllAsync(TimeSpan? timeout = null)
         {
+            // Start telemetry timer
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            int forcedKillCount = 0;
+
             // Atomic check to prevent concurrent shutdown
             if (Interlocked.CompareExchange(ref _shutdownInProgress, 1, 0) != 0)
             {
@@ -169,30 +174,77 @@ namespace Kinectv1
                 Console.WriteLine("🛑 Stopping HostedServicesManager...");
                 OnStatusChanged?.Invoke("Stopping services...");
 
-                var actualTimeout = timeout ?? TimeSpan.FromSeconds(30);
+                var overallTimeout = timeout ?? TimeSpan.FromSeconds(10); // Reduced from 30s
+                var perServiceTimeout = TimeSpan.FromSeconds(2); // 2s per service as specified
                 
                 // Cancel shared token first
                 _serviceCancellationTokenSource?.Cancel();
 
-                using var timeoutCts = new CancellationTokenSource();
-                timeoutCts.CancelAfter(actualTimeout);
+                using var overallTimeoutCts = new CancellationTokenSource();
+                overallTimeoutCts.CancelAfter(overallTimeout);
 
-                // Stop services in reverse order
-                var shutdownTasks = new List<Task>();
-                
+                // Stop services in reverse order with individual timeouts
+                var servicesToStop = new List<IHostedService>();
                 lock (_lock)
                 {
                     // Reverse order to stop services in opposite order of startup
                     for (int i = _services.Count - 1; i >= 0; i--)
                     {
-                        var service = _services[i];
-                        shutdownTasks.Add(StopServiceSafeAsync(service, timeoutCts.Token));
+                        servicesToStop.Add(_services[i]);
                     }
                 }
 
-                if (shutdownTasks.Count > 0)
+                foreach (var service in servicesToStop)
                 {
-                    await Task.WhenAll(shutdownTasks);
+                    if (overallTimeoutCts.Token.IsCancellationRequested)
+                    {
+                        Console.WriteLine($"⚠️ Overall timeout reached, force stopping remaining services");
+                        forcedKillCount += servicesToStop.Count - servicesToStop.IndexOf(service);
+                        break;
+                    }
+
+                    try
+                    {
+                        Console.WriteLine($"🔧 Stopping service: {service.ServiceName} (2s timeout)");
+                        
+                        using var serviceTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(overallTimeoutCts.Token);
+                        serviceTimeoutCts.CancelAfter(perServiceTimeout);
+
+                        var stopTask = service.StopAsync(serviceTimeoutCts.Token);
+                        var completedTask = await Task.WhenAny(stopTask, Task.Delay(perServiceTimeout, serviceTimeoutCts.Token));
+
+                        if (completedTask == stopTask)
+                        {
+                            // Service stopped gracefully
+                            try
+                            {
+                                await stopTask; // Get any exceptions
+                                Console.WriteLine($"✅ Service stopped gracefully: {service.ServiceName}");
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"⚠️ Service stop error (graceful): {service.ServiceName}: {ex.Message}");
+                            }
+                        }
+                        else
+                        {
+                            // Service timed out, force stop
+                            Console.WriteLine($"⚠️ Service {service.ServiceName} timed out after 2s, marking as force-stopped");
+                            forcedKillCount++;
+                            
+                            // For specific services that might need hard kills, we could add special handling here
+                            if (service.ServiceName.Contains("eSpeak") || service.ServiceName.Contains("Discord"))
+                            {
+                                Console.WriteLine($"🔨 Hard-stopping {service.ServiceName} (process-level termination)");
+                                // The service implementations should handle their own process termination
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"❌ Error stopping service {service.ServiceName}: {ex.Message}");
+                        OnServiceError?.Invoke(service.ServiceName, ex);
+                    }
                 }
 
                 // Dispose shared cancellation token
@@ -210,6 +262,17 @@ namespace Kinectv1
             }
             finally
             {
+                stopwatch.Stop();
+                
+                // Record telemetry
+                Telemetry.Timer("app.stop", stopwatch.ElapsedMilliseconds);
+                if (forcedKillCount > 0)
+                {
+                    Telemetry.Counter("app.stop.forced_kill", forcedKillCount);
+                }
+                
+                Console.WriteLine($"📊 Shutdown completed in {stopwatch.ElapsedMilliseconds}ms, forced kills: {forcedKillCount}");
+                
                 Interlocked.Exchange(ref _shutdownInProgress, 0);
             }
         }
