@@ -1,7 +1,7 @@
-name: Copilot Throttle (review_requested → ready + approve; no labels)
+name: Copilot Throttle (review_requested → ready + approve; no labels, no approval gate)
 
 on:
-  pull_request_target:
+  pull_request:
     types: [review_requested]
 
 concurrency:
@@ -9,8 +9,8 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: write          # edit title, etc.
+  pull-requests: write     # remove/add reviewers, submit reviews
   issues: write
 
 jobs:
@@ -41,7 +41,8 @@ jobs:
         run: |
           set -euo pipefail
           CURRENT="${{ steps.ctx.outputs.pr }}"
-          BUSY=$(gh pr list -R "$REPO" --search "is:open review-requested:Copilot" -L 100 --json number \
+          BUSY=$(gh pr list -R "$REPO" \
+                 --search "is:open review-requested:Copilot" -L 100 --json number \
                  | jq --arg cur "$CURRENT" '[.[] | select(.number != ($cur|tonumber))] | length')
           echo "busy=$BUSY" >> "$GITHUB_OUTPUT"
 
@@ -50,9 +51,9 @@ jobs:
         run: |
           PR="${{ steps.ctx.outputs.pr }}"
           gh pr edit -R "$REPO" "$PR" --remove-reviewer "Copilot" || true
-          gh pr comment -R "$REPO" "$PR" --body "⏸️ Copilot is already working on another PR. It'll be requested here when free."
+          gh pr comment -R "$REPO" "$PR" --body "⏸️ Copilot is already busy on another PR. It’ll be requested here when free."
 
-      - name: Mark ready & clean WIP/Draft title
+      - name: Mark ready & clean WIP/Draft in title
         if: ${{ steps.busy.outputs.busy == '0' }}
         shell: bash
         run: |
@@ -66,14 +67,12 @@ jobs:
             gh pr edit -R "$REPO" "$PR" --title "$CLEAN"
           fi
 
-      - name: Auto-approve (best effort)
+      - name: Auto-approve (best effort; no auto-merge here)
         if: ${{ steps.busy.outputs.busy == '0' }}
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
         run: |
           PR="${{ steps.ctx.outputs.pr }}"
-          gh pr review -R "$REPO" "$PR" --approve -b "Auto-approved by throttle (ready for CI)."
-
-
+          gh pr review -R "$REPO" "$PR" --approve -b "Auto-approved by throttle"
 
 
