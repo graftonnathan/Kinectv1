@@ -149,15 +149,25 @@ namespace Kinectv1
             try
             {
                 Console.WriteLine("🔻 Application exiting - stopping services...");
+                var stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
                 // Stop hosted services manager first (centralized shutdown)
                 if (ServicesManager != null)
                 {
                     try 
                     { 
-                        var stopTask = ServicesManager.StopAllAsync(TimeSpan.FromSeconds(30));
-                        stopTask.Wait(35000); // Wait with timeout
-                        Console.WriteLine("✅ Hosted services stopped");
+                        var stopTask = ServicesManager.StopAllAsync(TimeSpan.FromSeconds(5)); // Reduced timeout
+                        bool completed = stopTask.Wait(6000); // 6s timeout for final cleanup
+                        
+                        if (completed)
+                        {
+                            Console.WriteLine("✅ Hosted services stopped");
+                        }
+                        else
+                        {
+                            Console.WriteLine("⚠️ Hosted services stop timed out in OnExit");
+                            Telemetry.Counter("app.stop.forced_kill");
+                        }
                     } 
                     catch (Exception ex) 
                     { 
@@ -173,6 +183,10 @@ namespace Kinectv1
 
                 // Hide console
                 try { ConsoleManager.HideConsole(); } catch { }
+                
+                stopwatch.Stop();
+                Telemetry.Timer("app.exit", stopwatch.ElapsedMilliseconds);
+                Console.WriteLine($"📊 App.OnExit completed in {stopwatch.ElapsedMilliseconds}ms");
             }
             finally
             {
