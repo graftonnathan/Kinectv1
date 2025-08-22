@@ -1,118 +1,164 @@
-name: Copilot Task Runner (Minimal Orchestrator)
+name: Process PR queue (one at a time, no labels)
 
 on:
-  workflow_dispatch:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "*/4 * * * *"         # every 4 minutes
+  workflow_dispatch:
 
 concurrency:
-  group: copilot-merge-queue
-  cancel-in-progress: false
+  group: copilot-orchestrator
+  cancel-in-progress: true
 
 permissions:
   contents: write
   pull-requests: write
-  checks: read
-  statuses: read
   issues: write
 
 env:
-  QUEUE_LABEL: "copilot:todo"
-  INPROGRESS_LABEL: "copilot:in-progress"
-  WAITING_LABEL: "copilot:waiting"
-  MERGE_METHOD: "squash"
-  DELETE_BRANCH: "true"
+  COPILOT_HANDLE: Copilot         # change if your Copilot login differs
+  BRANCH_REGEX: '^copilot/'       # treat branches matching this as Copilot work
+  MERGE_METHOD: squash            # squash | merge | rebase
+  MAX_WAIT_MINUTES: "45"          # how long to wait for checks to pass
 
 jobs:
-  run-queue:
-    name: Process PR queue (one at a time)
+  run:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Setup gh auth
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
         run: |
-          echo "GH_TOKEN=${{ github.token }}" >> "$GITHUB_ENV"
+          echo "GH_TOKEN=${GH_TOKEN}" >> "$GITHUB_ENV"
+          echo "REPO=${{ github.repository }}" >> "$GITHUB_ENV"
           gh --version
-          jq --version || true
 
-      - name: Select PR (in-progress first, else queued)
-        id: select
+      # 1) See if there is already ONE active PR (review-requested:Copilot)
+      - name: Find PRs with Copilot requested
+        id: active
+        run: |
+          JSON=$(gh pr list -R "$REPO" \
+                --search "is:open review-requested:${{ env.COPILOT_HANDLE }}" \
+                --json number,updatedAt -L 1000)
+          COUNT=$(jq 'length' <<< "$JSON")
+          ACTIVE=$(jq -r 'sort_by(.updatedAt) | .[0].number // empty' <<< "$JSON")
+          echo "count=$COUNT"  >> "$GITHUB_OUTPUT"
+          echo "active=$ACTIVE" >> "$GITHUB_OUTPUT"
+          echo "$JSON" > /tmp/active.json
+
+      - name: Keep only one active (remove Copilot from extras)
+        if: ${{ steps.active.outputs.count != '0' }}
+        run: |
+          act="${{ steps.active.outputs.active }}"
+          jq -r --arg act "$act" '.[] | select(.number != ($act|tonumber)) | .number' /tmp/active.json \
+          | while read -r n; do
+              gh pr edit -R "$REPO" "$n" --remove-reviewer "${{ env.COPILOT_HANDLE }}" || true
+              gh pr comment -R "$REPO" "$n" --body "⏸️ Copilot is busy with PR #$act; request removed for now."
+            done
+
+      # 2) If none active, pick the oldest Copilot PR and request review
+      - name: Pick next PR (Copilot-authored or copilot/* branch)
+        if: ${{ steps.active.outputs.active == '' }}
+        id: pick
         run: |
           set -euo pipefail
-          REPO="${GITHUB_REPOSITORY}"
-          OWNER="${REPO%/*}"
-          NAME="${REPO#*/}"
-
-          pick_inprog() {
-            gh pr list --state open --label "$INPROGRESS_LABEL" --json number,updatedAt \
-              | jq -r 'sort_by(.updatedAt) | .[0].number // empty'
-          }
-          pick_next() {
-            local json
-            json="$(gh pr list --state open --label "$QUEUE_LABEL" --json number,updatedAt,labels)"
-            jq -r --arg inprog "$INPROGRESS_LABEL" '
-              map(select(.labels | map(.name) | index($inprog) | not))
-              | sort_by(.updatedAt) | .[0].number // empty
-            ' <<<"$json"
-          }
-
-          PR="$(pick_inprog)"
-          if [[ -z "$PR" ]]; then
-            PR="$(pick_next)"
-            if [[ -n "$PR" ]]; then
-              gh pr edit "$PR" --add-label "$INPROGRESS_LABEL"
-              gh pr comment "$PR" --body "🤖 Copilot queue picked this PR. Marked as **in-progress**."
-            fi
-          fi
-
+          PRJSON=$(gh pr list -R "$REPO" --state open \
+                   --json number,author,isDraft,headRefName,updatedAt,reviewRequests -L 1000)
+          PR=$(jq -r --arg u "${{ env.COPILOT_HANDLE }}" --arg re "${{ env.BRANCH_REGEX }}" '
+              map(select(.isDraft | not))                                                  # not draft
+            | map(select(.reviewRequests[].login? != $u))                                  # Copilot not already requested
+            | map(select(.author.login == $u or (.headRefName | test($re))))               # Copilot-owned work
+            | sort_by(.updatedAt)
+            | .[0].number // empty' <<< "$PRJSON")
           echo "pr=$PR" >> "$GITHUB_OUTPUT"
 
+      - name: Request Copilot review on picked PR
+        if: ${{ steps.active.outputs.active == '' && steps.pick.outputs.pr != '' }}
+        run: |
+          PR="${{ steps.pick.outputs.pr }}"
+          gh pr edit -R "$REPO" "$PR" --add-reviewer "${{ env.COPILOT_HANDLE }}" || true
+          gh pr comment -R "$REPO" "$PR" --body "🤖 Queued for **${{ env.COPILOT_HANDLE }}**."
+
       - name: Stop if nothing to do
-        if: steps.select.outputs.pr == ''
+        if: ${{ steps.active.outputs.active == '' && steps.pick.outputs.pr == '' }}
         run: echo "Queue empty."
 
-      - name: Process PR
-        if: steps.select.outputs.pr != ''
+      # 3) Prepare the active PR (either existing active or the one we just picked)
+      - name: Determine active PR number
+        id: focus
+        run: |
+          echo "pr=${{ steps.active.outputs.active || steps.pick.outputs.pr }}" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare active PR (ready + clean WIP/Draft)
+        if: ${{ steps.focus.outputs.pr != '' }}
+        shell: bash
+        run: |
+          PR="${{ steps.focus.outputs.pr }}"
+          gh pr ready -R "$REPO" "$PR" || true
+          TITLE=$(gh pr view -R "$REPO" "$PR" --json title -q .title)
+          CLEAN=$(printf "%s" "$TITLE" \
+            | sed -E 's/^[[:space:]]*\[?[Ww][Ii][Pp]\]?[[:space:]]*[:\-]*[[:space:]]*//' \
+            | sed -E 's/^[[:space:]]*\[?[Dd]raft\]?[[:space:]]*[:\-]*[[:space:]]*//')
+          if [ "$CLEAN" != "$TITLE" ] && [ -n "$CLEAN" ]; then
+            gh pr edit -R "$REPO" "$PR" --title "$CLEAN"
+          fi
+
+      - name: Approve (counts with PAT; falls back to GITHUB_TOKEN)
+        if: ${{ steps.focus.outputs.pr != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          PR="${{ steps.focus.outputs.pr }}"
+          gh pr review -R "$REPO" "$PR" --approve -b "Auto-approved by orchestrator"
+
+      # 4) Wait for green, then merge (one-at-a-time)
+      - name: Wait for checks to pass, then merge
+        if: ${{ steps.focus.outputs.pr != '' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          PR=${{ steps.select.outputs.pr }}
+          PR="${{ steps.focus.outputs.pr }}"
           OWNER="${GITHUB_REPOSITORY%/*}"
           NAME="${GITHUB_REPOSITORY#*/}"
+          limit=$(( ${{ env.MAX_WAIT_MINUTES }} * 60 ))
+          interval=30
+          elapsed=0
+          echo "Waiting up to $limit seconds for checks on PR #$PR…"
 
-          ms_json="$(gh api graphql -f owner="$OWNER" -f name="$NAME" -F pr="$PR" -f query='
-            query($owner:String!,$name:String!,$pr:Int!){
-              repository(owner:$owner, name:$name) {
-                pullRequest(number:$pr) {
-                  state merged isDraft mergeStateStatus headRefOid
+          while (( elapsed < limit )); do
+            pr_json=$(gh api graphql -f owner="$OWNER" -f name="$NAME" -F pr="$PR" -f query='
+              query($owner:String!,$name:String!,$pr:Int!){
+                repository(owner:$owner,name:$name){
+                  pullRequest(number:$pr){
+                    isDraft
+                    mergeStateStatus
+                    headRefOid
+                  }
                 }
-              }
-            }')"
-          state="$(jq -r '.data.repository.pullRequest.state' <<<"$ms_json")"
-          merged="$(jq -r '.data.repository.pullRequest.merged' <<<"$ms_json")"
-          isDraft="$(jq -r '.data.repository.pullRequest.isDraft' <<<"$ms_json")"
-          mergeStateStatus="$(jq -r '.data.repository.pullRequest.mergeStateStatus' <<<"$ms_json")"
+              }')
+            isDraft=$(jq -r '.data.repository.pullRequest.isDraft' <<<"$pr_json")
+            mergeState=$(jq -r '.data.repository.pullRequest.mergeStateStatus' <<<"$pr_json")
+            sha=$(jq -r '.data.repository.pullRequest.headRefOid' <<<"$pr_json")
 
-          if [[ "$merged" == "true" || "$state" == "CLOSED" ]]; then
-            gh pr edit "$PR" --remove-label "$INPROGRESS_LABEL" || true
-            gh pr edit "$PR" --remove-label "$WAITING_LABEL" || true
-            gh pr edit "$PR" --remove-label "$QUEUE_LABEL" || true
-            exit 0
-          fi
+            rollup=$(gh api graphql -f owner="$OWNER" -f name="$NAME" -F sha="$sha" -f query='
+              query($owner:String!,$name:String!,$sha:GitObjectID!){
+                repository(owner:$owner,name:$name){
+                  object(oid:$sha){ ... on Commit { statusCheckRollup { state } } }
+                }
+              }')
+            state=$(jq -r '.data.repository.object.statusCheckRollup.state // "PENDING"' <<<"$rollup")
 
-          if [[ "$mergeStateStatus" != "BLOCKED" && "$isDraft" == "false" ]]; then
-            args=( "--${MERGE_METHOD}" )
-            [[ "$DELETE_BRANCH" == "true" ]] && args+=( "--delete-branch" )
-            gh pr merge "$PR" "${args[@]}"
-            gh pr comment "$PR" --body "✅ Merged by Copilot queue."
-            gh pr edit "$PR" --remove-label "$INPROGRESS_LABEL" || true
-            gh pr edit "$PR" --remove-label "$WAITING_LABEL" || true
-            gh pr edit "$PR" --remove-label "$QUEUE_LABEL" || true
-            exit 0
-          fi
+            echo "state=$state mergeState=$mergeState draft=$isDraft elapsed=${elapsed}s"
+            if [[ "$isDraft" == "false" && "$state" == "SUCCESS" && "$mergeState" != "BLOCKED" ]]; then
+              gh pr merge -R "$REPO" "$PR" --${{ env.MERGE_METHOD }} --delete-branch
+              echo "Merged PR #$PR"
+              exit 0
+            fi
+            sleep "$interval"
+            elapsed=$(( elapsed + interval ))
+          done
 
-          args=( --auto "--${MERGE_METHOD}" )
-          [[ "$DELETE_BRANCH" == "true" ]] && args+=( "--delete-branch" )
-          gh pr merge "$PR" "${args[@]}" || true
-          gh pr edit "$PR" --add-label "$WAITING_LABEL" || true
+          echo "Checks not green in time; leaving PR #$PR open."
+
