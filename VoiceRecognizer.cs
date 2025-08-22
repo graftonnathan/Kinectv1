@@ -341,6 +341,7 @@ namespace Kinectv1
                     {
                         // Channel is closed
                         Interlocked.Increment(ref _totalDiscordDrops);
+                        Telemetry.Counter("counter.queue.drop.discord");
                         Console.WriteLine($"⚠️ Discord audio backpressure: Channel closed for {source} (total drops: {_totalDiscordDrops})");
                     }
                     else
@@ -379,6 +380,7 @@ namespace Kinectv1
                         {
                             // Channel is closed
                             Interlocked.Increment(ref _totalAudioDrops);
+                            Telemetry.Counter("counter.queue.drop.mic");
                             Console.WriteLine($"⚠️ External audio backpressure: Channel closed (total drops: {_totalAudioDrops})");
                         }
                         else
@@ -525,6 +527,7 @@ namespace Kinectv1
                             if (!_externalAudioWriter.TryWrite(audioItem))
                             {
                                 Interlocked.Increment(ref _totalAudioDrops);
+                                Telemetry.Counter("counter.queue.drop.mic");
                                 Console.WriteLine($"⚠️ External audio backpressure: Dropped re-queued chunk (total drops: {_totalAudioDrops})");
                             }
                             break;

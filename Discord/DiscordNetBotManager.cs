@@ -691,7 +691,8 @@ namespace Kinectv1.Discord
                 Cts = linked
             };
             
-            // Backpressure: With length=1 and DropOldest, channel automatically drops old items
+            // Backpressure: With length=1 and DropOldest, check if queue is full before writing
+            bool wasQueueFull = _ttsReader.CanRead;
             if (!_ttsWriter.TryWrite(job))
             {
                 // Channel is closed or writer is completed
@@ -699,8 +700,13 @@ namespace Kinectv1.Discord
             }
             else
             {
-                // Successfully enqueued - count as potential drop if queue was full
-                // Note: Channel with DropOldest policy automatically handles dropping
+                // Successfully enqueued - if queue was full, count as drop (DropOldest policy)
+                if (wasQueueFull)
+                {
+                    Interlocked.Increment(ref _totalTtsDrops);
+                    Telemetry.Counter("counter.queue.drop.tts");
+                    Console.WriteLine($"⚠️ TTS backpressure: Dropped previous job due to preemption (total drops: {_totalTtsDrops})");
+                }
                 Telemetry.Gauge("gauge.queue.depth.tts", 1); // Always 1 for single-item queue
             }
             StartTtsWorkerIfNeeded();
