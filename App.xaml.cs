@@ -6,6 +6,9 @@ namespace Kinectv1
 {
     public partial class App : Application
     {
+        // Global hosted services manager instance
+        public static HostedServicesManager ServicesManager { get; private set; }
+
         public App()
         {
             // Don't initialize here - move to OnStartup to ensure proper console allocation
@@ -42,26 +45,12 @@ namespace Kinectv1
                 Telemetry.Event("app.startup", new { version = "1.0", timestamp = DateTime.UtcNow });
                 Console.WriteLine("✅ Telemetry initialized successfully");
 
-                // IMPORTANT: Start STT (Vosk) BEFORE creating MainWindow (which initializes TTS)
-                try
-                {
-                    var voiceModelPath = AppSettings.LoadSttModelPath();
-                    if (!string.IsNullOrWhiteSpace(voiceModelPath) && System.IO.Directory.Exists(voiceModelPath))
-                    {
-                        VoiceRecognizer.Start(voiceModelPath, "john");
-                    }
-                }
-                catch (Exception sttEx)
-                {
-                    Console.WriteLine($"❌ Early STT init failed: {sttEx.Message}");
-                }
-
                 // Create and show main window
                 var win = new MainWindow();
                 win.Show();
                 win.Activate();
                 
-                // Start remaining background services
+                // Start background services through hosted services manager
                 StartServices();
             }
             catch (Exception ex)
@@ -74,34 +63,66 @@ namespace Kinectv1
 
         private void StartServices()
         {
+            // Initialize the hosted services manager
+            ServicesManager = new HostedServicesManager();
+            
+            // Register event handlers for service monitoring
+            ServicesManager.OnServiceError += (serviceName, ex) => 
+            {
+                Console.WriteLine($"❌ Service error in {serviceName}: {ex.Message}");
+            };
+            
+            ServicesManager.OnStatusChanged += (status) => 
+            {
+                Console.WriteLine($"🔧 Services status: {status}");
+            };
+
             // Start services in background
-            Task.Run(() =>
+            Task.Run(async () =>
             {
                 try
                 {
-                    // STT: Only start if not already started during early init
+                    Console.WriteLine("🔧 Registering hosted services...");
+
+                    // Register all services with the hosted services manager
                     var voiceModelPath = AppSettings.LoadSttModelPath();
-                    if (!VoiceRecognizer.IsReady() && !string.IsNullOrWhiteSpace(voiceModelPath) && System.IO.Directory.Exists(voiceModelPath))
+                    if (!string.IsNullOrWhiteSpace(voiceModelPath) && System.IO.Directory.Exists(voiceModelPath))
                     {
-                        VoiceRecognizer.Start(voiceModelPath, "john");
+                        var voiceService = new VoiceRecognizerHostedService(voiceModelPath, "john");
+                        ServicesManager.RegisterService(voiceService);
                     }
 
-                    // DEFER TTS initialization to first use (Kokoro adapter loads on demand)
-                    Console.WriteLine("🔊 TTS will initialize on first use (deferred)");
+                    // Register TTS service
+                    var ttsService = new CoquiTtsHostedService();
+                    ServicesManager.RegisterService(ttsService);
 
-                    // Start Enhanced Kinect Face Tracker (shows ALL faces with tracking IDs)
+                    // Register Discord services if enabled
+                    if (AppSettings.LoadDiscordBotEnabled())
+                    {
+                        var discordBotService = new DiscordBotHostedService();
+                        ServicesManager.RegisterService(discordBotService);
+
+                        var discordAudioService = new DiscordSystemAudioCaptureHostedService();
+                        ServicesManager.RegisterService(discordAudioService);
+                    }
+
+                    // Register Ollama service
+                    var ollamaService = new OllamaHostedService();
+                    ServicesManager.RegisterService(ollamaService);
+
+                    Console.WriteLine("🚀 Starting all hosted services...");
+                    
+                    // Start all services with centralized management
+                    await ServicesManager.StartAllAsync(TimeSpan.FromSeconds(60));
+
+                    // Start Enhanced Kinect Face Tracker (not converted to hosted service yet)
                     EnhancedKinectFaceTracker.Start();
                     
-                    // Initialize Ollama service based on settings
-                    var ollamaEnabled = AppSettings.LoadOllamaEnabled();
-                    OllamaService.SetEnabled(ollamaEnabled);
-                    Console.WriteLine($"Ollama service initialized (enabled: {ollamaEnabled})");
-                    
-                    Console.WriteLine("All services initialized successfully with enhanced face tracking and Ollama integration");
+                    Console.WriteLine("✅ All services initialized successfully with centralized management");
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"Service initialization error: {ex.Message}");
+                    Console.WriteLine($"❌ Service initialization error: {ex.Message}");
                 }
             });
         }
@@ -112,14 +133,26 @@ namespace Kinectv1
             {
                 Console.WriteLine("🔻 Application exiting - stopping services...");
 
-                // Stop voice recognizer first to prevent further use of Vosk native resources
-                try { VoiceRecognizer.Stop(); } catch (Exception ex) { Console.WriteLine($"VoiceRecognizer.Stop error: {ex.Message}"); }
+                // Stop hosted services manager first (centralized shutdown)
+                if (ServicesManager != null)
+                {
+                    try 
+                    { 
+                        var stopTask = ServicesManager.StopAllAsync(TimeSpan.FromSeconds(30));
+                        stopTask.Wait(35000); // Wait with timeout
+                        Console.WriteLine("✅ Hosted services stopped");
+                    } 
+                    catch (Exception ex) 
+                    { 
+                        Console.WriteLine($"⚠️ Hosted services stop error: {ex.Message}"); 
+                    }
+                }
+
+                // Stop remaining services not yet converted to hosted services
+                try { EnhancedKinectFaceTracker.Stop(); } catch { try { KinectFaceTracker.Stop(); } catch (Exception ex) { Console.WriteLine($"Kinect stop error: {ex.Message}"); } }
 
                 // Dispose all shared Vosk models after recognizers are stopped
                 try { VoskModelManager.DisposeAllModels(); } catch (Exception ex) { Console.WriteLine($"DisposeAllModels error: {ex.Message}"); }
-
-                // Stop Kinect trackers
-                try { EnhancedKinectFaceTracker.Stop(); } catch { try { KinectFaceTracker.Stop(); } catch (Exception ex) { Console.WriteLine($"Kinect stop error: {ex.Message}"); } }
 
                 // Hide console
                 try { ConsoleManager.HideConsole(); } catch { }
