@@ -81,16 +81,16 @@
       <Value Profile="(Default)">models/vosk-model-en-us-0.22</Value>
     </Setting>
     <Setting Name="SpeakerEmbeddingModelPath" Type="System.String" Scope="User">
-      <Value Profile="(Default)">models\pyannote_embedding.onnx</Value>
+      <Value Profile="(Default)">models/pyannote_embedding.onnx</Value>
     </Setting>
     <Setting Name="TtsSpeaker" Type="System.String" Scope="User">
       <Value Profile="(Default)">af_aoede</Value>
     </Setting>
     <Setting Name="TtsModelPath" Type="System.String" Scope="User">
-      <Value Profile="(Default)">models\tts\kokoro\onnx\model.onnx</Value>
+      <Value Profile="(Default)">models/tts/kokoro/onnx/model.onnx</Value>
     </Setting>
     <Setting Name="TtsModelFolder" Type="System.String" Scope="User">
-      <Value Profile="(Default)">models\tts\kokoro</Value>
+      <Value Profile="(Default)">models/tts/kokoro</Value>
     </Setting>
     <Setting Name="VoiceActivityThreshold" Type="System.Double" Scope="User">
       <Value Profile="(Default)">300</Value>
