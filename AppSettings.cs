@@ -5,6 +5,8 @@ using System.Globalization;
 using System.Threading;
 using System.IO;
 using System.Linq;
+using System.Collections.Generic;
+using System.Text;
 
 namespace Kinectv1
 {
@@ -141,6 +143,12 @@ namespace Kinectv1
         private static string GetString(string name)
         {
             return ReadSettingRaw(name);
+        }
+
+        private static string GetString(string name, string fallback)
+        {
+            var s = ReadSettingRaw(name);
+            return string.IsNullOrEmpty(s) ? fallback : s;
         }
 
         private static bool GetBool(string name, bool fallback = false)
@@ -1729,7 +1737,7 @@ namespace Kinectv1
                 Console.WriteLine($"   Microphone VAD threshold: {vadThreshold:F0} (RMS level for voice detection)");
                 Console.WriteLine($"   Discord VAD threshold: {discordVadThreshold:F0} (RMS level for Discord audio)");
                 Console.WriteLine($"   Silence timeout: {silenceTimeoutMs}ms (time before finalizing transcription)");
-                Console.WriteLine($"   Debounce timeout: {debounceTimeoutMs}ms (prevents double finalization)");
+                Console.WriteLine($"   Debounce timeout: {debounceTimeoutMs}ms (prevents double-finalization)");
                 Console.WriteLine($"   💡 Lower VAD values = more sensitive (catches quiet speech start)");
                 Console.WriteLine($"   💡 Higher VAD values = less sensitive (reduces false positives)");
                 Console.WriteLine($"   💡 Discord threshold should be lower due to audio compression");
@@ -2252,7 +2260,7 @@ namespace Kinectv1
         }
 
         /// <summary>
-        /// Get telemetry settings summary
+ /// Get telemetry settings summary
         /// </summary>
         public static string GetTelemetrySettingsSummary()
         {

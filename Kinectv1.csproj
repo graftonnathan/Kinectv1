@@ -23,6 +23,13 @@
 		<ImplicitUsings>disable</ImplicitUsings>
 	</PropertyGroup>
 
+	<!-- Exclude tool sources and their obj outputs from compilation -->
+	<ItemGroup>
+		<Compile Remove="tools\**\*.cs" />
+		<Compile Remove="tools\obj\**\*.cs" />
+		<None Include="tools\**\*" Exclude="tools\obj\**\*" />
+	</ItemGroup>
+
 	<!-- Organize developer-provided DLLs from lib/ into structured lib/ subfolders -->
 	<Target Name="OrganizeDevLibs" BeforeTargets="Build">
 		<!-- Ensure categorized folders exist -->
@@ -150,7 +157,7 @@
 		</Content>
 	</ItemGroup>
 
-	<!-- Copy TensorRT/CUDA/cuDNN provider DLLs from local lib into output if present -->
+	<!-- Copy TensorRT/CUDA/cuDnn provider DLLs from local lib into output if present -->
 	<ItemGroup>
 		<Content Include="lib\**\*.dll" Condition="Exists('lib')">
 			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>

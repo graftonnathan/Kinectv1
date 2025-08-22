@@ -514,8 +514,12 @@ namespace Kinectv1
                         }
                         else
                         {
-                            // If we're processing something else, put the item back
-                            _externalAudioQueue.Enqueue(audioItem);
+                            // Re-queue for later; if bounded queue is full, drop with counter
+                            if (!_externalAudioQueue.TryAdd(audioItem))
+                            {
+                                Interlocked.Increment(ref _totalAudioDrops);
+                                Console.WriteLine($"⚠️ External audio backpressure: Dropped re-queued chunk (total drops: {_totalAudioDrops})");
+                            }
                             break;
                         }
                     }
