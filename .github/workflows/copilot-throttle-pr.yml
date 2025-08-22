@@ -1,7 +1,7 @@
-name: Copilot Throttle (no labels, auto-approve & automerge)
+name: Copilot Throttle (PR assigned → approve & automerge, no labels)
 
 on:
-  issues:
+  pull_request_target:
     types: [assigned]
 
 concurrency:
@@ -9,8 +9,8 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: read
-  pull-requests: write
+  contents: write        # needed to enable auto-merge & delete branch
+  pull-requests: write   # needed to edit assignees & submit reviews
   issues: write
 
 jobs:
@@ -25,33 +25,22 @@ jobs:
           echo "REPO=${{ github.repository }}" >> "$GITHUB_ENV"
           gh --version
 
-      # Guard: only act for PRs and only when assignee is *Copilot*
-      - name: Guard & capture PR number
-        id: guard
+      - name: Capture PR context
+        id: ctx
         run: |
-          if [ -z "${{ github.event.issue.pull_request }}" ]; then
-            echo "is_pr=false" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-          echo "is_pr=true" >> $GITHUB_OUTPUT
-          echo "pr=${{ github.event.issue.number }}" >> $GITHUB_OUTPUT
+          echo "pr=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+          echo "assignee=${{ github.event.assignee.login }}" >> "$GITHUB_OUTPUT"
 
-          if [ "${{ github.event.assignee.login }}" = "Copilot" ]; then
-            echo "is_copilot=true" >> $GITHUB_OUTPUT
-          else
-            echo "is_copilot=false" >> $GITHUB_OUTPUT
-          fi
+      - name: Exit if assignee is not Copilot
+        if: steps.ctx.outputs.assignee != 'Copilot'
+        run: echo "Not Copilot; skipping."
 
-      - name: Exit if not a PR or not Copilot
-        if: steps.guard.outputs.is_pr != 'true' || steps.guard.outputs.is_copilot != 'true'
-        run: echo "Throttle skipping (not a PR or assignee is not Copilot)."
-
-      - name: Check if Copilot already assigned elsewhere
-        if: steps.guard.outputs.is_pr == 'true' && steps.guard.outputs.is_copilot == 'true'
+      - name: Check if Copilot is already assigned elsewhere
+        if: steps.ctx.outputs.assignee == 'Copilot'
         id: busy
         run: |
           set -euo pipefail
-          CURRENT="${{ steps.guard.outputs.pr }}"
+          CURRENT="${{ steps.ctx.outputs.pr }}"
           JSON=$(gh pr list -R "$REPO" --state open --json number,assignees)
           BUSY=$(jq --arg cur "$CURRENT" '
             [ .[]
@@ -61,27 +50,30 @@ jobs:
           echo "busy=$BUSY" >> "$GITHUB_OUTPUT"
 
       - name: De-assign (Copilot is busy elsewhere)
-        if: steps.busy.outputs.busy != '0'
+        if: steps.ctx.outputs.assignee == 'Copilot' && steps.busy.outputs.busy != '0'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          PR="${{ steps.guard.outputs.pr }}"
+          PR="${{ steps.ctx.outputs.pr }}"
           gh pr edit -R "$REPO" "$PR" --remove-assignee "Copilot" || true
-          gh pr comment -R "$REPO" "$PR" --body "⏸️ Copilot is already working on another PR. This one will be picked up automatically when free."
+          gh pr comment -R "$REPO" "$PR" --body "⏸️ Copilot is already working on another PR. It will be picked up automatically when free."
 
       - name: Auto-approve (Copilot is free)
-        if: steps.busy.outputs.busy == '0'
+        if: steps.ctx.outputs.assignee == 'Copilot' && steps.busy.outputs.busy == '0'
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
         run: |
-          PR="${{ steps.guard.outputs.pr }}"
+          PR="${{ steps.ctx.outputs.pr }}"
           gh pr review -R "$REPO" "$PR" --approve -b "Auto-approved for Copilot automerge"
 
       - name: Enable Auto-Merge (squash + delete branch)
-        if: steps.busy.outputs.busy == '0'
+        if: steps.ctx.outputs.assignee == 'Copilot' && steps.busy.outputs.busy == '0'
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
         run: |
+          PR="${{ steps.ctx.outputs.pr }}"
+          gh pr merge -R "$REPO" "$PR" --auto --squash --delete-branch || true
+
           PR="${{ steps.guard.outputs.pr }}"
           gh pr merge -R "$REPO" "$PR" --auto --squash --delete-branch || true
 
