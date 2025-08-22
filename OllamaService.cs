@@ -9,6 +9,18 @@ using System.Linq;
 
 namespace Kinectv1
 {
+    /// <summary>
+    /// Enumeration of available prompt tones for Ollama requests
+    /// </summary>
+    public enum PromptTone
+    {
+        Neutral,
+        Friendly,
+        Professional,
+        Casual,
+        Formal
+    }
+
     public static class OllamaService
     {
         private static readonly HttpClient _httpClient = new HttpClient();
@@ -806,6 +818,30 @@ namespace Kinectv1
             }
             
             return string.Join("\n", diagnostics);
+        }
+
+        /// <summary>
+        /// Send a prompt to Ollama with specified tone (synchronous wrapper)
+        /// </summary>
+        /// <param name="prompt">The prompt text</param>
+        /// <param name="tone">The prompt tone</param>
+        /// <returns>The response from Ollama</returns>
+        public static string SendPrompt(string prompt, PromptTone tone)
+        {
+            try
+            {
+                // For now, ignore the tone parameter and use default speaker
+                var task = SendPromptAsync("TestSpeaker", prompt);
+                task.Wait();
+                return task.Result;
+            }
+            catch (Exception ex)
+            {
+                string error = $"SendPrompt error: {ex.Message}";
+                Console.WriteLine($"? {error}");
+                OnError?.Invoke(error);
+                return error;
+            }
         }
     }
 }

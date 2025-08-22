@@ -34,6 +34,14 @@ namespace Kinectv1
         // ENHANCED DOUBLE REGISTRATION PREVENTION - Discord initialization protection
         private static int _discordInitInProgress = 0; // 0 = not in progress, 1 = in progress
 
+        // Audio input settings
+        private bool _isMicrophoneInputEnabled = true;
+        private bool _isDiscordInputEnabled = true;
+
+        // Missing UI control placeholders to prevent compilation errors
+        private ComboBox ToneComboBox = new ComboBox();
+        private TextBox TestOllamaPromptTextBox = new TextBox();
+
         public MainWindow()
         {
             try
@@ -2455,17 +2463,17 @@ namespace Kinectv1
             }
         }
 
-        private OllamaService.PromptTone GetSelectedTone()
+        private PromptTone GetSelectedTone()
         {
             try
             {
                 // Get the selected tone from the combo box
-                return (OllamaService.PromptTone)ToneComboBox.SelectedItem;
+                return (PromptTone)ToneComboBox.SelectedItem;
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Error getting selected tone: {ex.Message}");
-                return OllamaService.PromptTone.Neutral; // Default tone
+                return PromptTone.Neutral; // Default tone
             }
         }
 
@@ -2661,6 +2669,90 @@ namespace Kinectv1
             {
                 // Prevent recursion or additional errors in logging
                 Console.WriteLine($"Error in LogCriticalError: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Update microphone status display
+        /// </summary>
+        private void UpdateMicrophoneStatus()
+        {
+            try
+            {
+                // TODO: Update microphone status UI controls
+                Console.WriteLine($"🎤 Updating microphone status: {(_isMicrophoneInputEnabled ? "Enabled" : "Disabled")}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error updating microphone status: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Update Discord status display
+        /// </summary>
+        private void UpdateDiscordStatus()
+        {
+            try
+            {
+                // TODO: Update Discord status UI controls
+                Console.WriteLine($"🤖 Updating Discord status: {(_isDiscordInputEnabled ? "Enabled" : "Disabled")}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error updating Discord status: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Populate TTS speaker dropdown without automatic selection
+        /// </summary>
+        private void PopulateTtsSpeakerDropdownWithoutSelection()
+        {
+            try
+            {
+                // TODO: Populate TTS speaker dropdown from TtsSpeakerData
+                Console.WriteLine("🎤 Populating TTS speaker dropdown...");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error populating TTS speaker dropdown: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Show speaker statistics
+        /// </summary>
+        private void ShowSpeakerStatistics()
+        {
+            try
+            {
+                // TODO: Display speaker statistics in UI
+                Console.WriteLine("📊 Showing speaker statistics...");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error showing speaker statistics: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Select a TTS speaker by name
+        /// </summary>
+        /// <param name="speakerName">The speaker name/reference ID to select</param>
+        /// <returns>True if speaker was found and selected</returns>
+        private bool SelectTtsSpeaker(string speakerName)
+        {
+            try
+            {
+                // TODO: Select TTS speaker in dropdown
+                Console.WriteLine($"🎤 Selecting TTS speaker: {speakerName}");
+                return false; // Return false for now until implementation
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error selecting TTS speaker: {ex.Message}");
+                return false;
             }
         }
     }
