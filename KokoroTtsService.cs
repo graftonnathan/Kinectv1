@@ -3,6 +3,7 @@ using Microsoft.ML.OnnxRuntime.Tensors;
 using Newtonsoft.Json.Linq;
 using System;
 using System.Buffers;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -45,6 +46,25 @@ namespace Kinectv1
         private static DenseTensor<float> _reuseStyleTensor = new DenseTensor<float>(new[] { 1, 256 });
         private static DenseTensor<float> _reuseSpeedTensor = new DenseTensor<float>(new[] { 1 });
         private static readonly List<NamedOnnxValue> _reuseInputsList = new List<NamedOnnxValue>(3);
+
+        // IPA cache (LRU 256 entries) for frequent phrases
+        private static readonly Dictionary<string, string> _ipaCache = new Dictionary<string, string>();
+        private static readonly Queue<string> _ipaCacheKeys = new Queue<string>();
+        private static readonly object _ipaCacheLock = new object();
+        private const int MaxIpaCacheSize = 256;
+
+        // eSpeak worker thread infrastructure
+        private static readonly BlockingCollection<IpaRequest> _ipaQueue = new BlockingCollection<IpaRequest>();
+        private static Thread _ipaWorkerThread;
+        private static volatile bool _ipaWorkerRunning = false;
+        private static readonly object _ipaWorkerLock = new object();
+
+        private class IpaRequest
+        {
+            public string Text { get; set; }
+            public TaskCompletionSource<string> Tcs { get; set; }
+            public CancellationToken CancellationToken { get; set; }
+        }
 
         // Force staying on CUDA EP only (no per-segment CPU retry)
         private const bool EnableCpuSegmentRetry = false;
@@ -571,54 +591,264 @@ namespace Kinectv1
 
         private static string RunEspeak(string text)
         {
+            if (string.IsNullOrWhiteSpace(text)) return null;
+
+            // Sanitize input text before processing
+            text = SanitizeInputText(text);
+            if (string.IsNullOrWhiteSpace(text)) return null;
+
+            // Check cache first
+            if (TryGetCachedIpa(text, out string cachedIpa))
+            {
+                if (_ttsDebug)
+                    Console.WriteLine($"[TTS] Cache hit for: '{text}' -> '{cachedIpa}'");
+                return cachedIpa;
+            }
+
+            // Use worker thread for processing
+            return GetIpaViaWorker(text);
+        }
+
+        private static string GetIpaViaWorker(string text)
+        {
             try
             {
-                EnsureIpaService();
-                if (_ipaService == null) return GetIpaOnce(text); // fallback if service missing
+                EnsureIpaWorker();
+                
+                var tcs = new TaskCompletionSource<string>();
+                var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5)); // Total timeout
+                
+                var request = new IpaRequest
+                {
+                    Text = text,
+                    Tcs = tcs,
+                    CancellationToken = cts.Token
+                };
 
-                if (_ttsDebug)
-                    Console.WriteLine($"[TTS] STT provided text for IPA: '{text?.Replace("\n"," ").Replace("\r"," ").Trim()}'");
+                if (!_ipaQueue.TryAdd(request, 100)) // 100ms timeout to add to queue
+                {
+                    Console.WriteLine("[Kokoro] IPA queue full, using fallback");
+                    return GetIpaDirectFallback(text);
+                }
 
-                int len = Math.Max(0, text?.Length ?? 0);
-                var timeout = TimeSpan.FromMilliseconds(Math.Min(12000, 2000 + len * 30));
-                if (_ttsDebug)
-                    Console.WriteLine($"[TTS] eSpeak executing with timeout={timeout.TotalMilliseconds} ms");
-
-                var ipa = _ipaService.GetIpaAsync(text, timeout).GetAwaiter().GetResult();
-                if (!string.IsNullOrWhiteSpace(ipa))
-                    return NormalizeIpa(ipa);
-            }
-            catch (TimeoutException tex)
-            {
-                Console.WriteLine($"[Kokoro] eSpeak IPA timeout (retry once): {tex.Message}");
+                // Wait for worker to process
                 try
                 {
-                    var retryTimeout = TimeSpan.FromMilliseconds(8000);
-                    if (_ttsDebug) Console.WriteLine($"[TTS] eSpeak retry with timeout={retryTimeout.TotalMilliseconds} ms");
-                    var ipaRetry = _ipaService.GetIpaAsync(text, retryTimeout).GetAwaiter().GetResult();
-                    if (!string.IsNullOrWhiteSpace(ipaRetry))
-                        return NormalizeIpa(ipaRetry);
+                    var result = tcs.Task.GetAwaiter().GetResult();
+                    if (!string.IsNullOrWhiteSpace(result))
+                    {
+                        CacheIpa(text, result);
+                        return result;
+                    }
                 }
-                catch (Exception rex)
+                catch (AggregateException ex)
                 {
-                    Console.WriteLine($"[Kokoro] eSpeak IPA retry failed: {rex.Message}");
+                    Console.WriteLine($"[Kokoro] Worker IPA failed: {ex.InnerException?.Message ?? ex.Message}");
                 }
-                // Final fallback: one-shot
-                var once = GetIpaOnce(text, timeoutMs: 3000);
-                if (!string.IsNullOrWhiteSpace(once))
-                    return NormalizeIpa(once);
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[Kokoro] Worker IPA error: {ex.Message}");
+                }
+
+                // Fallback to direct processing
+                return GetIpaDirectFallback(text);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[Kokoro] eSpeak IPA error: {ex.Message}");
-                var once = GetIpaOnce(text, timeoutMs: 2000);
-                if (!string.IsNullOrWhiteSpace(once))
-                    return NormalizeIpa(once);
+                Console.WriteLine($"[Kokoro] IPA worker setup failed: {ex.Message}");
+                return GetIpaDirectFallback(text);
             }
-            return null;
+        }
+
+        private static string GetIpaDirectFallback(string text)
+        {
+            // Try the persistent service first with shorter timeout
+            try
+            {
+                EnsureIpaService();
+                if (_ipaService != null)
+                {
+                    var timeout = TimeSpan.FromMilliseconds(1500); // 1.5s as per spec
+                    var ipa = _ipaService.GetIpaAsync(text, timeout).GetAwaiter().GetResult();
+                    if (!string.IsNullOrWhiteSpace(ipa))
+                    {
+                        var normalized = NormalizeIpa(ipa);
+                        CacheIpa(text, normalized);
+                        return normalized;
+                    }
+                }
+            }
+            catch (TimeoutException)
+            {
+                Console.WriteLine("[Kokoro] Direct eSpeak timeout, trying one-shot");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Kokoro] Direct eSpeak error: {ex.Message}");
+            }
+
+            // Final fallback: one-shot process
+            var once = GetIpaOnce(text, timeoutMs: 1500);
+            if (!string.IsNullOrWhiteSpace(once))
+            {
+                var normalized = NormalizeIpa(once);
+                CacheIpa(text, normalized);
+                return normalized;
+            }
+
+            // Ultimate fallback: simple G2P rules
+            return ApplySimpleG2P(text);
+        }
+
+        private static void EnsureIpaWorker()
+        {
+            if (_ipaWorkerRunning) return;
+            
+            lock (_ipaWorkerLock)
+            {
+                if (_ipaWorkerRunning) return;
+                
+                _ipaWorkerRunning = true;
+                _ipaWorkerThread = new Thread(IpaWorkerLoop)
+                {
+                    IsBackground = true,
+                    Name = "eSpeak-IPA-Worker"
+                };
+                _ipaWorkerThread.Start();
+                
+                if (_ttsDebug)
+                    Console.WriteLine("[TTS] eSpeak IPA worker thread started");
+            }
+        }
+
+        private static void IpaWorkerLoop()
+        {
+            try
+            {
+                while (_ipaWorkerRunning)
+                {
+                    try
+                    {
+                        if (_ipaQueue.TryTake(out IpaRequest request, 1000)) // 1s timeout
+                        {
+                            ProcessIpaRequest(request);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[TTS] IPA worker error: {ex.Message}");
+                        Thread.Sleep(100); // Brief pause on error
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[TTS] IPA worker thread crashed: {ex.Message}");
+            }
+            finally
+            {
+                lock (_ipaWorkerLock)
+                {
+                    _ipaWorkerRunning = false;
+                }
+                if (_ttsDebug)
+                    Console.WriteLine("[TTS] eSpeak IPA worker thread stopped");
+            }
+        }
+
+        private static void ProcessIpaRequest(IpaRequest request)
+        {
+            if (request?.Tcs == null) return;
+            
+            try
+            {
+                if (request.CancellationToken.IsCancellationRequested)
+                {
+                    request.Tcs.TrySetCanceled();
+                    return;
+                }
+
+                EnsureIpaService();
+                if (_ipaService == null)
+                {
+                    request.Tcs.TrySetResult(null);
+                    return;
+                }
+
+                // Use shorter timeout in worker (1.5s as per spec)
+                var timeout = TimeSpan.FromMilliseconds(1500);
+                var ipa = _ipaService.GetIpaAsync(request.Text, timeout).GetAwaiter().GetResult();
+                
+                if (!string.IsNullOrWhiteSpace(ipa))
+                {
+                    var normalized = NormalizeIpa(ipa);
+                    request.Tcs.TrySetResult(normalized);
+                }
+                else
+                {
+                    request.Tcs.TrySetResult(null);
+                }
+            }
+            catch (TimeoutException)
+            {
+                request.Tcs.TrySetResult(null); // Let caller handle fallback
+            }
+            catch (Exception ex)
+            {
+                request.Tcs.TrySetException(ex);
+            }
+        }
+
+        private static string ApplySimpleG2P(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return null;
+            
+            // Simple grapheme-to-phoneme rules as final fallback
+            text = text.ToLowerInvariant();
+            
+            // Basic English G2P mappings
+            var g2pRules = new Dictionary<string, string>
+            {
+                {"ch", "tʃ"}, {"sh", "ʃ"}, {"th", "θ"}, {"ph", "f"},
+                {"ck", "k"}, {"ng", "ŋ"}, {"qu", "kw"},
+                {"a", "æ"}, {"e", "ɛ"}, {"i", "ɪ"}, {"o", "ɒ"}, {"u", "ʌ"},
+                {"b", "b"}, {"c", "k"}, {"d", "d"}, {"f", "f"}, {"g", "g"},
+                {"h", "h"}, {"j", "dʒ"}, {"k", "k"}, {"l", "l"}, {"m", "m"},
+                {"n", "n"}, {"p", "p"}, {"r", "r"}, {"s", "s"}, {"t", "t"},
+                {"v", "v"}, {"w", "w"}, {"x", "ks"}, {"y", "j"}, {"z", "z"}
+            };
+            
+            var result = text;
+            foreach (var rule in g2pRules)
+            {
+                result = result.Replace(rule.Key, rule.Value + " ");
+            }
+            
+            result = Regex.Replace(result, @"\s+", " ").Trim();
+            
+            if (_ttsDebug)
+                Console.WriteLine($"[TTS] Simple G2P fallback: '{text}' -> '{result}'");
+                
+            return result;
         }
 
         private static IEnumerable<string> GetEspeakCandidates()
+        {
+            var candidates = new List<string>();
+            try
+            {
+                var baseDir = AppDomain.CurrentDomain.BaseDirectory;
+                var localDir = Path.Combine(baseDir, "models", "tts", "Espeak NG");
+                var localNg = Path.Combine(localDir, "espeak-ng.exe");
+                var localClassic = Path.Combine(localDir, "espeak.exe");
+                if (File.Exists(localNg)) candidates.Add(localNg);
+                if (File.Exists(localClassic)) candidates.Add(localClassic);
+            }
+            catch { }
+            candidates.Add("espeak-ng.exe");
+            candidates.Add("espeak.exe");
+            return candidates;
+        }
         {
             var candidates = new List<string>();
             try
@@ -642,7 +872,78 @@ namespace Kinectv1
             // Clean spacing and remove slashes, keep UTF-8 IPA intact
             ipa = ipa.Replace("/", " ");
             ipa = Regex.Replace(ipa, "\\s+", " ").Trim();
+            
+            // Filter out mojibake characters that shouldn't appear in IPA
+            ipa = Regex.Replace(ipa, @"[Γòö├¬]", " ");
+            ipa = Regex.Replace(ipa, @"\\x[0-9a-fA-F]{2}", " "); // Remove hex escape sequences
+            ipa = Regex.Replace(ipa, "\\s+", " ").Trim();
+            
             return ipa;
+        }
+
+        private static string SanitizeInputText(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return text;
+            
+            // Normalize smart quotes to ASCII
+            text = text.Replace(""", "\"").Replace(""", "\"");
+            text = text.Replace("'", "'").Replace("'", "'");
+            text = text.Replace("–", "-").Replace("—", "-");
+            text = text.Replace("…", "...");
+            
+            // Normalize other Unicode punctuation to ASCII equivalents
+            text = text.Replace("«", "\"").Replace("»", "\"");
+            text = text.Replace("‚", ",").Replace("„", "\"");
+            text = text.Replace("‹", "'").Replace("›", "'");
+            
+            // Remove or replace problematic Unicode characters
+            text = Regex.Replace(text, @"[^\x00-\x7F]+", " "); // Replace non-ASCII with space
+            text = Regex.Replace(text, @"[\x00-\x1F\x7F]", " "); // Replace control chars with space
+            text = Regex.Replace(text, @"\s+", " ").Trim(); // Normalize whitespace
+            
+            return text;
+        }
+
+        private static bool TryGetCachedIpa(string text, out string ipa)
+        {
+            ipa = null;
+            if (string.IsNullOrWhiteSpace(text)) return false;
+            
+            string cacheKey = text.ToLowerInvariant().Trim();
+            lock (_ipaCacheLock)
+            {
+                return _ipaCache.TryGetValue(cacheKey, out ipa);
+            }
+        }
+
+        private static void CacheIpa(string text, string ipa)
+        {
+            if (string.IsNullOrWhiteSpace(text) || string.IsNullOrWhiteSpace(ipa)) return;
+            
+            string cacheKey = text.ToLowerInvariant().Trim();
+            lock (_ipaCacheLock)
+            {
+                // Implement LRU eviction
+                if (_ipaCache.ContainsKey(cacheKey))
+                {
+                    _ipaCache[cacheKey] = ipa; // Update existing
+                    return;
+                }
+                
+                // Add new entry
+                if (_ipaCache.Count >= MaxIpaCacheSize)
+                {
+                    // Remove oldest entry
+                    if (_ipaCacheKeys.Count > 0)
+                    {
+                        string oldestKey = _ipaCacheKeys.Dequeue();
+                        _ipaCache.Remove(oldestKey);
+                    }
+                }
+                
+                _ipaCache[cacheKey] = ipa;
+                _ipaCacheKeys.Enqueue(cacheKey);
+            }
         }
 
         private static long[] MapIpaToIds(string ipa, int maxLen)
@@ -1188,11 +1489,34 @@ namespace Kinectv1
 
         public static void Dispose()
         {
+            // Stop IPA worker thread
+            lock (_ipaWorkerLock)
+            {
+                _ipaWorkerRunning = false;
+            }
+            
+            try
+            {
+                if (_ipaWorkerThread != null && _ipaWorkerThread.IsAlive)
+                {
+                    if (!_ipaWorkerThread.Join(2000)) // Wait up to 2 seconds
+                    {
+                        Console.WriteLine("[TTS] IPA worker thread did not stop gracefully");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[TTS] Error stopping IPA worker: {ex.Message}");
+            }
+
             try { _ipaService?.Dispose(); } catch { }
             _ipaService = null;
             try { _session?.Dispose(); } catch { }
             _session = null;
             try { DisposeCpuSession(); } catch { }
+            
+            try { _ipaQueue?.Dispose(); } catch { }
         }
     }
 }
