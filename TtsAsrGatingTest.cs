@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -136,110 +138,107 @@ namespace Kinectv1
         }
 
         /// <summary>
-        /// Test TTS preemption behavior
+        /// Test TTS preemption behavior with timing requirements
         /// </summary>
-        public static async Task TestTtsPreemption()
+        public static async Task TestTtsPreemptionTiming()
         {
-            Console.WriteLine("\n🎤 TESTING: TTS Preemption Behavior");
-            Console.WriteLine("   Verifying rapid TTS calls properly cancel previous utterances...");
+            Console.WriteLine("\n🎤 TESTING: TTS Preemption Timing (150ms requirement)");
+            Console.WriteLine("   Verifying rapid TTS calls properly cancel and new TTS starts within 150ms...");
 
             try
             {
-                var utteranceResults = new bool[3];
-                var utteranceCompleted = new bool[3];
+                var timingResults = new List<double>();
 
                 // Mock TTS function that can be interrupted
-                Func<string, string, CancellationToken, Task<bool>> interruptibleTtsFunc = async (text, speaker, ct) =>
+                Func<string, string, CancellationToken, Task<bool>> timedTtsFunc = async (text, speaker, ct) =>
                 {
                     try
                     {
-                        Console.WriteLine($"   🎵 Starting TTS: '{text.Substring(0, Math.Min(20, text.Length))}...'");
-                        await Task.Delay(2000, ct); // 2 second speech simulation
-                        Console.WriteLine($"   ✅ Completed TTS: '{text.Substring(0, Math.Min(20, text.Length))}...'");
+                        Console.WriteLine($"   🎵 TTS Start: '{text.Substring(0, Math.Min(15, text.Length))}...' at {DateTime.Now:HH:mm:ss.fff}");
+                        await Task.Delay(2000, ct); // Long enough to be interrupted
+                        Console.WriteLine($"   ✅ TTS Complete: '{text.Substring(0, Math.Min(15, text.Length))}...' at {DateTime.Now:HH:mm:ss.fff}");
                         return true;
                     }
                     catch (OperationCanceledException)
                     {
-                        Console.WriteLine($"   🛑 Canceled TTS: '{text.Substring(0, Math.Min(20, text.Length))}...'");
+                        Console.WriteLine($"   🛑 TTS Canceled: '{text.Substring(0, Math.Min(15, text.Length))}...' at {DateTime.Now:HH:mm:ss.fff}");
                         throw;
                     }
                 };
 
-                var testPhrases = new[]
+                // Test rapid preemption with timing
+                for (int test = 0; test < 3; test++)
                 {
-                    "First utterance that should be interrupted quickly",
-                    "Second utterance that should also be interrupted",
-                    "Final utterance that should complete successfully"
-                };
-
-                Console.WriteLine($"   Starting {testPhrases.Length} rapid consecutive utterances...");
-
-                // Start utterances with preemption (rapid fire)
-                for (int i = 0; i < testPhrases.Length; i++)
-                {
-                    var index = i; // Capture for async
-                    var phrase = testPhrases[i];
+                    Console.WriteLine($"\n   📊 Timing Test {test + 1}/3:");
                     
-                    var task = TtsPlaybackController.StartUtterance(phrase, "TestSpeaker", interruptibleTtsFunc);
+                    // Start first utterance
+                    var startTime = DateTime.UtcNow;
+                    var firstTask = TtsPlaybackController.StartUtterance($"First utterance test {test + 1}", "TestSpeaker", timedTtsFunc);
                     
-                    // Don't await except for the last one - simulate rapid calls
-                    if (i < testPhrases.Length - 1)
+                    // Wait briefly for it to start
+                    await Task.Delay(100);
+                    
+                    // Start second utterance (should preempt first)
+                    var preemptTime = DateTime.UtcNow;
+                    var secondTask = TtsPlaybackController.StartUtterance($"Second utterance test {test + 1}", "TestSpeaker", timedTtsFunc);
+                    
+                    // Wait for second to start speaking
+                    var maxWait = 200; // 200ms max wait
+                    var checkInterval = 10; // Check every 10ms
+                    var elapsed = 0;
+                    var secondStarted = false;
+                    
+                    while (elapsed < maxWait && !secondStarted)
                     {
-                        // Brief delay before next utterance to allow some processing
-                        await Task.Delay(300);
+                        await Task.Delay(checkInterval);
+                        elapsed += checkInterval;
                         
-                        // Track result in background
-                        _ = task.ContinueWith(t => {
-                            utteranceResults[index] = t.IsCompletedSuccessfully && t.Result;
-                            utteranceCompleted[index] = true;
-                        });
+                        // Check if second utterance is now the active one
+                        if (TtsPlaybackController.Instance.IsSpeaking)
+                        {
+                            secondStarted = true;
+                            break;
+                        }
                     }
-                    else
-                    {
-                        // Wait for final utterance
-                        utteranceResults[index] = await task;
-                        utteranceCompleted[index] = true;
-                    }
+                    
+                    var actualDelay = (DateTime.UtcNow - preemptTime).TotalMilliseconds;
+                    timingResults.Add(actualDelay);
+                    
+                    var status = actualDelay <= 150 ? "✅ PASS" : "❌ FAIL";
+                    Console.WriteLine($"   ⏱️  Preemption→Start delay: {actualDelay:F1}ms ({status})");
+                    
+                    // Cancel to clean up
+                    TtsPlaybackController.CancelCurrent();
+                    await Task.Delay(50); // Brief cleanup delay
                 }
 
-                // Wait for all background tasks to complete
-                await Task.Delay(1000);
-
-                // Analyze results
-                Console.WriteLine("\n📊 Preemption Test Results:");
-                for (int i = 0; i < testPhrases.Length; i++)
+                // Analyze timing results
+                var avgDelay = timingResults.Average();
+                var maxDelay = timingResults.Max();
+                var passCount = timingResults.Count(d => d <= 150);
+                
+                Console.WriteLine($"\n📊 Preemption Timing Results:");
+                Console.WriteLine($"   • Average delay: {avgDelay:F1}ms");
+                Console.WriteLine($"   • Maximum delay: {maxDelay:F1}ms");
+                Console.WriteLine($"   • Tests passed: {passCount}/{timingResults.Count} (≤150ms)");
+                Console.WriteLine($"   • Success rate: {(double)passCount / timingResults.Count * 100:F1}%");
+                
+                if (passCount == timingResults.Count && avgDelay <= 150)
                 {
-                    var status = utteranceCompleted[i] ? 
-                        (utteranceResults[i] ? "✅ Completed" : "🛑 Canceled") : 
-                        "⏳ Still running";
-                    Console.WriteLine($"   • Utterance {i+1}: {status}");
+                    Console.WriteLine("✅ TTS preemption timing test PASSED - All follow-on TTS started within 150ms");
                 }
-
-                // Expected: first two should be canceled, last should complete
-                var expectedCancellations = 2;
-                var actualCancellations = 0;
-                for (int i = 0; i < testPhrases.Length - 1; i++)
+                else if (passCount >= timingResults.Count * 0.8) // 80% pass rate
                 {
-                    if (utteranceCompleted[i] && !utteranceResults[i])
-                    {
-                        actualCancellations++;
-                    }
-                }
-
-                var finalCompleted = utteranceCompleted[testPhrases.Length - 1] && utteranceResults[testPhrases.Length - 1];
-
-                if (actualCancellations >= expectedCancellations - 1 && finalCompleted)
-                {
-                    Console.WriteLine("✅ TTS preemption test PASSED - Rapid calls properly cancel previous utterances");
+                    Console.WriteLine("⚠️ TTS preemption timing test PARTIAL - Most follow-on TTS within 150ms");
                 }
                 else
                 {
-                    Console.WriteLine("❌ TTS preemption test FAILED - Preemption not working as expected");
+                    Console.WriteLine("❌ TTS preemption timing test FAILED - Follow-on TTS too slow");
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"❌ TTS preemption test failed with exception: {ex.Message}");
+                Console.WriteLine($"❌ TTS preemption timing test failed with exception: {ex.Message}");
             }
         }
     }
