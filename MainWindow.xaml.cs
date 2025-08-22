@@ -188,6 +188,9 @@ namespace Kinectv1
                 // Initialize audio input control states
                 InitializeAudioInputControls();
 
+                // Initialize audio devices UI
+                InitializeAudioDevicesUI();
+
                 // Update threshold display
                 UpdateThresholdDisplay();
 
@@ -3066,6 +3069,522 @@ namespace Kinectv1
             {
                 DiagnosticsReportTextBox.Text = $"❌ ERROR: Could not generate diagnostics report: {ex.Message}";
                 Console.WriteLine($"Error refreshing diagnostics report: {ex.Message}");
+            }
+        }
+
+        #endregion
+
+        #region Audio Settings Tab Event Handlers
+
+        /// <summary>
+        /// Load and populate audio input devices
+        /// </summary>
+        private void InitializeAudioDevicesUI()
+        {
+            try
+            {
+                RefreshAudioInputDevices();
+                RefreshAudioOutputDevices();
+                LoadAudioSettings();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error initializing audio devices UI: {ex.Message}");
+                if (AudioDeviceStatusText != null)
+                {
+                    AudioDeviceStatusText.Text = $"Error loading audio devices: {ex.Message}";
+                }
+            }
+        }
+
+        /// <summary>
+        /// Refresh audio input devices
+        /// </summary>
+        private void RefreshAudioInputDevices()
+        {
+            try
+            {
+                var devices = AudioDeviceManager.GetInputDevices();
+                AudioInputDeviceComboBox.Items.Clear();
+                
+                foreach (var device in devices)
+                {
+                    AudioInputDeviceComboBox.Items.Add(device);
+                }
+                
+                // Select saved device or default
+                var savedDeviceId = AppSettings.LoadAudioInputDeviceId();
+                if (savedDeviceId >= 0 && savedDeviceId < devices.Count)
+                {
+                    AudioInputDeviceComboBox.SelectedIndex = savedDeviceId;
+                }
+                else if (devices.Any())
+                {
+                    // Select first default device or first device
+                    var defaultDevice = devices.FirstOrDefault(d => d.IsDefault) ?? devices.First();
+                    AudioInputDeviceComboBox.SelectedItem = defaultDevice;
+                }
+                
+                Console.WriteLine($"🎤 Loaded {devices.Count} input devices");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error refreshing input devices: {ex.Message}");
+                if (AudioDeviceStatusText != null)
+                {
+                    AudioDeviceStatusText.Text = $"Error loading input devices: {ex.Message}";
+                }
+            }
+        }
+
+        /// <summary>
+        /// Refresh audio output devices
+        /// </summary>
+        private void RefreshAudioOutputDevices()
+        {
+            try
+            {
+                var devices = AudioDeviceManager.GetOutputDevices();
+                AudioOutputDeviceComboBox.Items.Clear();
+                
+                foreach (var device in devices)
+                {
+                    AudioOutputDeviceComboBox.Items.Add(device);
+                }
+                
+                // Select saved device or default
+                var savedDeviceId = AppSettings.LoadAudioOutputDeviceId();
+                if (savedDeviceId >= 0 && savedDeviceId < devices.Count)
+                {
+                    AudioOutputDeviceComboBox.SelectedIndex = savedDeviceId;
+                }
+                else if (devices.Any())
+                {
+                    // Select first default device or first device
+                    var defaultDevice = devices.FirstOrDefault(d => d.IsDefault) ?? devices.First();
+                    AudioOutputDeviceComboBox.SelectedItem = defaultDevice;
+                }
+                
+                Console.WriteLine($"🔊 Loaded {devices.Count} output devices");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error refreshing output devices: {ex.Message}");
+                if (AudioDeviceStatusText != null)
+                {
+                    AudioDeviceStatusText.Text = $"Error loading output devices: {ex.Message}";
+                }
+            }
+        }
+
+        /// <summary>
+        /// Load audio settings from configuration
+        /// </summary>
+        private void LoadAudioSettings()
+        {
+            try
+            {
+                // Load VAD thresholds
+                var micVadThreshold = AppSettings.LoadMicVadThreshold();
+                var discordVadThreshold = AppSettings.LoadDiscordVadThreshold();
+                
+                MicVadThresholdSlider.Value = micVadThreshold;
+                MicVadThresholdTextBox.Text = micVadThreshold.ToString();
+                
+                DiscordVadThresholdSlider.Value = discordVadThreshold;
+                DiscordVadThresholdTextBox.Text = discordVadThreshold.ToString();
+                
+                // Load volume settings (convert from 0.0-1.0 to 0-100)
+                var localTtsVolume = AppSettings.LoadLocalTtsVolume() * 100;
+                var discordTtsVolume = AppSettings.LoadDiscordTtsVolume() * 100;
+                
+                LocalTtsVolumeSlider.Value = localTtsVolume;
+                LocalTtsVolumeTextBox.Text = $"{localTtsVolume:F0}%";
+                
+                DiscordTtsVolumeSlider.Value = discordTtsVolume;
+                DiscordTtsVolumeTextBox.Text = $"{discordTtsVolume:F0}%";
+                
+                if (AudioDeviceStatusText != null)
+                {
+                    AudioDeviceStatusText.Text = "Audio settings loaded successfully";
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error loading audio settings: {ex.Message}");
+                if (AudioDeviceStatusText != null)
+                {
+                    AudioDeviceStatusText.Text = $"Error loading settings: {ex.Message}";
+                }
+            }
+        }
+
+        /// <summary>
+        /// Audio input device selection changed
+        /// </summary>
+        private void AudioInputDeviceComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            try
+            {
+                if (AudioInputDeviceComboBox.SelectedItem is AudioDeviceManager.AudioInputDevice device)
+                {
+                    AppSettings.SaveAudioInputDeviceId(device.DeviceNumber);
+                    Console.WriteLine($"🎤 Selected input device: {device.DeviceName}");
+                    
+                    if (AudioDeviceStatusText != null)
+                    {
+                        AudioDeviceStatusText.Text = $"Input device selected: {device.DeviceName}";
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error selecting input device: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Audio output device selection changed
+        /// </summary>
+        private void AudioOutputDeviceComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            try
+            {
+                if (AudioOutputDeviceComboBox.SelectedItem is AudioDeviceManager.AudioOutputDevice device)
+                {
+                    AppSettings.SaveAudioOutputDeviceId(device.DeviceNumber);
+                    Console.WriteLine($"🔊 Selected output device: {device.DeviceName}");
+                    
+                    if (AudioDeviceStatusText != null)
+                    {
+                        AudioDeviceStatusText.Text = $"Output device selected: {device.DeviceName}";
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error selecting output device: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Test input device
+        /// </summary>
+        private void TestInputDeviceButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                if (AudioInputDeviceComboBox.SelectedItem is AudioDeviceManager.AudioInputDevice device)
+                {
+                    AudioDeviceStatusText.Text = "Testing input device...";
+                    
+                    Task.Run(async () =>
+                    {
+                        try
+                        {
+                            var isWorking = await AudioDeviceManager.TestInputDeviceAsync(device.DeviceNumber);
+                            
+                            await Dispatcher.InvokeAsync(() =>
+                            {
+                                if (isWorking)
+                                {
+                                    AudioDeviceStatusText.Text = $"✅ Input device '{device.DeviceName}' is working correctly";
+                                }
+                                else
+                                {
+                                    AudioDeviceStatusText.Text = $"❌ Input device '{device.DeviceName}' test failed";
+                                }
+                            });
+                        }
+                        catch (Exception ex)
+                        {
+                            await Dispatcher.InvokeAsync(() =>
+                            {
+                                AudioDeviceStatusText.Text = $"❌ Input device test error: {ex.Message}";
+                            });
+                        }
+                    });
+                }
+                else
+                {
+                    AudioDeviceStatusText.Text = "Please select an input device first";
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error testing input device: {ex.Message}");
+                AudioDeviceStatusText.Text = $"Error testing input device: {ex.Message}";
+            }
+        }
+
+        /// <summary>
+        /// Test output device
+        /// </summary>
+        private void TestOutputDeviceButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                if (AudioOutputDeviceComboBox.SelectedItem is AudioDeviceManager.AudioOutputDevice device)
+                {
+                    AudioDeviceStatusText.Text = "Testing output device...";
+                    
+                    Task.Run(async () =>
+                    {
+                        try
+                        {
+                            var isWorking = await AudioDeviceManager.TestOutputDeviceAsync(device.DeviceNumber);
+                            
+                            await Dispatcher.InvokeAsync(() =>
+                            {
+                                if (isWorking)
+                                {
+                                    AudioDeviceStatusText.Text = $"✅ Output device '{device.DeviceName}' is working correctly";
+                                }
+                                else
+                                {
+                                    AudioDeviceStatusText.Text = $"❌ Output device '{device.DeviceName}' test failed";
+                                }
+                            });
+                        }
+                        catch (Exception ex)
+                        {
+                            await Dispatcher.InvokeAsync(() =>
+                            {
+                                AudioDeviceStatusText.Text = $"❌ Output device test error: {ex.Message}";
+                            });
+                        }
+                    });
+                }
+                else
+                {
+                    AudioDeviceStatusText.Text = "Please select an output device first";
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error testing output device: {ex.Message}");
+                AudioDeviceStatusText.Text = $"Error testing output device: {ex.Message}";
+            }
+        }
+
+        /// <summary>
+        /// Refresh input devices list
+        /// </summary>
+        private void RefreshInputDevicesButton_Click(object sender, RoutedEventArgs e)
+        {
+            RefreshAudioInputDevices();
+        }
+
+        /// <summary>
+        /// Refresh output devices list
+        /// </summary>
+        private void RefreshOutputDevicesButton_Click(object sender, RoutedEventArgs e)
+        {
+            RefreshAudioOutputDevices();
+        }
+
+        /// <summary>
+        /// Microphone VAD threshold slider changed
+        /// </summary>
+        private void MicVadThresholdSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+        {
+            try
+            {
+                var value = (int)e.NewValue;
+                MicVadThresholdTextBox.Text = value.ToString();
+                AppSettings.SaveMicVadThreshold(value);
+                Console.WriteLine($"🎤 Microphone VAD threshold: {value}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error updating mic VAD threshold: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Discord VAD threshold slider changed
+        /// </summary>
+        private void DiscordVadThresholdSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+        {
+            try
+            {
+                var value = (int)e.NewValue;
+                DiscordVadThresholdTextBox.Text = value.ToString();
+                AppSettings.SaveDiscordVadThreshold(value);
+                Console.WriteLine($"🤖 Discord VAD threshold: {value}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error updating Discord VAD threshold: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Microphone VAD threshold text changed
+        /// </summary>
+        private void MicVadThresholdTextBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            try
+            {
+                if (int.TryParse(MicVadThresholdTextBox.Text, out int value))
+                {
+                    if (value >= MicVadThresholdSlider.Minimum && value <= MicVadThresholdSlider.Maximum)
+                    {
+                        MicVadThresholdSlider.Value = value;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error parsing mic VAD threshold: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Discord VAD threshold text changed
+        /// </summary>
+        private void DiscordVadThresholdTextBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            try
+            {
+                if (int.TryParse(DiscordVadThresholdTextBox.Text, out int value))
+                {
+                    if (value >= DiscordVadThresholdSlider.Minimum && value <= DiscordVadThresholdSlider.Maximum)
+                    {
+                        DiscordVadThresholdSlider.Value = value;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error parsing Discord VAD threshold: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Local TTS volume slider changed
+        /// </summary>
+        private void LocalTtsVolumeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+        {
+            try
+            {
+                var value = (int)e.NewValue;
+                LocalTtsVolumeTextBox.Text = $"{value}%";
+                // Convert from 0-100 to 0.0-1.0 for AppSettings
+                AppSettings.SaveLocalTtsVolume(value / 100.0);
+                Console.WriteLine($"🔊 Local TTS volume: {value}%");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error updating local TTS volume: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Discord TTS volume slider changed
+        /// </summary>
+        private void DiscordTtsVolumeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+        {
+            try
+            {
+                var value = (int)e.NewValue;
+                DiscordTtsVolumeTextBox.Text = $"{value}%";
+                // Convert from 0-100 to 0.0-1.0 for AppSettings
+                AppSettings.SaveDiscordTtsVolume(value / 100.0);
+                Console.WriteLine($"🤖 Discord TTS volume: {value}%");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error updating Discord TTS volume: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Local TTS volume text changed
+        /// </summary>
+        private void LocalTtsVolumeTextBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            try
+            {
+                var text = LocalTtsVolumeTextBox.Text.Replace("%", "");
+                if (int.TryParse(text, out int value))
+                {
+                    if (value >= LocalTtsVolumeSlider.Minimum && value <= LocalTtsVolumeSlider.Maximum)
+                    {
+                        LocalTtsVolumeSlider.Value = value;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error parsing local TTS volume: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Discord TTS volume text changed
+        /// </summary>
+        private void DiscordTtsVolumeTextBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            try
+            {
+                var text = DiscordTtsVolumeTextBox.Text.Replace("%", "");
+                if (int.TryParse(text, out int value))
+                {
+                    if (value >= DiscordTtsVolumeSlider.Minimum && value <= DiscordTtsVolumeSlider.Maximum)
+                    {
+                        DiscordTtsVolumeSlider.Value = value;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error parsing Discord TTS volume: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Test audio output with custom text
+        /// </summary>
+        private void TestAudioOutputButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var testText = AudioTestTextBox?.Text ?? "Hello, this is an audio device test.";
+                AudioTestStatusText.Text = "Playing test audio...";
+                
+                Task.Run(async () =>
+                {
+                    try
+                    {
+                        var device = AudioOutputDeviceComboBox.SelectedItem as AudioDeviceManager.AudioOutputDevice;
+                        var success = await AudioDeviceManager.TestOutputWithTextAsync(device?.DeviceNumber ?? -1, testText);
+                        
+                        await Dispatcher.InvokeAsync(() =>
+                        {
+                            if (success)
+                            {
+                                AudioTestStatusText.Text = "✅ Test audio played successfully";
+                            }
+                            else
+                            {
+                                AudioTestStatusText.Text = "❌ Test audio playback failed";
+                            }
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        await Dispatcher.InvokeAsync(() =>
+                        {
+                            AudioTestStatusText.Text = $"❌ Test audio error: {ex.Message}";
+                        });
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error testing audio output: {ex.Message}");
+                AudioTestStatusText.Text = $"Error: {ex.Message}";
             }
         }
 

@@ -466,5 +466,46 @@ namespace Kinectv1
                 Console.WriteLine($"[AudioDeviceManager] Local play failed: {ex.Message}");
             }
         }
+
+        /// <summary>
+        /// Test input device asynchronously
+        /// </summary>
+        public static async Task<bool> TestInputDeviceAsync(int deviceNumber)
+        {
+            return await Task.Run(() => TestInputDevice(deviceNumber));
+        }
+
+        /// <summary>
+        /// Test output device asynchronously
+        /// </summary>
+        public static async Task<bool> TestOutputDeviceAsync(int deviceNumber)
+        {
+            return await Task.Run(() => TestOutputDevice(deviceNumber));
+        }
+
+        /// <summary>
+        /// Test output device with text-to-speech
+        /// </summary>
+        public static async Task<bool> TestOutputWithTextAsync(int deviceNumber, string text)
+        {
+            try
+            {
+                // For now, just test the device capability
+                // In a full implementation, this would use TTS to speak the text
+                var deviceWorks = await TestOutputDeviceAsync(deviceNumber);
+                
+                if (deviceWorks)
+                {
+                    Console.WriteLine($"🔊 Output device test passed for device {deviceNumber} with text: '{text}'");
+                }
+                
+                return deviceWorks;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error testing output with text: {ex.Message}");
+                return false;
+            }
+        }
     }
 }
