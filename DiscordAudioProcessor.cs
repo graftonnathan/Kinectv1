@@ -37,7 +37,6 @@ namespace Kinectv1
         private static float[] _monoBuffer;
         private static float[] _filteredBuffer;
         private static float[] _normalizedBuffer;
-        private static float[] _resampledBuffer;
         private static byte[] _outputBuffer;
         
         // RMS calculation and normalization
@@ -84,7 +83,6 @@ namespace Kinectv1
                 _monoBuffer = new float[maxDiscordSamples / 2];
                 _filteredBuffer = new float[maxDiscordSamples / 2];
                 _normalizedBuffer = new float[maxDiscordSamples / 2];
-                _resampledBuffer = new float[maxTargetSamples * 2]; // Extra room for resampling
                 _outputBuffer = new byte[maxTargetSamples * 2]; // 16-bit output
                 
                 Console.WriteLine("? Discord audio processing pipeline initialized");
@@ -205,46 +203,89 @@ namespace Kinectv1
                         }
                     }
 
-                    // Step 6: Resample from 48kHz to 16kHz using simple decimation
-                    int resampledCount;
+                    // Step 6: High-quality resample from 48kHz mono to 16kHz mono with anti-aliasing LPF
+                    float[] resampledSamples;
                     using (var resampleScope = Telemetry.LatencyScope("discord_audio.resample"))
                     {
-                        // Simple decimation (take every 3rd sample: 48kHz/3 = 16kHz)
-                        // For production use, consider using a proper anti-aliasing filter before decimation
-                        resampledCount = DecimateAudio(_normalizedBuffer, monoSampleCount, _resampledBuffer, 3);
+                        // Use quality resampler with anti-aliasing - pass the already-converted mono buffer
+                        resampledSamples = AudioUtils.ResampleMono48kTo16k(_normalizedBuffer, monoSampleCount);
                     }
 
-                    // Step 7: Convert back to s16 for Vosk
-                    int outputByteCount = resampledCount * 2;
-                    if (outputByteCount > _outputBuffer.Length)
+                    // Step 7: Frame building to ensure consistent 320-sample chunks
+                    float[][] completeFrames;
+                    using (var frameScope = Telemetry.LatencyScope("discord_audio.frame_build"))
                     {
-                        Telemetry.Counter("discord_audio.output_buffer_overflow");
-                        outputByteCount = _outputBuffer.Length;
-                        resampledCount = outputByteCount / 2;
+                        completeFrames = AudioUtils.FrameBuilder.AccumulateFrames(resampledSamples);
                     }
 
-                    for (int i = 0; i < resampledCount; i++)
+                    // Process complete frames (handle multiple frames if available)
+                    if (completeFrames.Length > 0)
                     {
-                        float sample = Math.Max(-1.0f, Math.Min(1.0f, _resampledBuffer[i])); // Clamp
-                        short intSample = (short)(sample * 32767.0f);
+                        // Process the first complete frame for this call
+                        var frame = completeFrames[0];
+                        int outputByteCount = frame.Length * 2;
                         
-                        _outputBuffer[i * 2] = (byte)(intSample & 0xFF);
-                        _outputBuffer[i * 2 + 1] = (byte)((intSample >> 8) & 0xFF);
+                        if (outputByteCount > _outputBuffer.Length)
+                        {
+                            Telemetry.Counter("discord_audio.output_buffer_overflow");
+                            outputByteCount = _outputBuffer.Length;
+                            // Trim frame to fit buffer
+                            int maxSamples = outputByteCount / 2;
+                            var trimmedFrame = new float[maxSamples];
+                            Array.Copy(frame, 0, trimmedFrame, 0, maxSamples);
+                            frame = trimmedFrame;
+                        }
+
+                        // Convert frame to s16 for Vosk
+                        for (int i = 0; i < frame.Length; i++)
+                        {
+                            float sample = Math.Max(-1.0f, Math.Min(1.0f, frame[i])); // Clamp
+                            short intSample = (short)(sample * 32767.0f);
+                            
+                            _outputBuffer[i * 2] = (byte)(intSample & 0xFF);
+                            _outputBuffer[i * 2 + 1] = (byte)((intSample >> 8) & 0xFF);
+                        }
+
+                        // Track frame metrics
+                        Telemetry.Accumulator("discord_audio.frame_size", frame.Length);
+                        if (completeFrames.Length > 1)
+                        {
+                            Telemetry.Accumulator("discord_audio.frames_pending", completeFrames.Length - 1);
+                            // Log when we have multiple frames to process
+                            if (_processedChunks % 50 == 0)
+                            {
+                                Console.WriteLine($"?? Multiple frames available: {completeFrames.Length} frames, processing first");
+                            }
+                        }
+
+                        // Update statistics
+                        UpdateStatistics(rms, _smoothedGain);
+
+                        // Calculate final RMS for UI display (scale to expected range)
+                        float displayRms = rms * 3000f; // Scale for UI compatibility
+
+                        // Minimal logging - only show every 100 chunks or significant events
+                        if (_processedChunks % 100 == 0)
+                        {
+                            Console.WriteLine($"?? Discord Audio: {_processedChunks} chunks processed, RMS: {LinearToDbfs(rms):+0.1f}dB, Frame size: {frame.Length}");
+                        }
+
+                        return (_outputBuffer, outputByteCount, displayRms);
                     }
-
-                    // Update statistics
-                    UpdateStatistics(rms, _smoothedGain);
-
-                    // Calculate final RMS for UI display (scale to expected range)
-                    float displayRms = rms * 3000f; // Scale for UI compatibility
-
-                    // Minimal logging - only show every 100 chunks or significant events
-                    if (_processedChunks % 100 == 0)
+                    else
                     {
-                        Console.WriteLine($"?? Discord Audio: {_processedChunks} chunks processed, RMS: {LinearToDbfs(rms):+0.1f}dB");
+                        // No complete frames available yet, accumulating samples
+                        Telemetry.Counter("discord_audio.incomplete_frames");
+                        
+                        // Log buffer occupancy occasionally
+                        if (_processedChunks % 50 == 0)
+                        {
+                            int occupancy = AudioUtils.FrameBuilder.GetBufferOccupancy();
+                            Console.WriteLine($"?? Frame buffer accumulating: {occupancy}/320 samples");
+                        }
+                        
+                        return (null, 0, 0f);
                     }
-
-                    return (_outputBuffer, outputByteCount, displayRms);
                 }
                 catch (Exception ex)
                 {
@@ -254,25 +295,6 @@ namespace Kinectv1
                     return (null, 0, 0f);
                 }
             }
-        }
-
-        /// <summary>
-        /// Simple audio decimation for downsampling (production should use proper resampler)
-        /// </summary>
-        private static int DecimateAudio(float[] input, int inputLength, float[] output, int decimationFactor)
-        {
-            int outputLength = inputLength / decimationFactor;
-            
-            for (int i = 0; i < outputLength; i++)
-            {
-                int inputIndex = i * decimationFactor;
-                if (inputIndex < inputLength)
-                {
-                    output[i] = input[inputIndex];
-                }
-            }
-            
-            return outputLength;
         }
 
         /// <summary>
@@ -359,7 +381,10 @@ namespace Kinectv1
                 _smoothedGain = 1.0f;
             }
             
-            Console.WriteLine("?? Discord audio processing statistics reset");
+            // Also reset frame builder to start fresh
+            AudioUtils.FrameBuilder.Reset();
+            
+            Console.WriteLine("?? Discord audio processing statistics and frame builder reset");
         }
 
         /// <summary>
@@ -376,6 +401,7 @@ namespace Kinectv1
         public static string GetProcessorStatus()
         {
             var (chunks, currentRms, avgRms, peak, gain) = GetStatistics();
+            int frameBufferOccupancy = AudioUtils.FrameBuilder.GetBufferOccupancy();
             
             return $"?? Discord Audio Processor Status:\n" +
                    $"   Initialized: {IsInitialized()}\n" +
@@ -385,7 +411,8 @@ namespace Kinectv1
                    $"   Peak level: {LinearToDbfs(peak):+0.1f} dBFS\n" +
                    $"   Current gain: {gain:F2}x ({LinearToDbfs(gain):+0.1f} dB)\n" +
                    $"   Target RMS: {TARGET_RMS_DBFS:+0.1f} dBFS\n" +
-                   $"   Limiter threshold: {LIMITER_THRESHOLD_DBFS:+0.1f} dBFS";
+                   $"   Limiter threshold: {LIMITER_THRESHOLD_DBFS:+0.1f} dBFS\n" +
+                   $"   Frame buffer: {frameBufferOccupancy}/320 samples";
         }
 
         /// <summary>
@@ -400,6 +427,9 @@ namespace Kinectv1
                 {
                     _highPassFilter = null;
                 }
+                
+                // Clear frame builder state
+                AudioUtils.FrameBuilder.Reset();
                 
                 Console.WriteLine("?? Discord audio processor disposed");
             }
