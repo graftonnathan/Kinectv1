@@ -17,7 +17,7 @@
 		<AssemblyVersion>1.0.0.0</AssemblyVersion>
 		<FileVersion>1.0.0.0</FileVersion>
 		<AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
-		<!-- Track exact package graph in packages.lock.json -->
+		<!-- Re-enable lock file; use central package mgmt -->
 		<RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
 		<NuGetAudit>False</NuGetAudit>
 		<ImplicitUsings>disable</ImplicitUsings>
@@ -189,6 +189,7 @@
 		<PackageReference Include="Discord.Net.Commands" />
 		<PackageReference Include="Discord.Net.WebSocket" />
 		<PackageReference Include="System.Threading.Channels" />
+		<!-- Remove explicit System.* additions; rely on transitive and binding redirects -->
 	</ItemGroup>
 	
 	<!-- Framework references for WPF and Windows Forms -->

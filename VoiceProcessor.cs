@@ -650,23 +650,22 @@ namespace Kinectv1
             
             if (_lowConfidenceBuffer.Count < 2) return;
             
-            // Try to find patterns or combine results - avoid ToList() allocation
-            var combinedText = TryCombineResults(_lowConfidenceBuffer);
+            var tmpList = new List<VoskResult>(_lowConfidenceBuffer);
+            var combinedText = TryCombineResults(tmpList);
             
             if (!string.IsNullOrWhiteSpace(combinedText))
             {
-                // Calculate combined confidence without LINQ
                 float totalConfidence = 0f;
-                foreach (var result in _lowConfidenceBuffer)
+                foreach (var r in _lowConfidenceBuffer)
                 {
-                    totalConfidence += result.Confidence;
+                    totalConfidence += r.Confidence;
                 }
                 var avgConfidence = totalConfidence / _lowConfidenceBuffer.Count;
                 
                 var combinedResult = new VoskResult
                 {
                     Text = combinedText,
-                    Confidence = Math.Min(avgConfidence + 0.1f, 0.9f), // Slight boost for successful combination
+                    Confidence = Math.Min(avgConfidence + 0.1f, 0.9f),
                     Words = new List<WordResult>()
                 };
                 
@@ -677,7 +676,6 @@ namespace Kinectv1
                         Console.WriteLine($"?? ? Recovered from low confidence results: '{combinedText}' (combined conf: {combinedResult.Confidence:F2})");
                     }
                     
-                    // Update state variables
                     _lastTranscription = combinedText;
                     _pendingTranscription = combinedText;
                     _lastTranscriptionTime = DateTime.UtcNow;
@@ -685,7 +683,6 @@ namespace Kinectv1
                     _transcriptionHistory.Add($"{DateTime.UtcNow:HH:mm:ss.fff}: RECOVERED '{combinedText}' (conf: {combinedResult.Confidence:F2})");
                     if (_transcriptionHistory.Count > 10) _transcriptionHistory.RemoveAt(0);
                     
-                    // NEW: Use centralized dispatch system
                     TryDispatchToOllama(combinedText, "TryRecoverFromLowConfidenceResults");
                     
                     ClearLowConfidenceBuffer();
@@ -695,13 +692,12 @@ namespace Kinectv1
 
         private string TryCombineResults(List<VoskResult> results)
         {
-            if (results.Count == 0) return string.Empty;
+            if (results == null || results.Count == 0) return string.Empty;
             
-            // Strategy 1: Collect non-empty texts without LINQ
             var texts = new List<string>();
-            foreach (var result in results)
+            foreach (var res in results)
             {
-                var trimmed = result.Text.Trim();
+                var trimmed = res.Text.Trim();
                 if (!string.IsNullOrEmpty(trimmed))
                 {
                     texts.Add(trimmed);
@@ -711,11 +707,10 @@ namespace Kinectv1
             if (texts.Count == 0) return string.Empty;
             if (texts.Count == 1) return texts[0];
             
-            // Strategy 2: Find most frequent text using Dictionary instead of LINQ GroupBy
             var textFrequency = new Dictionary<string, int>();
-            foreach (var text in texts)
+            foreach (var t in texts)
             {
-                var lowerText = text.ToLower();
+                var lowerText = t.ToLower();
                 textFrequency[lowerText] = textFrequency.ContainsKey(lowerText) ? textFrequency[lowerText] + 1 : 1;
             }
             
@@ -727,12 +722,11 @@ namespace Kinectv1
             {
                 if (kvp.Value > maxCount || (kvp.Value == maxCount && kvp.Key.Length > maxLength))
                 {
-                    // Find original case version
-                    foreach (var text in texts)
+                    foreach (var t in texts)
                     {
-                        if (text.ToLower() == kvp.Key)
+                        if (t.ToLower() == kvp.Key)
                         {
-                            mostFrequentText = text;
+                            mostFrequentText = t;
                             maxCount = kvp.Value;
                             maxLength = kvp.Key.Length;
                             break;
@@ -746,25 +740,24 @@ namespace Kinectv1
                 return mostFrequentText;
             }
             
-            // Strategy 3: Find highest confidence and longest text without LINQ
             float maxConfidence = 0f;
-            foreach (var result in results)
+            foreach (var res in results)
             {
-                if (result.Confidence > maxConfidence)
+                if (res.Confidence > maxConfidence)
                 {
-                    maxConfidence = result.Confidence;
+                    maxConfidence = res.Confidence;
                 }
             }
             
             string longestText = null;
             int longestLength = 0;
             
-            foreach (var result in results)
+            foreach (var res in results)
             {
-                if (result.Confidence >= maxConfidence - 0.1f && result.Text.Length > longestLength)
+                if (res.Confidence >= maxConfidence - 0.1f && res.Text.Length > longestLength)
                 {
-                    longestText = result.Text;
-                    longestLength = result.Text.Length;
+                    longestText = res.Text;
+                    longestLength = res.Text.Length;
                 }
             }
             
@@ -916,9 +909,9 @@ namespace Kinectv1
                     var excessCount = _processedTranscriptions.Count - 10;
                     var itemsToRemove = new List<string>();
                     var count = 0;
-                    foreach (var transcription in _processedTranscriptions)
+                    foreach (var t in _processedTranscriptions)
                     {
-                        itemsToRemove.Add(transcription);
+                        itemsToRemove.Add(t);
                         if (++count >= excessCount) break;
                     }
                     

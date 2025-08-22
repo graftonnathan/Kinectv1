@@ -161,10 +161,10 @@ namespace Kinectv1
                     ApplyUiDefaults();
                     break;
                 case "telemetry":
-                    ApplyTelemetryDefaults();
+                    AppSettings.SaveTelemetryEnabled(Telemetry.TelemetryEnabled);
                     break;
                 case "window":
-                    ApplyWindowDefaults();
+                    AppSettings.SaveWindowSettings(Window.Width, Window.Height, Window.Left, Window.Top, Window.WindowState);
                     break;
                 case "all":
                     ApplyAllDefaults();
@@ -187,8 +187,8 @@ namespace Kinectv1
             ApplyKinectDefaults();
             ApplyAudioDefaults();
             ApplyUiDefaults();
-            ApplyTelemetryDefaults();
-            ApplyWindowDefaults();
+            AppSettings.SaveTelemetryEnabled(Telemetry.TelemetryEnabled);
+            AppSettings.SaveWindowSettings(Window.Width, Window.Height, Window.Left, Window.Top, Window.WindowState);
         }
 
         private static void ApplyVoiceDefaults()
@@ -213,15 +213,13 @@ namespace Kinectv1
             AppSettings.SaveTtsSymbolsPath(Tts.TtsSymbolsPath);
             AppSettings.SaveTtsCmudictPath(Tts.TtsCmudictPath);
             AppSettings.SaveTtsOutputDevice(Tts.TtsOutputDevice);
-            AppSettings.SaveTtsVolumeScale(Tts.TtsVolumeScale);
-            AppSettings.SaveTtsSpeed(Tts.TtsSpeed);
+            AppSettings.SaveLocalTtsVolume(Tts.TtsVolumeScale);
         }
 
         private static void ApplySttDefaults()
         {
             AppSettings.SaveSttModelPath(Stt.SttModelPath);
             AppSettings.SaveSttInputDevice(Stt.SttInputDevice);
-            AppSettings.SaveSttEnabled(Stt.SttEnabled);
         }
 
         private static void ApplyDiscordDefaults()
@@ -229,51 +227,31 @@ namespace Kinectv1
             AppSettings.SaveDiscordBotEnabled(Discord.DiscordBotEnabled);
             AppSettings.SaveDiscordBotToken(Discord.DiscordBotToken);
             AppSettings.SaveDiscordAutoJoinVoice(Discord.DiscordAutoJoinVoice);
-            AppSettings.SaveDiscordGuildId(Discord.DiscordGuildId);
-            AppSettings.SaveDiscordChannelId(Discord.DiscordChannelId);
         }
 
         private static void ApplyOllamaDefaults()
         {
             AppSettings.SaveOllamaEnabled(Ollama.OllamaEnabled);
             AppSettings.SaveOllamaModel(Ollama.OllamaModel);
-            AppSettings.SaveOllamaApiUrl(Ollama.OllamaApiUrl);
             AppSettings.SaveOllamaMemoryEnabled(Ollama.OllamaMemoryEnabled);
-            AppSettings.SaveOllamaMaxMessagesPerSpeaker(Ollama.OllamaMaxMessagesPerSpeaker);
-            AppSettings.SaveOllamaMaxSystemMessages(Ollama.OllamaMaxSystemMessages);
-            AppSettings.SaveOllamaConversationTimeoutMinutes(Ollama.OllamaConversationTimeoutMinutes);
             AppSettings.SaveConversationHistoryPath(Ollama.ConversationHistoryPath);
             AppSettings.SaveSystemPromptPath(Ollama.SystemPromptPath);
         }
 
         private static void ApplyKinectDefaults()
         {
-            AppSettings.SaveKinectMode(Kinect.KinectMode);
             AppSettings.SaveFaceThreshold(Kinect.FaceThreshold);
-            AppSettings.SaveEnhancedFaceTrackingEnabled(Kinect.EnhancedFaceTrackingEnabled);
-            AppSettings.SaveFaceTrackingDebugMode(Kinect.FaceTrackingDebugMode);
         }
 
         private static void ApplyAudioDefaults()
         {
             AppSettings.SaveAudioInMode(Audio.AudioInMode);
-            AppSettings.SaveSystemAudioEnabled(Audio.SystemAudioEnabled);
         }
 
         private static void ApplyUiDefaults()
         {
             AppSettings.SaveDarkMode(Ui.DarkMode);
             AppSettings.SaveAppScenario(Ui.AppScenario);
-        }
-
-        private static void ApplyTelemetryDefaults()
-        {
-            AppSettings.SaveTelemetryEnabled(Telemetry.TelemetryEnabled);
-        }
-
-        private static void ApplyWindowDefaults()
-        {
-            AppSettings.SaveWindowSettings(Window.Width, Window.Height, Window.Left, Window.Top, Window.WindowState);
         }
 
         /// <summary>

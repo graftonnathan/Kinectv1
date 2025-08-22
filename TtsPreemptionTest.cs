@@ -134,7 +134,7 @@ namespace Kinectv1
                 Console.WriteLine($"   Simulating {rapidOutputs.Length} rapid successive LLM outputs...");
                 
                 var startTime = DateTime.UtcNow;
-                Task lastTask = null;
+                Task<bool> lastTask = null;
 
                 for (int i = 0; i < rapidOutputs.Length; i++)
                 {

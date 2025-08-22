@@ -127,14 +127,14 @@ namespace Kinectv1
                 async (text, speaker, ct) => {
                     try
                     {
-                        Console.WriteLine($"   🎵 TTS Start: '{text.Substring(0, Math.Min(20, text.Length))}...'");
+                        Console.WriteLine($"   🎵 TTS Start: '{text.Substring(0, Math.Min(20, text.Length))}...'{ct.GetHashCode()}");
                         await Task.Delay(1500, ct);
-                        Console.WriteLine($"   ✅ TTS Complete: '{text.Substring(0, Math.Min(20, text.Length))}...'");
+                        Console.WriteLine($"   ✅ TTS Complete: '{text.Substring(0, Math.Min(20, text.Length))}...'{ct.GetHashCode()}");
                         return true;
                     }
-                    catch (System.Threading.OperationCanceledException)
+                    catch (OperationCanceledException)
                     {
-                        Console.WriteLine($"   🛑 TTS Canceled: '{text.Substring(0, Math.Min(20, text.Length))}...'");
+                        Console.WriteLine($"   🛑 TTS Canceled: '{text.Substring(0, Math.Min(20, text.Length))}...'{ct.GetHashCode()}");
                         throw;
                     }
                 });

@@ -289,18 +289,17 @@ namespace Kinectv1.Discord
                 {
                     // Use the new enhanced join method with proper handshake
                     audioClient = await DiscordNetBotManager.JoinVoiceAsync(target, maxRetries: 3);
-                    
                     Console.WriteLine($"✅ STEP 2: Enhanced voice join completed");
                     Console.WriteLine($"✅ AudioClient state: {audioClient?.ConnectionState}");
                 }
-                catch (HttpException httpEx) when (httpEx.DiscordCode == 4006)
+                catch (HttpException httpEx) when (httpEx.DiscordCode.HasValue && (int)httpEx.DiscordCode.Value == 4006)
                 {
                     Console.WriteLine($"❌ STEP 2: 4006 error after all retries: {httpEx.Message}");
                     await ReplyAsync($"❌ **Voice join failed with 4006 'Session is no longer valid'**\n\n" +
-                                   $"This indicates persistent session conflicts. Try:\n" +
-                                   $"• `!clearsession` and wait 15 seconds\n" +
-                                   $"• Check for multiple bot instances with `!tokencheck`\n" +
-                                   $"• Restart the application if issues persist");
+                                   "This indicates persistent session conflicts. Try:\n" +
+                                   "• `!clearsession` and wait 15 seconds\n" +
+                                   "• Check for multiple bot instances with `!tokencheck`\n" +
+                                   "• Restart the application if issues persist");
                     return;
                 }
                 catch (TimeoutException timeoutEx)
@@ -1720,7 +1719,7 @@ namespace Kinectv1.Discord
                     Console.WriteLine($"?? Force disconnecting from: {self.VoiceChannel.Name}");
                     await self.VoiceChannel.DisconnectAsync();
                     Console.WriteLine($"? Waiting 4 seconds for session to clear server-side...");
-                    await Task.Delay(4000); // Even longer delay to ensure server clears session
+                    await Task.Delay(4000); // Longer delay to ensure server clears session
                 }
                 else
                 {
@@ -1772,7 +1771,7 @@ namespace Kinectv1.Discord
                 
                 audioClient.Disconnected += ex =>
                 {
-                    Console.WriteLine($"?? AudioClient.Disconnected event: {ex?.Message ?? "Normal"}");
+                    Console.WriteLine($"🔌 AudioClient.Disconnected event: {ex?.Message ?? "Normal"}");
                     _audioClients.TryRemove(guild.Id, out _);
                     return Task.CompletedTask;
                 };

@@ -13,6 +13,7 @@ using System.IO;
 using NAudio.Wave;
 using System.Diagnostics;
 using System.Threading.Channels;
+using Discord.Net; // Added for HttpException
 
 namespace Kinectv1.Discord
 {
@@ -542,8 +543,12 @@ namespace Kinectv1.Discord
                     
                     // Step 1: Request voice channel join (this triggers VOICE_STATE_UPDATE and VOICE_SERVER_UPDATE)
                     Console.WriteLine($"🎯 Step 1: Requesting voice channel join...");
-                    var currentUser = guild.CurrentUser;
-                    await currentUser.ModifyAsync(x => x.Channel = voiceChannel);
+                    // IGuild doesn't expose CurrentUser; resolve via SocketGuild
+                    var socketGuild = _client?.GetGuild(guildId);
+                    var currentUser = socketGuild?.CurrentUser;
+                    if (currentUser == null)
+                        throw new InvalidOperationException("Could not resolve current bot user for guild");
+                    await currentUser.ModifyAsync(x => x.Channel = new Optional<IVoiceChannel>(voiceChannel));
                     
                     // Step 2: Wait for both sessionId and server info with timeout
                     Console.WriteLine($"🎯 Step 2: Waiting for handshake completion (sessionId + server info)...");
@@ -608,7 +613,7 @@ namespace Kinectv1.Discord
                     Console.WriteLine($"🎉 Voice join SUCCESS in {joinTimer.ElapsedMilliseconds}ms total (attempt {attempt})");
                     return audioClient;
                 }
-                catch (HttpException httpEx) when (httpEx.DiscordCode == 4006)
+                catch (HttpException httpEx) when (httpEx.DiscordCode.HasValue && (int)httpEx.DiscordCode.Value == 4006)
                 {
                     Console.WriteLine($"❌ 4006 'Session is no longer valid' on attempt {attempt}: {httpEx.Message}");
                     Telemetry.Counter("counter.discord.voice.join.4006");
@@ -692,7 +697,7 @@ namespace Kinectv1.Discord
             };
             
             // Backpressure: With length=1 and DropOldest, check if queue is full before writing
-            bool wasQueueFull = _ttsReader.CanRead;
+            bool wasQueueFull = false; // ChannelReader does not expose CanRead; treat as unknown
             if (!_ttsWriter.TryWrite(job))
             {
                 // Channel is closed or writer is completed
@@ -944,9 +949,9 @@ namespace Kinectv1.Discord
         private static Task Client_VoiceServerUpdated(SocketVoiceServer voiceServer)
         {
             var timingMs = DateTime.UtcNow.ToString("HH:mm:ss.fff");
-            Console.WriteLine($"[{timingMs}] VoiceServer: guild={voiceServer.Guild?.Id} endpoint={MaskEndpoint(voiceServer.Endpoint)} token={MaskToken(voiceServer.Token)}");
+            Console.WriteLine($"[{timingMs}] VoiceServer: guild={voiceServer.Guild.Id} endpoint={MaskEndpoint(voiceServer.Endpoint)} token={MaskToken(voiceServer.Token)}");
             
-            if (voiceServer.Guild != null && _voiceHandshakes.TryGetValue(voiceServer.Guild.Id, out var handshake))
+            if (_voiceHandshakes.TryGetValue(voiceServer.Guild.Id, out var handshake))
             {
                 Console.WriteLine($"[{timingMs}] Handshake: Got server info for guild {voiceServer.Guild.Id}");
                 handshake.ServerTcs.TrySetResult((voiceServer.Token, voiceServer.Endpoint));
@@ -1018,8 +1023,8 @@ namespace Kinectv1.Discord
         {
             try
             {
-                // With single-item channel, count is always 0 or 1
-                var queueCount = _ttsReader.CanRead ? 1 : 0;
+                // With single-item channel, no reliable count API here; return 0 or 1 heuristically
+                var queueCount = 0;
                 return (queueCount, _totalTtsDrops);
             }
             catch

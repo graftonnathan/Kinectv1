@@ -126,17 +126,15 @@ try {
         Write-Host "??? Removed old lib\libsodium.dll"
     }
     
-    # Copy to output directories with correct names for Discord.Net
+    # Copy to output directory (x64 Debug only as requested)
     Write-Host ""
     Write-Host "?? Installing to output directories..."
     
-    $outputDirs = @("bin\Debug\net481", "bin\Release\net481", "bin\x64\Debug\net481", "bin\x64\Release\net481")
+    $outputDirs = @("bin\x64\Debug\net481")
     foreach ($dir in $outputDirs) {
         if (!(Test-Path $dir)) {
-            New-Item -ItemType Directory -Path $dir -Force
-            Write-Host "?? Created output directory: $dir"
+            New-Item -ItemType Directory -Path $dir -Force | Out-Null
         }
-        
         # Copy with correct names for Discord.Net (opus.dll, not libopus.dll)
         Copy-Item "$libsDir\opus.dll" "$dir\opus.dll" -Force
         Copy-Item "$libsDir\libsodium.dll" "$dir\libsodium.dll" -Force
@@ -157,20 +155,18 @@ try {
     Write-Host ""
     Write-Host "?? Fresh Discord.Net native libraries installed successfully!"
     Write-Host ""
-    Write-Host "?? Files installed to multiple locations:"
+    Write-Host "?? Files installed:"
     Write-Host "   ?? libs\opus.dll (from libopus.dll - renamed for compatibility)"
-    Write-Host "   ?? libs\libsodium.dll (fresh copy from ZIP)"
-    Write-Host "   ?? native-libs\* (backup copies)"
-    Write-Host "   ?? bin\Debug\net481\*.dll"
+    Write-Host "   ?? libs\libsodium.dll"
     Write-Host "   ?? bin\x64\Debug\net481\*.dll"
-    Write-Host "   ?? (and Release variants)"
+    Write-Host "   ?? native-libs\* (backup copies)"
+
     Write-Host ""
-    Write-Host "? Key improvements:"
+    Write-Host "? Key notes:"
     Write-Host "   ?? Downloaded from official Discord.Net ZIP package"
     Write-Host "   ?? Proper renaming: libopus.dll ? opus.dll (Discord.Net expects 'opus.dll')"
     Write-Host "   ??? Removed any old/corrupted files from lib directory"
-    Write-Host "   ?? Correct naming for Discord.Net compatibility"
-    Write-Host "   ?? Installed to all possible output directories including x64"
+    Write-Host "   ?? Installed to x64 Debug output only"
     Write-Host "   ?? File integrity verification at each step"
     Write-Host "   ?? Automatic extraction from official ZIP package"
     Write-Host ""
@@ -201,8 +197,6 @@ try {
     Write-Host "   4. Place them in:"
     Write-Host "      - libs\opus.dll (renamed from libopus.dll)"
     Write-Host "      - libs\libsodium.dll"
-    Write-Host "      - bin\Debug\net481\opus.dll"
-    Write-Host "      - bin\Debug\net481\libsodium.dll"
     Write-Host "      - bin\x64\Debug\net481\opus.dll"
     Write-Host "      - bin\x64\Debug\net481\libsodium.dll"
     Write-Host ""
