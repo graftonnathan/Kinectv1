@@ -472,7 +472,7 @@ namespace Kinectv1
 
                 Console.WriteLine($"🧠 Ollama Settings:\n   Model: {LoadOllamaModel()}\n   Enabled: {LoadOllamaEnabled()}\n   Memory Enabled: {LoadOllamaMemoryEnabled()}\n   Max Messages Per Speaker: {LoadOllamaMaxMessagesPerSpeaker()}\n   Max System Messages: {LoadOllamaMaxSystemMessages()}\n   Conversation Timeout: {LoadOllamaConversationTimeoutMinutes()} minutes\n   Conversation History Path: {LoadConversationHistoryPath()}");
 
-                Console.WriteLine($"🎨 UI Settings:\n   Dark Mode: {LoadDarkMode()}");
+                Console.WriteLine($"🎨 UI Settings:\n   Dark Mode: {LoadDarkMode()}\n   Language: {LoadLanguage()}\n   Telemetry Level: {LoadTelemetryLevel()}");
 
                 var (width, height, left, top, state) = LoadWindowSettings();
                 Console.WriteLine($"🪟 Window Settings:\n   Size: {width:F0}x{height:F0}\n   Position: ({left:F0}, {top:F0})\n   State: {state}");
@@ -1671,6 +1671,74 @@ namespace Kinectv1
             catch (Exception ex)
             {
                 Console.WriteLine($"ERROR: Error saving dark mode: {ex.Message}");
+            }
+        }
+
+        // Language Settings
+        public static string LoadLanguage()
+        {
+            try
+            {
+                var language = GetString("Language", "en-US");
+                if (string.IsNullOrWhiteSpace(language))
+                {
+                    language = "en-US";
+                    SetString("Language", language);
+                }
+                return language;
+            }
+            catch (Exception ex)
+            {
+                LogSettingError("Language", $"READ FAILED: {ex.Message}");
+                return "en-US";
+            }
+        }
+
+        public static void SaveLanguage(string language)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(language))
+                    language = "en-US";
+                
+                SetString("Language", language);
+                Console.WriteLine($"Saved language: {language}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"ERROR: Error saving language: {ex.Message}");
+            }
+        }
+
+        // Telemetry Level Settings
+        public static TelemetryLevel LoadTelemetryLevel()
+        {
+            try
+            {
+                var levelStr = GetString("TelemetryLevel", "Info");
+                if (Enum.TryParse<TelemetryLevel>(levelStr, true, out var level))
+                {
+                    return level;
+                }
+                return TelemetryLevel.Info;
+            }
+            catch (Exception ex)
+            {
+                LogSettingError("TelemetryLevel", $"READ FAILED: {ex.Message}");
+                return TelemetryLevel.Info;
+            }
+        }
+
+        public static void SaveTelemetryLevel(TelemetryLevel level)
+        {
+            try
+            {
+                SetString("TelemetryLevel", level.ToString());
+                Console.WriteLine($"Saved telemetry level: {level}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"ERROR: Error saving telemetry level: {ex.Message}");
             }
         }
 

@@ -17,6 +17,14 @@
     <PackageReference Include="Newtonsoft.Json" />
   </ItemGroup>
 
+  <!-- Add source files from main project instead of project reference to avoid WPF dependencies -->
+  <ItemGroup>
+    <Compile Include="../JsonSettingsProvider.cs" />
+    <Compile Include="../SettingsWindow.cs" />
+    <Compile Include="../JsonUtils.cs" />
+    <Compile Include="MockAppSettings.cs" />
+  </ItemGroup>
+
   <!-- Copy test data -->
   <ItemGroup>
     <Content Include="../testdata/**/*">

@@ -30,6 +30,21 @@
 		<None Include="tools\**\*" Exclude="tools\obj\**\*" />
 	</ItemGroup>
 
+	<!-- Include UI files -->
+	<ItemGroup>
+		<Compile Include="src\UI\Settings\Editors\GeneralSettingsVM.cs" />
+		<Compile Include="src\UI\Settings\Editors\GeneralSettingsView.xaml.cs">
+			<DependentUpon>GeneralSettingsView.xaml</DependentUpon>
+		</Compile>
+	</ItemGroup>
+
+	<ItemGroup>
+		<Page Include="src\UI\Settings\Editors\GeneralSettingsView.xaml">
+			<SubType>Designer</SubType>
+			<Generator>MSBuild:Compile</Generator>
+		</Page>
+	</ItemGroup>
+
 	<!-- Organize developer-provided DLLs from lib/ into structured lib/ subfolders -->
 	<Target Name="OrganizeDevLibs" BeforeTargets="Build">
 		<!-- Ensure categorized folders exist -->
@@ -182,6 +197,11 @@
 		<PackageReference Include="Discord.Net.WebSocket" />
 	</ItemGroup>
 	
+	<!-- Framework references for WPF and Windows Forms -->
+	<ItemGroup>
+		<Reference Include="System.Windows.Forms" />
+	</ItemGroup>
+	
 	<!-- Remove legacy Coqui TTS file copies (not used with Kokoro) -->
 	<ItemGroup>
 		<None Remove="copilot-instructions.md" />
@@ -207,22 +227,8 @@
 	  <None Include=".github\copilot-instructions.md" />
 	  <None Include=".github\workflows\agent-bridge.yml" />
 	  <None Include=".github\workflows\asr-testing.yml" />
-	  <None Include=".github\workflows\copilot-assign-next.yml" />
 	  <None Include=".github\workflows\copilot-task-runner.yml" />
-	  <None Include=".github\workflows\copilot-throttle-pr.yml" />
 	  <None Include=".github\workflows\pr-summary.yml" />
-	  <None Include=".guidance\tasks\0000-template.yml" />
-	  <None Include=".guidance\tasks\0001-vad-dispatch-hardening.yml" />
-	  <None Include=".guidance\tasks\0002-telemetry.yml" />
-	  <None Include=".guidance\tasks\0003-backpressure.yml" />
-	  <None Include=".guidance\tasks\0004-tts-preemption.yml" />
-	  <None Include=".guidance\tasks\0005-asr-resampler.yml" />
-	  <None Include=".guidance\tasks\0006-speaker-fusion.yml" />
-	  <None Include=".guidance\tasks\0007-config-diagnostics.yml" />
-	  <None Include=".guidance\tasks\0008-threading-lifecycle.yml" />
-	  <None Include=".guidance\tasks\0009-error-taxonomy.yml" />
-	  <None Include=".guidance\tasks\0010-testing-harness.yml" />
-	  <None Include=".guidance\tasks\0011-performance.yml" />
 	</ItemGroup>
 
 	<!-- Enhanced verification with prompt files -->

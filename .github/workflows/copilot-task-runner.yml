@@ -1,118 +1,206 @@
-name: Copilot Task Runner (Minimal Orchestrator)
+name: Process PR queue (one at a time; app-safe; auto-merge + Discord)
 
 on:
-  workflow_dispatch:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "*/4 * * * *"
+  workflow_dispatch:
 
 concurrency:
-  group: copilot-merge-queue
-  cancel-in-progress: false
+  group: copilot-orchestrator
+  cancel-in-progress: true
 
 permissions:
   contents: write
   pull-requests: write
-  checks: read
-  statuses: read
   issues: write
 
 env:
-  QUEUE_LABEL: "copilot:todo"
-  INPROGRESS_LABEL: "copilot:in-progress"
-  WAITING_LABEL: "copilot:waiting"
-  MERGE_METHOD: "squash"
-  DELETE_BRANCH: "true"
+  COPILOT_REVIEWERS: "app/github-copilot,app/Copilot,app/copilot,Copilot"
+  MERGE_METHOD: squash
+  MAX_WAIT_MINUTES: "45"
+  DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
 
 jobs:
-  run-queue:
-    name: Process PR queue (one at a time)
+  run:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Setup gh auth
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
         run: |
-          echo "GH_TOKEN=${{ github.token }}" >> "$GITHUB_ENV"
+          echo "GH_TOKEN=${GH_TOKEN}" >> "$GITHUB_ENV"
+          echo "REPO=${{ github.repository }}" >> "$GITHUB_ENV"
+          echo "OWNER=${GITHUB_REPOSITORY%/*}" >> "$GITHUB_ENV"
+          echo "NAME=${GITHUB_REPOSITORY#*/}"  >> "$GITHUB_ENV"
           gh --version
-          jq --version || true
 
-      - name: Select PR (in-progress first, else queued)
-        id: select
+      - name: Setup notifier
+        run: |
+          if [ -z "${DISCORD_WEBHOOK}" ]; then
+            echo "NO_DISCORD=1" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          cat > notify.sh <<'BASH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          webhook="$1"; title="$2"; desc="$3"; color="$4"; url="${5:-}"
+          ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          jq -nc --arg title "$title" --arg desc "$desc" --arg url "$url" --arg ts "$ts" --argjson color "$color" '
+            {embeds:[{title:$title, description:$desc, url:(if ($url|length)>0 then $url else null end), color:color, timestamp:$ts}]}
+          ' | curl -sS -H "Content-Type: application/json" -X POST -d @- "$webhook" >/dev/null || true
+          BASH
+          chmod +x notify.sh
+
+      # 1) Choose focus PR
+      - name: Discover open PRs and pick focus
+        id: pick
+        shell: bash
         run: |
           set -euo pipefail
-          REPO="${GITHUB_REPOSITORY}"
-          OWNER="${REPO%/*}"
-          NAME="${REPO#*/}"
+          list=$(gh pr list -R "$REPO" --state open --json number,updatedAt -L 200 \
+                 | jq -r 'sort_by(.updatedAt) | .[].number')
+          if [[ -z "$list" ]]; then
+            echo "pr=" >> "$GITHUB_OUTPUT"
+            echo "No open PRs."
+            exit 0
+          fi
+          focus=$(printf "%s\n" "$list" | head -n1)
+          echo "pr=$focus" >> "$GITHUB_OUTPUT"
+          printf "%s\n" "$list" > /tmp/open_prs.txt
+          echo "Focus PR: #$focus"
+          if [ "${NO_DISCORD:-}" != "1" ]; then
+            ./notify.sh "$DISCORD_WEBHOOK" "Copilot Orchestrator" "📌 Focusing PR #$focus" 3447003 "https://github.com/$REPO/pull/$focus"
+          fi
 
-          pick_inprog() {
-            gh pr list --state open --label "$INPROGRESS_LABEL" --json number,updatedAt \
-              | jq -r 'sort_by(.updatedAt) | .[0].number // empty'
-          }
-          pick_next() {
-            local json
-            json="$(gh pr list --state open --label "$QUEUE_LABEL" --json number,updatedAt,labels)"
-            jq -r --arg inprog "$INPROGRESS_LABEL" '
-              map(select(.labels | map(.name) | index($inprog) | not))
-              | sort_by(.updatedAt) | .[0].number // empty
-            ' <<<"$json"
-          }
+      - name: Stop if nothing to do
+        if: ${{ steps.pick.outputs.pr == '' }}
+        run: echo "Queue empty."
 
-          PR="$(pick_inprog)"
-          if [[ -z "$PR" ]]; then
-            PR="$(pick_next)"
-            if [[ -n "$PR" ]]; then
-              gh pr edit "$PR" --add-label "$INPROGRESS_LABEL"
-              gh pr comment "$PR" --body "🤖 Copilot queue picked this PR. Marked as **in-progress**."
+      # 2) Enforce single active
+      - name: Remove Copilot from non-focus PRs (force; ignore errors)
+        if: ${{ steps.pick.outputs.pr != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          focus="${{ steps.pick.outputs.pr }}"
+          IFS=',' read -r -a RVS <<< "${{ env.COPILOT_REVIEWERS }}"
+          removed=0
+          while read -r n; do
+            [[ "$n" = "$focus" ]] && continue
+            for r in "${RVS[@]}"; do
+              if gh pr edit -R "$REPO" "$n" --remove-reviewer "$r" >/dev/null 2>&1; then
+                removed=$((removed+1))
+              fi
+            done
+          done < /tmp/open_prs.txt
+          echo "removed=$removed" >> "$GITHUB_OUTPUT"
+
+      - name: Notify cleanup
+        if: ${{ steps.pick.outputs.pr != '' && env.NO_DISCORD != '1' }}
+        run: |
+          ./notify.sh "$DISCORD_WEBHOOK" "Copilot Orchestrator" "🧹 Removed Copilot from ${{ steps.remove_copilot.outputs.removed || '0' }} other PR(s)" 15844367
+
+      # 3) Ensure Copilot requested on focus
+      - name: Request Copilot on focus PR (try app slugs first)
+        if: ${{ steps.pick.outputs.pr != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          PR="${{ steps.pick.outputs.pr }}"
+          IFS=',' read -r -a RVS <<< "${{ env.COPILOT_REVIEWERS }}"
+          ok=""
+          for r in "${RVS[@]}"; do
+            if gh pr edit -R "$REPO" "$PR" --add-reviewer "$r" >/dev/null 2>&1; then
+              echo "Requested reviewer: $r"
+              ok="yes"
+              break
+            fi
+          done
+          if [ "${NO_DISCORD:-}" != "1" ]; then
+            if [[ -n "$ok" ]]; then
+              ./notify.sh "$DISCORD_WEBHOOK" "Copilot Orchestrator" "🤖 Requested Copilot on PR #$PR" 3447003 "https://github.com/$REPO/pull/$PR"
+            else
+              ./notify.sh "$DISCORD_WEBHOOK" "Copilot Orchestrator" "⚠️ Could not request Copilot on PR #$PR (tried: ${RVS[*]})" 15158332 "https://github.com/$REPO/pull/$PR"
             fi
           fi
 
-          echo "pr=$PR" >> "$GITHUB_OUTPUT"
-
-      - name: Stop if nothing to do
-        if: steps.select.outputs.pr == ''
-        run: echo "Queue empty."
-
-      - name: Process PR
-        if: steps.select.outputs.pr != ''
+      # 4) Prep & approve
+      - name: Prepare focus PR (ready + clean WIP/Draft + approve)
+        if: ${{ steps.pick.outputs.pr != '' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          PR=${{ steps.select.outputs.pr }}
+          PR="${{ steps.pick.outputs.pr }}"
+          gh pr ready -R "$REPO" "$PR" || true
+          TITLE=$(gh pr view -R "$REPO" "$PR" --json title -q .title)
+          CLEAN=$(printf "%s" "$TITLE" \
+            | sed -E 's/^[[:space:]]*\[?[Ww][Ii][Pp]\]?[[:space:]]*[:\-]*[[:space:]]*//' \
+            | sed -E 's/^[[:space:]]*\[?[Dd]raft\]?[[:space:]]*[:\-]*[[:space:]]*//')
+          if [ "$CLEAN" != "$TITLE" ] && [ -n "$CLEAN" ]; then
+            gh pr edit -R "$REPO" "$PR" --title "$CLEAN"
+          fi
+          gh pr review -R "$REPO" "$PR" --approve -b "Auto-approved by orchestrator"
+          if [ "${NO_DISCORD:-}" != "1" ]; then
+            ./notify.sh "$DISCORD_WEBHOOK" "Copilot Orchestrator" "✅ Approved PR #$PR" 3066993 "https://github.com/$REPO/pull/$PR"
+          fi
+
+      # 5) Flip auto-merge now (ignore if not allowed)
+      - name: Enable auto-merge (squash + delete branch)
+        if: ${{ steps.pick.outputs.pr != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          PR="${{ steps.pick.outputs.pr }}"
+          gh pr merge -R "$REPO" "$PR" --auto --${{ env.MERGE_METHOD }} --delete-branch || true
+          if [ "${NO_DISCORD:-}" != "1" ]; then
+            ./notify.sh "$DISCORD_WEBHOOK" "Copilot Orchestrator" "🟦 Auto-merge armed (squash) for PR #$PR" 3447003 "https://github.com/$REPO/pull/$PR"
+          fi
+
+      # 6) Fallback: wait then merge ourselves
+      - name: Wait for checks to pass, then merge
+        if: ${{ steps.pick.outputs.pr != '' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          PR="${{ steps.pick.outputs.pr }}"
           OWNER="${GITHUB_REPOSITORY%/*}"
           NAME="${GITHUB_REPOSITORY#*/}"
-
-          ms_json="$(gh api graphql -f owner="$OWNER" -f name="$NAME" -F pr="$PR" -f query='
-            query($owner:String!,$name:String!,$pr:Int!){
-              repository(owner:$owner, name:$name) {
-                pullRequest(number:$pr) {
-                  state merged isDraft mergeStateStatus headRefOid
+          limit=$(( ${{ env.MAX_WAIT_MINUTES }} * 60 ))
+          interval=30
+          elapsed=0
+          while (( elapsed < limit )); do
+            pr_json=$(gh api graphql -f owner="$OWNER" -f name="$NAME" -F pr="$PR" -f query='
+              query($owner:String!,$name:String!,$pr:Int!){
+                repository(owner:$owner,name:$name){
+                  pullRequest(number:$pr){
+                    isDraft mergeStateStatus headRefOid
+                  }
                 }
-              }
-            }')"
-          state="$(jq -r '.data.repository.pullRequest.state' <<<"$ms_json")"
-          merged="$(jq -r '.data.repository.pullRequest.merged' <<<"$ms_json")"
-          isDraft="$(jq -r '.data.repository.pullRequest.isDraft' <<<"$ms_json")"
-          mergeStateStatus="$(jq -r '.data.repository.pullRequest.mergeStateStatus' <<<"$ms_json")"
-
-          if [[ "$merged" == "true" || "$state" == "CLOSED" ]]; then
-            gh pr edit "$PR" --remove-label "$INPROGRESS_LABEL" || true
-            gh pr edit "$PR" --remove-label "$WAITING_LABEL" || true
-            gh pr edit "$PR" --remove-label "$QUEUE_LABEL" || true
-            exit 0
+              }')
+            isDraft=$(jq -r '.data.repository.pullRequest.isDraft' <<<"$pr_json")
+            mergeState=$(jq -r '.data.repository.pullRequest.mergeStateStatus' <<<"$pr_json")
+            sha=$(jq -r '.data.repository.pullRequest.headRefOid' <<<"$pr_json")
+            rollup=$(gh api graphql -f owner="$OWNER" -f name="$NAME" -F sha="$sha" -f query='
+              query($owner:String!,$name:String!,$sha:GitObjectID!){
+                repository(owner:$owner,name:$name){
+                  object(oid:$sha){ ... on Commit { statusCheckRollup { state } } }
+                }
+              }')
+            state=$(jq -r '.data.repository.object.statusCheckRollup.state // "PENDING"' <<<"$rollup")
+            if [[ "$isDraft" == "false" && "$state" == "SUCCESS" && "$mergeState" != "BLOCKED" ]]; then
+              gh pr merge -R "$REPO" "$PR" --${{ env.MERGE_METHOD }} --delete-branch
+              if [ "${NO_DISCORD:-}" != "1" ]; then
+                ./notify.sh "$DISCORD_WEBHOOK" "Copilot Orchestrator" "🎉 Merged PR #$PR" 3066993 "https://github.com/$REPO/pull/$PR"
+              fi
+              exit 0
+            fi
+            sleep "$interval"; elapsed=$((elapsed+interval))
+          done
+          if [ "${NO_DISCORD:-}" != "1" ]; then
+            ./notify.sh "$DISCORD_WEBHOOK" "Copilot Orchestrator" "⏲️ Timeout waiting for green on PR #$PR (left open)" 15844367 "https://github.com/$REPO/pull/$PR"
           fi
 
-          if [[ "$mergeStateStatus" != "BLOCKED" && "$isDraft" == "false" ]]; then
-            args=( "--${MERGE_METHOD}" )
-            [[ "$DELETE_BRANCH" == "true" ]] && args+=( "--delete-branch" )
-            gh pr merge "$PR" "${args[@]}"
-            gh pr comment "$PR" --body "✅ Merged by Copilot queue."
-            gh pr edit "$PR" --remove-label "$INPROGRESS_LABEL" || true
-            gh pr edit "$PR" --remove-label "$WAITING_LABEL" || true
-            gh pr edit "$PR" --remove-label "$QUEUE_LABEL" || true
-            exit 0
-          fi
-
-          args=( --auto "--${MERGE_METHOD}" )
-          [[ "$DELETE_BRANCH" == "true" ]] && args+=( "--delete-branch" )
-          gh pr merge "$PR" "${args[@]}" || true
-          gh pr edit "$PR" --add-label "$WAITING_LABEL" || true

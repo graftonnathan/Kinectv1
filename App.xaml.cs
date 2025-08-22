@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Threading;
 
 namespace Kinectv1
 {
@@ -11,6 +12,9 @@ namespace Kinectv1
 
         public App()
         {
+            // Wire up global exception handlers early
+            SetupGlobalExceptionHandlers();
+            
             // Don't initialize here - move to OnStartup to ensure proper console allocation
         }
 
@@ -191,6 +195,194 @@ namespace Kinectv1
             finally
             {
                 base.OnExit(e);
+            }
+        }
+
+        /// <summary>
+        /// Set up global exception handlers for unhandled exceptions
+        /// </summary>
+        private void SetupGlobalExceptionHandlers()
+        {
+            // Handle unhandled exceptions from all threads
+            AppDomain.CurrentDomain.UnhandledException += OnAppDomainUnhandledException;
+            
+            // Handle unhandled exceptions from the WPF UI thread
+            this.DispatcherUnhandledException += OnDispatcherUnhandledException;
+            
+            // Handle unhandled exceptions from tasks
+            TaskScheduler.UnobservedTaskException += OnTaskUnobservedException;
+        }
+
+        /// <summary>
+        /// Handle unhandled exceptions from AppDomain (non-UI threads)
+        /// </summary>
+        private void OnAppDomainUnhandledException(object sender, UnhandledExceptionEventArgs e)
+        {
+            var exception = e.ExceptionObject as Exception;
+            var context = GatherApplicationContext();
+            
+            var crashData = new
+            {
+                source = "AppDomain",
+                isTerminating = e.IsTerminating,
+                exception = new
+                {
+                    type = exception?.GetType().FullName ?? "Unknown",
+                    message = exception?.Message ?? "Unknown exception",
+                    stackTrace = exception?.StackTrace
+                },
+                context = context
+            };
+
+            // Log to telemetry system
+            Telemetry.Event("app.crash", crashData, TelemetryLevel.Error);
+            
+            // Also log to Debug output
+            System.Diagnostics.Debug.WriteLine($"FATAL CRASH: {exception?.Message}");
+            System.Diagnostics.Debug.WriteLine($"Stack trace: {exception?.StackTrace}");
+            
+            // Console output for immediate visibility
+            Console.WriteLine($"❌ FATAL CRASH: {exception?.Message}");
+            Console.WriteLine($"Context: {context}");
+        }
+
+        /// <summary>
+        /// Handle unhandled exceptions from WPF Dispatcher (UI thread)
+        /// </summary>
+        private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
+        {
+            var exception = e.Exception;
+            var context = GatherApplicationContext();
+            
+            var crashData = new
+            {
+                source = "WPF Dispatcher",
+                exception = new
+                {
+                    type = exception.GetType().FullName,
+                    message = exception.Message,
+                    stackTrace = exception.StackTrace
+                },
+                context = context
+            };
+
+            // Log to telemetry system
+            Telemetry.Event("app.crash", crashData, TelemetryLevel.Error);
+            
+            // Also log to Debug output  
+            System.Diagnostics.Debug.WriteLine($"WPF UI CRASH: {exception.Message}");
+            System.Diagnostics.Debug.WriteLine($"Stack trace: {exception.StackTrace}");
+            
+            // Console output for immediate visibility
+            Console.WriteLine($"❌ WPF UI CRASH: {exception.Message}");
+            Console.WriteLine($"Context: {context}");
+            
+            // Mark as handled to prevent immediate crash
+            e.Handled = true;
+        }
+
+        /// <summary>
+        /// Handle unhandled exceptions from Tasks
+        /// </summary>
+        private void OnTaskUnobservedException(object sender, UnobservedTaskExceptionEventArgs e)
+        {
+            var exception = e.Exception?.GetBaseException() ?? e.Exception;
+            var context = GatherApplicationContext();
+            
+            var crashData = new
+            {
+                source = "Task Scheduler",
+                exception = new
+                {
+                    type = exception?.GetType().FullName ?? "Unknown",
+                    message = exception?.Message ?? "Unknown task exception",
+                    stackTrace = exception?.StackTrace
+                },
+                context = context
+            };
+
+            // Log to telemetry system
+            Telemetry.Event("app.crash", crashData, TelemetryLevel.Error);
+            
+            // Also log to Debug output
+            System.Diagnostics.Debug.WriteLine($"TASK CRASH: {exception?.Message}");
+            System.Diagnostics.Debug.WriteLine($"Stack trace: {exception?.StackTrace}");
+            
+            // Console output for immediate visibility
+            Console.WriteLine($"❌ TASK CRASH: {exception?.Message}");
+            Console.WriteLine($"Context: {context}");
+            
+            // Mark as observed to prevent app termination
+            e.SetObserved();
+        }
+
+        /// <summary>
+        /// Gather rich application context for crash reports
+        /// </summary>
+        private object GatherApplicationContext()
+        {
+            try
+            {
+                // Get audio device information
+                string currentInputDevice = "Unknown";
+                string currentOutputDevice = "Unknown";
+                try
+                {
+                    var inputDevice = AudioDeviceManager.GetConfiguredInputDevice();
+                    currentInputDevice = inputDevice?.DeviceName ?? "Default";
+                    
+                    var outputDevice = AudioDeviceManager.GetConfiguredOutputDevice();
+                    currentOutputDevice = outputDevice?.DeviceName ?? "Default";
+                }
+                catch (Exception ex)
+                {
+                    currentInputDevice = $"Error: {ex.Message}";
+                    currentOutputDevice = $"Error: {ex.Message}";
+                }
+
+                // Get model paths
+                string sttModelPath = "Unknown";
+                string ttsModelPath = "Unknown";
+                bool ttsUseGpu = false;
+                try
+                {
+                    sttModelPath = AppSettings.LoadSttModelPath() ?? "Not configured";
+                    ttsModelPath = AppSettings.LoadTtsModelPath() ?? "Not configured";
+                    ttsUseGpu = AppSettings.LoadTtsUseGpu();
+                }
+                catch (Exception ex)
+                {
+                    sttModelPath = $"Error: {ex.Message}";
+                    ttsModelPath = $"Error: {ex.Message}";
+                }
+
+                return new
+                {
+                    timestamp = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
+                    audioDevices = new
+                    {
+                        inputDevice = currentInputDevice,
+                        outputDevice = currentOutputDevice
+                    },
+                    models = new
+                    {
+                        sttModelPath = sttModelPath,
+                        ttsModelPath = ttsModelPath,
+                        ttsExecutionMode = ttsUseGpu ? "GPU" : "CPU"
+                    },
+                    services = new
+                    {
+                        hostedServicesRunning = ServicesManager?.IsStarted ?? false
+                    }
+                };
+            }
+            catch (Exception contextEx)
+            {
+                return new
+                {
+                    timestamp = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
+                    contextError = $"Failed to gather context: {contextEx.Message}"
+                };
             }
         }
     }
