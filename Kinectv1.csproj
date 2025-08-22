@@ -30,6 +30,21 @@
 		<None Include="tools\**\*" Exclude="tools\obj\**\*" />
 	</ItemGroup>
 
+	<!-- Include UI files -->
+	<ItemGroup>
+		<Compile Include="src\UI\Settings\Editors\GeneralSettingsVM.cs" />
+		<Compile Include="src\UI\Settings\Editors\GeneralSettingsView.xaml.cs">
+			<DependentUpon>GeneralSettingsView.xaml</DependentUpon>
+		</Compile>
+	</ItemGroup>
+
+	<ItemGroup>
+		<Page Include="src\UI\Settings\Editors\GeneralSettingsView.xaml">
+			<SubType>Designer</SubType>
+			<Generator>MSBuild:Compile</Generator>
+		</Page>
+	</ItemGroup>
+
 	<!-- Organize developer-provided DLLs from lib/ into structured lib/ subfolders -->
 	<Target Name="OrganizeDevLibs" BeforeTargets="Build">
 		<!-- Ensure categorized folders exist -->
