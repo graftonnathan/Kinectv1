@@ -20,6 +20,16 @@ namespace Kinectv1
         Kiosk    // Public kiosk mode with restricted settings
     }
 
+    /// <summary>
+    /// Audio input mode selection to prevent conflicting audio pipelines
+    /// </summary>
+    public enum AudioInMode
+    {
+        LocalMic,       // Local microphone input only
+        DiscordVoice,   // Discord voice channel input (Opus→PCM from voice receiver)
+        SystemLoopback  // System audio loopback capture
+    }
+
     public static class AppSettings
     {
         // Thread-safe configuration access
@@ -2488,6 +2498,69 @@ namespace Kinectv1
             catch (Exception ex)
             {
                 return $"ERROR: Could not load fusion settings: {ex.Message}";
+            }
+        }
+
+        /// <summary>
+        /// Load audio input mode setting with fallback to LocalMic
+        /// </summary>
+        public static AudioInMode LoadAudioInMode()
+        {
+            try
+            {
+                var modeStr = GetString("AudioInMode", "LocalMic");
+                if (Enum.TryParse<AudioInMode>(modeStr, true, out var mode))
+                {
+                    // Update telemetry counter for current mode
+                    string telemetryMode = mode switch
+                    {
+                        AudioInMode.LocalMic => "local_mic",
+                        AudioInMode.DiscordVoice => "discord_voice",
+                        AudioInMode.SystemLoopback => "system_loopback",
+                        _ => "unknown"
+                    };
+                    Telemetry.Counter($"audio.ingest.mode.{telemetryMode}");
+                    
+                    return mode;
+                }
+                else
+                {
+                    LogSettingError("AudioInMode", $"INVALID VALUE (expected LocalMic|DiscordVoice|SystemLoopback, got '{modeStr}')");
+                    Telemetry.Counter("audio.ingest.mode.local_mic"); // Fallback to local_mic
+                    return AudioInMode.LocalMic;
+                }
+            }
+            catch (Exception ex)
+            {
+                LogSettingError("AudioInMode", $"READ FAILED: {ex.Message}");
+                Telemetry.Counter("audio.ingest.mode.local_mic"); // Fallback to local_mic
+                return AudioInMode.LocalMic;
+            }
+        }
+
+        /// <summary>
+        /// Save audio input mode setting
+        /// </summary>
+        public static void SaveAudioInMode(AudioInMode mode)
+        {
+            try
+            {
+                WriteSettingRaw("AudioInMode", mode.ToString());
+                Console.WriteLine($"🎧 Audio input mode saved: {mode}");
+                
+                // Update telemetry counter for new mode
+                string telemetryMode = mode switch
+                {
+                    AudioInMode.LocalMic => "local_mic",
+                    AudioInMode.DiscordVoice => "discord_voice",
+                    AudioInMode.SystemLoopback => "system_loopback",
+                    _ => "unknown"
+                };
+                Telemetry.Counter($"audio.ingest.mode.{telemetryMode}");
+            }
+            catch (Exception ex)
+            {
+                LogSettingError("AudioInMode", $"SAVE FAILED: {ex.Message}");
             }
         }
     }

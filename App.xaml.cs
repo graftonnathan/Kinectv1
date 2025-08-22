@@ -102,8 +102,25 @@ namespace Kinectv1
                         var discordBotService = new DiscordBotHostedService();
                         ServicesManager.RegisterService(discordBotService);
 
-                        var discordAudioService = new DiscordSystemAudioCaptureHostedService();
-                        ServicesManager.RegisterService(discordAudioService);
+                        // Conditionally register Discord audio services based on AudioInMode
+                        var audioMode = AppSettings.LoadAudioInMode();
+                        Console.WriteLine($"🎧 Audio input mode: {audioMode}");
+                        
+                        if (audioMode == AudioInMode.SystemLoopback)
+                        {
+                            var discordAudioService = new DiscordSystemAudioCaptureHostedService();
+                            ServicesManager.RegisterService(discordAudioService);
+                            Console.WriteLine("🔊 Discord system audio capture service registered (SystemLoopback mode)");
+                        }
+                        else if (audioMode == AudioInMode.DiscordVoice)
+                        {
+                            Console.WriteLine("🎤 Discord voice receiver will be used (DiscordVoice mode)");
+                            // Voice receiver is managed by DiscordNetBotManager, not as a separate service
+                        }
+                        else
+                        {
+                            Console.WriteLine("🎤 Local microphone input will be used (LocalMic mode)");
+                        }
                     }
 
                     // Register Ollama service
