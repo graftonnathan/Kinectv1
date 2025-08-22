@@ -1,4 +1,4 @@
-name: Copilot Assign Next (from queue)
+name: Copilot Assign Next (no label queue)
 
 on:
   schedule:
@@ -16,36 +16,36 @@ permissions:
   pull-requests: write
   issues: write
 
-env:
-  QUEUE_LABEL: "copilot:todo"
-  COPILOT_HANDLE: "Copilot"
-
 jobs:
-  promote:
+  assign:
     runs-on: ubuntu-latest
+    env:
+      COPILOT_HANDLE: Copilot
     steps:
       - name: Auth gh
         run: echo "GH_TOKEN=${{ github.token }}" >> "$GITHUB_ENV"
 
       - name: Skip if Copilot already has an assigned PR
-        id: check_busy
+        id: busy
         run: |
           set -euo pipefail
-          BUSY=$(gh pr list --state open --json number,assignees \
-                 | jq --arg u "${COPILOT_HANDLE}" \
-                    '[.[] | select([.assignees[].login?] | index($u))] | length')
+          BUSY=$(gh pr list --state open --json number,assignees                  | jq --arg u "${{ env.COPILOT_HANDLE }}"                     '[.[] | select([.assignees[].login?] | index($u))] | length')
           echo "busy=$BUSY" >> "$GITHUB_OUTPUT"
 
-      - name: Assign next queued PR to Copilot
-        if: steps.check_busy.outputs.busy == '0'
+      - name: Assign oldest Copilot-authored unassigned PR
+        if: ${{ steps.busy.outputs.busy == '0' }}
         run: |
           set -euo pipefail
-          PR=$(gh pr list --state open --label "$QUEUE_LABEL" --json number,updatedAt,isDraft \
-               | jq -r 'map(select(.isDraft | not)) | sort_by(.updatedAt) | .[0].number // empty')
+          # Look for PRs created by Copilot where Copilot is not currently assigned
+          PR=$(gh pr list --state open --json number,updatedAt,isDraft,author,assignees                | jq -r --arg u "${{ env.COPILOT_HANDLE }}" '
+                   map(select(.author.login == $u))
+                   | map(select(.isDraft | not))
+                   | map(select([.assignees[].login?] | index($u) | not))
+                   | sort_by(.updatedAt)
+                   | .[0].number // empty')
           if [[ -z "$PR" ]]; then
-            echo "No queued (non-draft) PRs."
+            echo "No Copilot-authored PRs ready for assignment."
             exit 0
           fi
-          gh pr edit "$PR" --add-assignee "${COPILOT_HANDLE}" || true
-          gh pr edit "$PR" --remove-label "$QUEUE_LABEL" || true
-          gh pr comment "$PR" --body "🤖 Assigning to **${COPILOT_HANDLE}** from queue. Work starting now."
+          gh pr edit "$PR" --add-assignee "${{ env.COPILOT_HANDLE }}" || true
+          gh pr comment "$PR" --body "🤖 Assigning to **${{ env.COPILOT_HANDLE }}** (no-label queue)."
