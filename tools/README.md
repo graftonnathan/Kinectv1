@@ -17,8 +17,12 @@ tools/
 ├── AsrOffline.exe          # Main testing tool (built from AsrOffline.csproj)
 ├── AsrOffline.csproj       # Console app project file
 ├── Program.cs              # Tool implementation
+├── DebounceTest.cs         # VAD debouncing logic tests
+├── SyntheticDiscordTest.cs # Discord frame processing simulation
 ├── run-asr-tests.sh        # Linux/macOS test runner
 ├── run-asr-tests.bat       # Windows test runner
+├── build-and-test.sh       # Build and basic test script
+├── validate-structure.sh   # Structure validation (no build required)
 └── README.md               # This file
 
 testdata/
@@ -57,6 +61,13 @@ dotnet build tools/AsrOffline.csproj --configuration Release
 
 #### Running Test Suite
 ```bash
+# Full build and test (requires .NET Framework 4.8.1)
+./tools/build-and-test.sh
+
+# Structure validation only (no build required)
+./tools/validate-structure.sh
+
+# CI test runners
 # Linux/macOS
 ./tools/run-asr-tests.sh
 
