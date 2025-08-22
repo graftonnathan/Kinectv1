@@ -1,0 +1,85 @@
+name: Copilot Throttle (scheduler → keep one PR active, ready + approve)
+
+on:
+  schedule:
+    - cron: "*/3 * * * *"   # every 3 minutes
+  workflow_dispatch:
+
+concurrency:
+  group: copilot-throttle-scheduler
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  COPILOT_HANDLE: Copilot      # change if your Copilot login differs
+  ENABLE_AUTO_MERGE: "true"   # set to "true" to toggle merge-when-green
+
+jobs:
+  enforce:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Auth gh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "GH_TOKEN=${GH_TOKEN}" >> "$GITHUB_ENV"
+          echo "REPO=${{ github.repository }}" >> "$GITHUB_ENV"
+          gh --version
+
+      - name: Find PRs with Copilot requested as reviewer
+        id: list
+        run: |
+          set -euo pipefail
+          JSON=$(gh pr list -R "$REPO" \
+                  --search "is:open review-requested:${{ env.COPILOT_HANDLE }}" \
+                  --json number,updatedAt -L 1000)
+          COUNT=$(jq 'length' <<<"$JSON")
+          ACTIVE=$(jq -r 'sort_by(.updatedAt) | .[0].number // empty' <<<"$JSON")
+          echo "count=$COUNT"  >> "$GITHUB_OUTPUT"
+          echo "active=$ACTIVE" >> "$GITHUB_OUTPUT"
+          echo "$JSON" > pr_with_copilot.json
+
+      - name: Keep only one PR requested; remove from others
+        if: ${{ steps.list.outputs.count != '0' }}
+        run: |
+          set -euo pipefail
+          ACTIVE="${{ steps.list.outputs.active }}"
+          jq -r --arg act "$ACTIVE" '.[] | select(.number != ($act|tonumber)) | .number' pr_with_copilot.json \
+          | while read -r n; do
+              gh pr edit -R "$REPO" "$n" --remove-reviewer "${{ env.COPILOT_HANDLE }}" || true
+              gh pr comment -R "$REPO" "$n" --body "⏸️ Copilot is busy with PR #$ACTIVE; review request removed for now."
+            done
+
+      - name: Prepare active PR (ready + clean WIP/Draft title)
+        if: ${{ steps.list.outputs.active != '' }}
+        shell: bash
+        run: |
+          PR="${{ steps.list.outputs.active }}"
+          gh pr ready -R "$REPO" "$PR" || true
+          TITLE=$(gh pr view -R "$REPO" "$PR" --json title -q .title)
+          CLEAN=$(printf "%s" "$TITLE" \
+            | sed -E 's/^[[:space:]]*\[?[Ww][Ii][Pp]\]?[[:space:]]*[:\-]*[[:space:]]*//' \
+            | sed -E 's/^[[:space:]]*\[?[Dd]raft\]?[[:space:]]*[:\-]*[[:space:]]*//')
+          if [ "$CLEAN" != "$TITLE" ] && [ -n "$CLEAN" ]; then
+            gh pr edit -R "$REPO" "$PR" --title "$CLEAN"
+          fi
+
+      - name: Approve active PR (counts with PAT; falls back to GITHUB_TOKEN)
+        if: ${{ steps.list.outputs.active != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          PR="${{ steps.list.outputs.active }}"
+          gh pr review -R "$REPO" "$PR" --approve -b "Auto-approved by scheduler"
+
+      - name: Optionally enable auto-merge (merge when green)
+        if: ${{ steps.list.outputs.active != '' && env.ENABLE_AUTO_MERGE == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          PR="${{ steps.list.outputs.active }}"
+          gh pr merge -R "$REPO" "$PR" --auto --squash --delete-branch || true
