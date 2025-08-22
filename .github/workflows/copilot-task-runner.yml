@@ -16,7 +16,6 @@ permissions:
 
 env:
   COPILOT_HANDLE: Copilot         # change if your Copilot login differs
-  BRANCH_REGEX: '^copilot/'       # treat branches matching this as Copilot work
   MERGE_METHOD: squash            # squash | merge | rebase
   MAX_WAIT_MINUTES: "45"          # how long to wait for checks to pass
 
@@ -56,20 +55,17 @@ jobs:
               gh pr comment -R "$REPO" "$n" --body "⏸️ Copilot is busy with PR #$act; request removed for now."
             done
 
-      # 2) If none active, pick the oldest Copilot PR and request review
-      - name: Pick next PR (Copilot-authored or copilot/* branch)
+      # 2) If none active, pick the oldest OPEN PR where Copilot isn't already requested
+      #    (drafts allowed; we'll mark ready below)
+      - name: Pick next PR (oldest open PR without Copilot reviewer)
         if: ${{ steps.active.outputs.active == '' }}
         id: pick
         run: |
           set -euo pipefail
-          PRJSON=$(gh pr list -R "$REPO" --state open \
-                   --json number,author,isDraft,headRefName,updatedAt,reviewRequests -L 1000)
-          PR=$(jq -r --arg u "${{ env.COPILOT_HANDLE }}" --arg re "${{ env.BRANCH_REGEX }}" '
-              map(select(.isDraft | not))                                                  # not draft
-            | map(select(.reviewRequests[].login? != $u))                                  # Copilot not already requested
-            | map(select(.author.login == $u or (.headRefName | test($re))))               # Copilot-owned work
-            | sort_by(.updatedAt)
-            | .[0].number // empty' <<< "$PRJSON")
+          PR=$(gh pr list -R "$REPO" \
+               --search "is:open -review-requested:${{ env.COPILOT_HANDLE }}" \
+               --json number,updatedAt -L 1000 \
+               | jq -r 'sort_by(.updatedAt) | .[0].number // empty')
           echo "pr=$PR" >> "$GITHUB_OUTPUT"
 
       - name: Request Copilot review on picked PR
@@ -161,4 +157,3 @@ jobs:
           done
 
           echo "Checks not green in time; leaving PR #$PR open."
-
