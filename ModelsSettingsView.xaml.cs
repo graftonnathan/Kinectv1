@@ -115,17 +115,22 @@ namespace Kinectv1
         /// </summary>
         private void BrowseTtsModelFolderButton_Click(object sender, RoutedEventArgs e)
         {
-            var dialog = new System.Windows.Forms.FolderBrowserDialog
+            var dialog = new OpenFileDialog
             {
-                Description = "Select TTS Model Folder",
-                ShowNewFolderButton = false,
-                SelectedPath = GetInitialDirectory(TtsModelFolderTextBox.Text)
+                Title = "Select TTS Model Folder",
+                Filter = "All Files (*.*)|*.*",
+                CheckFileExists = false,
+                CheckPathExists = true,
+                FileName = "Folder Selection",
+                ValidateNames = false,
+                InitialDirectory = GetInitialDirectory(TtsModelFolderTextBox.Text)
             };
 
-            if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
+            if (dialog.ShowDialog() == true)
             {
-                TtsModelFolderTextBox.Text = dialog.SelectedPath;
-                UpdateStatus($"TTS model folder selected: {Path.GetFileName(dialog.SelectedPath)}", false);
+                string selectedPath = Path.GetDirectoryName(dialog.FileName);
+                TtsModelFolderTextBox.Text = selectedPath;
+                UpdateStatus($"TTS model folder selected: {Path.GetFileName(selectedPath)}", false);
             }
         }
 
@@ -134,17 +139,22 @@ namespace Kinectv1
         /// </summary>
         private void BrowseSttModelButton_Click(object sender, RoutedEventArgs e)
         {
-            var dialog = new System.Windows.Forms.FolderBrowserDialog
+            var dialog = new OpenFileDialog
             {
-                Description = "Select Vosk STT Model Directory",
-                ShowNewFolderButton = false,
-                SelectedPath = GetInitialDirectory(SttModelPathTextBox.Text)
+                Title = "Select Vosk STT Model Directory",
+                Filter = "All Files (*.*)|*.*",
+                CheckFileExists = false,
+                CheckPathExists = true,
+                FileName = "Folder Selection",
+                ValidateNames = false,
+                InitialDirectory = GetInitialDirectory(SttModelPathTextBox.Text)
             };
 
-            if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
+            if (dialog.ShowDialog() == true)
             {
-                SttModelPathTextBox.Text = dialog.SelectedPath;
-                UpdateStatus($"STT model directory selected: {Path.GetFileName(dialog.SelectedPath)}", false);
+                string selectedPath = Path.GetDirectoryName(dialog.FileName);
+                SttModelPathTextBox.Text = selectedPath;
+                UpdateStatus($"STT model directory selected: {Path.GetFileName(selectedPath)}", false);
             }
         }
 
