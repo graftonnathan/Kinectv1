@@ -6,6 +6,7 @@ using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
 using NAudio.Dsp;
 
+
 public static class AudioUtils
 {
     private static float? _cachedVadThreshold = null;
@@ -88,19 +89,29 @@ public static class AudioUtils
     public static float[] ConvertToFloatPcm(byte[] buffer, int bytesRecorded)
     {
         int samples = bytesRecorded / 2;
-        float[] floatPcm = new float[samples];
-        
-        for (int i = 0; i < samples; i++)
+        // Use ArrayPool to avoid per-call allocation in hot audio processing paths
+        var pooledArray = ArrayPool<float>.Shared.Rent(samples);
+        try
         {
-            int byteIndex = i * 2;
-            if (byteIndex + 1 < bytesRecorded)
+            for (int i = 0; i < samples; i++)
             {
-                short sample = (short)(buffer[byteIndex] | (buffer[byteIndex + 1] << 8));
-                floatPcm[i] = sample / 32768.0f;
+                int byteIndex = i * 2;
+                if (byteIndex + 1 < bytesRecorded)
+                {
+                    short sample = (short)(buffer[byteIndex] | (buffer[byteIndex + 1] << 8));
+                    pooledArray[i] = sample / 32768.0f;
+                }
             }
+            
+            // Copy to final result array
+            var result = new float[samples];
+            Array.Copy(pooledArray, result, samples);
+            return result;
         }
-        
-        return floatPcm;
+        finally
+        {
+            ArrayPool<float>.Shared.Return(pooledArray);
+        }
     }
 
     /// <summary>
