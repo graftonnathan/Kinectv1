@@ -103,6 +103,51 @@ public static class AudioUtils
     }
 
     /// <summary>
+    /// High-quality resampling from 48kHz mono to 16kHz mono with anti-aliasing LPF
+    /// For use when audio is already converted to mono
+    /// </summary>
+    /// <param name="input">48kHz mono float samples</param>
+    /// <param name="inputLength">Number of input samples</param>
+    /// <returns>16kHz mono samples (approximately inputLength/3)</returns>
+    public static float[] ResampleMono48kTo16k(float[] input, int inputLength)
+    {
+        if (input == null || inputLength <= 0) return new float[0];
+
+        // Pool temporary buffers to reduce allocations
+        var lpfBuffer = ArrayPool<float>.Shared.Rent(inputLength);
+        try
+        {
+            // Step 1: Apply anti-aliasing LPF before decimation (cutoff ~7kHz for 16kHz output)
+            var lpFilter = BiQuadFilter.LowPassFilter(48000, 7000, 0.707f);
+            for (int i = 0; i < inputLength; i++)
+            {
+                lpfBuffer[i] = lpFilter.Transform(input[i]);
+            }
+
+            // Step 2: High-quality resampling using linear interpolation (3:1 ratio)
+            int outputLength = inputLength / 3;
+            var output = new float[outputLength];
+            
+            for (int n = 0; n < outputLength; n++)
+            {
+                double sourceIndex = (double)n * 3.0;
+                int i0 = (int)sourceIndex;
+                int i1 = Math.Min(i0 + 1, inputLength - 1);
+                double frac = sourceIndex - i0;
+                
+                // Linear interpolation for better quality than simple decimation
+                output[n] = (float)((1.0 - frac) * lpfBuffer[i0] + frac * lpfBuffer[i1]);
+            }
+
+            return output;
+        }
+        finally
+        {
+            ArrayPool<float>.Shared.Return(lpfBuffer);
+        }
+    }
+
+    /// <summary>
     /// High-quality resampling from 48kHz stereo to 16kHz mono with anti-aliasing LPF
     /// Replaces naive decimation to prevent aliasing and improve ASR quality
     /// </summary>
@@ -124,38 +169,8 @@ public static class AudioUtils
                 monoBuffer[i] = (input[i * 2] + input[i * 2 + 1]) * 0.5f;
             }
 
-            // Step 2: Apply anti-aliasing LPF before decimation (cutoff ~7kHz for 16kHz output)
-            var lpfBuffer = ArrayPool<float>.Shared.Rent(monoLength);
-            try
-            {
-                // Low-pass filter with cutoff at ~7kHz (Nyquist frequency for 16kHz output is 8kHz)
-                var lpFilter = BiQuadFilter.LowPassFilter(48000, 7000, 0.707f);
-                for (int i = 0; i < monoLength; i++)
-                {
-                    lpfBuffer[i] = lpFilter.Transform(monoBuffer[i]);
-                }
-
-                // Step 3: High-quality resampling using linear interpolation (3:1 ratio)
-                int outputLength = monoLength / 3;
-                var output = new float[outputLength];
-                
-                for (int n = 0; n < outputLength; n++)
-                {
-                    double sourceIndex = (double)n * 3.0;
-                    int i0 = (int)sourceIndex;
-                    int i1 = Math.Min(i0 + 1, monoLength - 1);
-                    double frac = sourceIndex - i0;
-                    
-                    // Linear interpolation for better quality than simple decimation
-                    output[n] = (float)((1.0 - frac) * lpfBuffer[i0] + frac * lpfBuffer[i1]);
-                }
-
-                return output;
-            }
-            finally
-            {
-                ArrayPool<float>.Shared.Return(lpfBuffer);
-            }
+            // Step 2: Use the mono resampler
+            return ResampleMono48kTo16k(monoBuffer, monoLength);
         }
         finally
         {

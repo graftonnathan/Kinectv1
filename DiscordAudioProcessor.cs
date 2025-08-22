@@ -203,12 +203,12 @@ namespace Kinectv1
                         }
                     }
 
-                    // Step 6: High-quality resample from 48kHz to 16kHz with anti-aliasing LPF
+                    // Step 6: High-quality resample from 48kHz mono to 16kHz mono with anti-aliasing LPF
                     float[] resampledSamples;
                     using (var resampleScope = Telemetry.LatencyScope("discord_audio.resample"))
                     {
-                        // Use quality resampler with anti-aliasing instead of naive decimation
-                        resampledSamples = AudioUtils.Resample48kTo16kMono(_normalizedBuffer, monoSampleCount);
+                        // Use quality resampler with anti-aliasing - pass the already-converted mono buffer
+                        resampledSamples = AudioUtils.ResampleMono48kTo16k(_normalizedBuffer, monoSampleCount);
                     }
 
                     // Step 7: Frame building to ensure consistent 320-sample chunks
@@ -218,10 +218,10 @@ namespace Kinectv1
                         completeFrames = AudioUtils.FrameBuilder.AccumulateFrames(resampledSamples);
                     }
 
-                    // Process each complete frame (should be 320 samples each)
+                    // Process complete frames (handle multiple frames if available)
                     if (completeFrames.Length > 0)
                     {
-                        // For now, process the first complete frame (could batch process multiple frames)
+                        // Process the first complete frame for this call
                         var frame = completeFrames[0];
                         int outputByteCount = frame.Length * 2;
                         
@@ -229,7 +229,11 @@ namespace Kinectv1
                         {
                             Telemetry.Counter("discord_audio.output_buffer_overflow");
                             outputByteCount = _outputBuffer.Length;
-                            frame = frame.Take(outputByteCount / 2).ToArray();
+                            // Trim frame to fit buffer
+                            int maxSamples = outputByteCount / 2;
+                            var trimmedFrame = new float[maxSamples];
+                            Array.Copy(frame, 0, trimmedFrame, 0, maxSamples);
+                            frame = trimmedFrame;
                         }
 
                         // Convert frame to s16 for Vosk
@@ -247,6 +251,11 @@ namespace Kinectv1
                         if (completeFrames.Length > 1)
                         {
                             Telemetry.Accumulator("discord_audio.frames_pending", completeFrames.Length - 1);
+                            // Log when we have multiple frames to process
+                            if (_processedChunks % 50 == 0)
+                            {
+                                Console.WriteLine($"?? Multiple frames available: {completeFrames.Length} frames, processing first");
+                            }
                         }
 
                         // Update statistics
@@ -265,8 +274,16 @@ namespace Kinectv1
                     }
                     else
                     {
-                        // No complete frames available yet, return empty
+                        // No complete frames available yet, accumulating samples
                         Telemetry.Counter("discord_audio.incomplete_frames");
+                        
+                        // Log buffer occupancy occasionally
+                        if (_processedChunks % 50 == 0)
+                        {
+                            int occupancy = AudioUtils.FrameBuilder.GetBufferOccupancy();
+                            Console.WriteLine($"?? Frame buffer accumulating: {occupancy}/320 samples");
+                        }
+                        
                         return (null, 0, 0f);
                     }
                 }
@@ -364,7 +381,10 @@ namespace Kinectv1
                 _smoothedGain = 1.0f;
             }
             
-            Console.WriteLine("?? Discord audio processing statistics reset");
+            // Also reset frame builder to start fresh
+            AudioUtils.FrameBuilder.Reset();
+            
+            Console.WriteLine("?? Discord audio processing statistics and frame builder reset");
         }
 
         /// <summary>
@@ -381,6 +401,7 @@ namespace Kinectv1
         public static string GetProcessorStatus()
         {
             var (chunks, currentRms, avgRms, peak, gain) = GetStatistics();
+            int frameBufferOccupancy = AudioUtils.FrameBuilder.GetBufferOccupancy();
             
             return $"?? Discord Audio Processor Status:\n" +
                    $"   Initialized: {IsInitialized()}\n" +
@@ -390,7 +411,8 @@ namespace Kinectv1
                    $"   Peak level: {LinearToDbfs(peak):+0.1f} dBFS\n" +
                    $"   Current gain: {gain:F2}x ({LinearToDbfs(gain):+0.1f} dB)\n" +
                    $"   Target RMS: {TARGET_RMS_DBFS:+0.1f} dBFS\n" +
-                   $"   Limiter threshold: {LIMITER_THRESHOLD_DBFS:+0.1f} dBFS";
+                   $"   Limiter threshold: {LIMITER_THRESHOLD_DBFS:+0.1f} dBFS\n" +
+                   $"   Frame buffer: {frameBufferOccupancy}/320 samples";
         }
 
         /// <summary>
@@ -405,6 +427,9 @@ namespace Kinectv1
                 {
                     _highPassFilter = null;
                 }
+                
+                // Clear frame builder state
+                AudioUtils.FrameBuilder.Reset();
                 
                 Console.WriteLine("?? Discord audio processor disposed");
             }
