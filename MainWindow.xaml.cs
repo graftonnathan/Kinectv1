@@ -487,73 +487,76 @@ namespace Kinectv1
 
         private void UpdateRmsLevel(float rawRms)
         {
-            if (_isClosing) return; // Prevent UI updates during shutdown
-
-            // Latest-wins policy: store the latest value and only dispatch if no update is pending
-            _latestRmsValue = rawRms;
-            
-            // Only schedule an update if one isn't already pending
-            if (Interlocked.CompareExchange(ref _rmsUpdatePending, 1, 0) == 0)
+            try
             {
-                try
-                {
-                    Dispatcher.BeginInvoke(new Action(() =>
-                    {
-                        try
-                        {
-                            if (_isClosing) return; // Double check inside dispatcher
+                if (_isClosing) return; // Prevent UI updates during shutdown
 
-                            // Get the latest value (may have been updated since dispatch was scheduled)
-                            var currentRms = _latestRmsValue;
-                            
-                            // Check if UI elements are still valid
-                            if (RmsBar != null && RmsText != null)
+                // Latest-wins policy: store the latest value and only dispatch if no update is pending
+                _latestRmsValue = rawRms;
+                
+                // Only schedule an update if one isn't already pending
+                if (Interlocked.CompareExchange(ref _rmsUpdatePending, 1, 0) == 0)
+                {
+                    try
+                    {
+                        Dispatcher.BeginInvoke(new Action(() =>
+                        {
+                            try
                             {
-                                // Only update if microphone input is enabled
-                                if (_isMicrophoneInputEnabled)
+                                if (_isClosing) return; // Double check inside dispatcher
+
+                                // Get the latest value (may have been updated since dispatch was scheduled)
+                                var currentRms = _latestRmsValue;
+                                
+                                // Check if UI elements are still valid
+                                if (RmsBar != null && RmsText != null)
                                 {
-                                    // Smooth the RMS values for better visualization
-                                    _smoothedRms = 0.7f * _smoothedRms + 0.3f * currentRms;
-                                    var scaledRms = Math.Min(100, Math.Max(0, (_smoothedRms / 10000.0f) * 100));
+                                    // Only update if microphone input is enabled
+                                    if (_isMicrophoneInputEnabled)
+                                    {
+                                        // Smooth the RMS values for better visualization
+                                        _smoothedRms = 0.7f * _smoothedRms + 0.3f * currentRms;
+                                        var scaledRms = Math.Min(100, Math.Max(0, (_smoothedRms / 10000.0f) * 100));
 
-                                    RmsBar.Value = scaledRms;
-                                    RmsText.Text = $"RMS: {_smoothedRms:F1} ({scaledRms:F0}%)";
+                                        RmsBar.Value = scaledRms;
+                                        RmsText.Text = $"RMS: {_smoothedRms:F1} ({scaledRms:F0}%)";
 
-                                    // FIXED: Color gradient - Green (low/quiet) -> Orange (medium) -> Red (high/loud)
-                                    var greenBrush = this.TryFindResource("AccentGreen") as SolidColorBrush ?? Brushes.Green;
-                                    var orangeBrush = this.TryFindResource("AccentOrange") as SolidColorBrush ?? Brushes.Orange;
-                                    var redBrush = this.TryFindResource("AccentRed") as SolidColorBrush ?? Brushes.Red;
+                                        // FIXED: Color gradient - Green (low/quiet) -> Orange (medium) -> Red (high/loud)
+                                        var greenBrush = this.TryFindResource("AccentGreen") as SolidColorBrush ?? Brushes.Green;
+                                        var orangeBrush = this.TryFindResource("AccentOrange") as SolidColorBrush ?? Brushes.Orange;
+                                        var redBrush = this.TryFindResource("AccentRed") as SolidColorBrush ?? Brushes.Red;
 
-                                    // FIXED: Proper gradient logic - Low=Green (good), Medium=Orange, High=Red (loud/bad)
-                                    if (scaledRms <= 33)
-                                        RmsBar.Foreground = greenBrush;     // 0-33% = Green (quiet/good)
-                                    else if (scaledRms <= 66)
-                                        RmsBar.Foreground = orangeBrush;    // 34-66% = Orange (medium)
-                                    else
-                                        RmsBar.Foreground = redBrush;       // 67-100% = Red (loud/bad)
+                                        // FIXED: Proper gradient logic - Low=Green (good), Medium=Orange, High=Red (loud/bad)
+                                        if (scaledRms <= 33)
+                                            RmsBar.Foreground = greenBrush;     // 0-33% = Green (quiet/good)
+                                        else if (scaledRms <= 66)
+                                            RmsBar.Foreground = orangeBrush;    // 34-66% = Orange (medium)
+                                        else
+                                            RmsBar.Foreground = redBrush;       // 67-100% = Red (loud/bad)
+                                    }
+                                    // If disabled, the UpdateMicrophoneStatus() method handles the display
                                 }
-                                // If disabled, the UpdateMicrophoneStatus() method handles the display
                             }
-                        }
-                        finally
-                        {
-                            // Reset the pending flag to allow future updates
-                            Interlocked.Exchange(ref _rmsUpdatePending, 0);
+                            finally
+                            {
+                                // Reset the pending flag to allow future updates
+                                Interlocked.Exchange(ref _rmsUpdatePending, 0);
 
-                        }
-                    }), DispatcherPriority.Background);
-                }
-                catch (Exception ex)
-                {
-                    // Reset the pending flag if dispatch failed
-                    Interlocked.Exchange(ref _rmsUpdatePending, 0);
-                    if (!_isClosing)
+                            }
+                        }), DispatcherPriority.Background);
+                    }
+                    catch (Exception ex)
                     {
-                        Console.WriteLine($"Error scheduling RMS update: {ex.Message}");
+                        // Reset the pending flag if dispatch failed
+                        Interlocked.Exchange(ref _rmsUpdatePending, 0);
+                        if (!_isClosing)
+                        {
+                            Console.WriteLine($"Error scheduling RMS update: {ex.Message}");
+                        }
                     }
                 }
             }
-        }
+            catch (Exception ex)
             {
                 // Suppress exceptions during shutdown
                 if (!_isClosing)
@@ -2573,6 +2576,70 @@ namespace Kinectv1
             catch (Exception ex)
             {
                 Console.WriteLine($"Error during voice enrollment cleanup: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Initialize audio devices UI (stub implementation)
+        /// </summary>
+        private void InitializeAudioDevicesUI()
+        {
+            try
+            {
+                Console.WriteLine("🔊 Initializing audio devices UI...");
+                // TODO: Implement audio device selection UI
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to initialize audio devices UI: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Initialize volume controls (stub implementation)
+        /// </summary>
+        private void InitializeVolumeControls()
+        {
+            try
+            {
+                Console.WriteLine("🎚️ Initializing volume controls...");
+                // TODO: Implement volume control UI and functionality
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to initialize volume controls: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Initialize identity fusion cleanup (stub implementation)
+        /// </summary>
+        private void InitializeIdentityFusionCleanup()
+        {
+            try
+            {
+                Console.WriteLine("🔄 Initializing identity fusion cleanup...");
+                // TODO: Implement identity fusion cleanup logic
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to initialize identity fusion cleanup: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Load diagnostics tab (stub implementation)
+        /// </summary>
+        private void LoadDiagnosticsTab()
+        {
+            try
+            {
+                Console.WriteLine("📊 Loading diagnostics tab...");
+                // TODO: Implement diagnostics tab loading
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to load diagnostics tab: {ex.Message}");
             }
         }
 

@@ -16,6 +16,7 @@
     <PackageVersion Include="Discord.Net" Version="3.18.0" />
     <PackageVersion Include="Discord.Net.Commands" Version="3.18.0" />
     <PackageVersion Include="Discord.Net.WebSocket" Version="3.18.0" />
+    <PackageVersion Include="System.Threading.Channels" Version="7.0.0" />
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
     <PackageVersion Include="MSTest.TestAdapter" Version="3.1.1" />
     <PackageVersion Include="MSTest.TestFramework" Version="3.1.1" />

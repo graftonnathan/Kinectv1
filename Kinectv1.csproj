@@ -188,6 +188,7 @@
 		<PackageReference Include="Discord.Net" />
 		<PackageReference Include="Discord.Net.Commands" />
 		<PackageReference Include="Discord.Net.WebSocket" />
+		<PackageReference Include="System.Threading.Channels" />
 	</ItemGroup>
 	
 	<!-- Framework references for WPF and Windows Forms -->
