@@ -45,7 +45,7 @@
       <Value Profile="(Default)">history</Value>
     </Setting>
     <Setting Name="SystemPromptPath" Type="System.String" Scope="User">
-      <Value Profile="(Default)">prompts\system.txt</Value>
+      <Value Profile="(Default)">prompts/system.txt</Value>
     </Setting>
     <Setting Name="TtsEnabled" Type="System.Boolean" Scope="User">
       <Value Profile="(Default)">True</Value>
@@ -78,7 +78,7 @@
       <Value Profile="(Default)">Normal</Value>
     </Setting>
     <Setting Name="SttModelPath" Type="System.String" Scope="User">
-      <Value Profile="(Default)">models\vosk-model-en-us-0.22</Value>
+      <Value Profile="(Default)">models/vosk-model-en-us-0.22</Value>
     </Setting>
     <Setting Name="SpeakerEmbeddingModelPath" Type="System.String" Scope="User">
       <Value Profile="(Default)">models\pyannote_embedding.onnx</Value>
