@@ -44,6 +44,23 @@ namespace Kinectv1
                 this.ShowInTaskbar = true;
                 this.Title = "Kinect Face & Voice Recognition";
 
+                // Add keyboard shortcut for testing fusion (Ctrl+F)
+                this.KeyDown += (sender, e) =>
+                {
+                    if (e.Key == Key.F && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
+                    {
+                        try
+                        {
+                            Console.WriteLine("🧪 Testing Identity Fusion System (Ctrl+F pressed)");
+                            IdentityFusionTracker.TestFusion();
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"Error testing fusion: {ex.Message}");
+                        }
+                    }
+                };
+
                 // Hook GUI events
                 try
                 {
@@ -78,6 +95,16 @@ namespace Kinectv1
                 catch (Exception ex)
                 {
                     Console.WriteLine($"Could not hook enhanced face detection events: {ex.Message}");
+                }
+
+                try
+                {
+                    IdentityFusionTracker.OnIdentityFused += OnIdentityFused;
+                    Console.WriteLine("Identity fusion events hooked");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Could not hook identity fusion events: {ex.Message}");
                 }
 
                 // Hook Ollama events
@@ -139,6 +166,9 @@ namespace Kinectv1
 
                 // Initialize volume controls
                 InitializeVolumeControls();
+
+                // Initialize identity fusion cleanup timer
+                InitializeIdentityFusionCleanup();
             }
             catch (Exception ex)
             {
@@ -274,6 +304,52 @@ namespace Kinectv1
                 if (face.IsRecognized && face.Confidence > 0.5f && face.Emotion.PrimaryEmotion != "Neutral")
                 {
                     Console.WriteLine($"Face TrackingID {face.TrackingId}: {status}{emotionInfo} at ({face.Left},{face.Top}) {face.Width}x{face.Height}");
+                }
+            }
+        }
+
+        // NEW: Handle identity fusion updates - replaces ad-hoc speaker fallback
+        private void OnIdentityFused(ulong trackingId, string fusedName, float fusedScore)
+        {
+            if (_isClosing) return; // Prevent UI updates during shutdown
+
+            try
+            {
+                // Log fusion updates to console for debugging
+                Console.WriteLine($"🔀 Identity Fusion TrackingID {trackingId}: {fusedName} (score={fusedScore:F3})");
+
+                Dispatcher.Invoke(() =>
+                {
+                    if (_isClosing) return; // Double check inside dispatcher
+
+                    // Update speaker label with fused identity (replaces ShowSpeakerMatch)
+                    if (SpeakerLabel != null)
+                    {
+                        var content = $"{fusedName} ({fusedScore:F2}) [Fused]";
+                        SpeakerLabel.Content = content;
+
+                        // Color coding based on fused confidence using theme-aware colors
+                        Brush backgroundBrush;
+
+                        if (fusedName == "Unknown" || fusedScore < 0.3f)
+                            backgroundBrush = new SolidColorBrush(_isDarkMode ? Color.FromRgb(101, 68, 68) : Color.FromRgb(255, 192, 192));
+                        else if (fusedScore < 0.5f)
+                            backgroundBrush = new SolidColorBrush(_isDarkMode ? Color.FromRgb(102, 85, 68) : Color.FromRgb(255, 255, 128));
+                        else if (fusedScore < 0.7f)
+                            backgroundBrush = new SolidColorBrush(_isDarkMode ? Color.FromRgb(68, 85, 102) : Color.FromRgb(192, 224, 255));
+                        else
+                            backgroundBrush = new SolidColorBrush(_isDarkMode ? Color.FromRgb(68, 102, 68) : Color.FromRgb(192, 255, 192));
+
+                        SpeakerLabel.Background = backgroundBrush;
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                // Suppress exceptions during shutdown
+                if (!_isClosing)
+                {
+                    Console.WriteLine($"Error updating fused identity: {ex.Message}");
                 }
             }
         }
@@ -2495,6 +2571,68 @@ namespace Kinectv1
                 // Set defaults if initialization fails
                 _localTtsVolume = 1.0;
                 _discordTtsVolume = 1.0;
+            }
+        }
+
+        /// <summary>
+        /// Initialize identity fusion cleanup timer
+        /// </summary>
+        private void InitializeIdentityFusionCleanup()
+        {
+            try
+            {
+                // Set up periodic cleanup timer for old identity entries
+                var cleanupTimer = new DispatcherTimer
+                {
+                    Interval = TimeSpan.FromSeconds(10) // Clean up every 10 seconds
+                };
+                
+                cleanupTimer.Tick += (sender, e) =>
+                {
+                    try
+                    {
+                        IdentityFusionTracker.CleanupOldEntries();
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Error during identity fusion cleanup: {ex.Message}");
+                    }
+                };
+                
+                cleanupTimer.Start();
+                
+                // Set up periodic status logging timer
+                var statusTimer = new DispatcherTimer
+                {
+                    Interval = TimeSpan.FromSeconds(15) // Log status every 15 seconds
+                };
+                
+                statusTimer.Tick += (sender, e) =>
+                {
+                    try
+                    {
+                        var status = IdentityFusionTracker.GetFusionStatus();
+                        if (!status.Contains("No active identities"))
+                        {
+                            Console.WriteLine("--- Identity Fusion Status ---");
+                            Console.WriteLine(status);
+                            Console.WriteLine("-----------------------------");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Error during identity fusion status logging: {ex.Message}");
+                    }
+                };
+                
+                statusTimer.Start();
+                
+                Console.WriteLine("🔀 Identity fusion cleanup timer initialized (10s interval)");
+                Console.WriteLine("🔀 Identity fusion status logging initialized (15s interval)");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error initializing identity fusion cleanup: {ex.Message}");
             }
         }
     }
