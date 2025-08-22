@@ -452,8 +452,8 @@ namespace Kinectv1
             }
         }
 
-        private float _smoothedRms;
-        private float _smoothedDiscordRms;
+        private float _smoothedRms = 0f; // Initialize baseline RMS immediately
+        private float _smoothedDiscordRms = 0f; // Initialize baseline Discord RMS immediately
         private bool _isMicrophoneInputEnabled = true;
         private bool _isDiscordInputEnabled = true;
 
@@ -483,6 +483,9 @@ namespace Kinectv1
 
                             RmsBar.Value = scaledRms;
                             RmsText.Text = $"RMS: {_smoothedRms:F1} ({scaledRms:F0}%)";
+
+                            // Emit telemetry gauge for mic RMS
+                            Telemetry.Gauge("gauge.audio.mic.rms", _smoothedRms);
 
                             // FIXED: Color gradient - Green (low/quiet) -> Orange (medium) -> Red (high/loud)
                             var greenBrush = this.TryFindResource("AccentGreen") as SolidColorBrush ?? Brushes.Green;
@@ -1761,10 +1764,52 @@ namespace Kinectv1
                 // Update status displays
                 UpdateMicrophoneStatus();
                 UpdateDiscordStatus();
+
+                // Initialize RMS meters with baseline 0 for immediate display
+                InitializeRmsBaseline();
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Failed to initialize audio input controls: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Initialize RMS meters with baseline 0 for immediate display
+        /// </summary>
+        private void InitializeRmsBaseline()
+        {
+            try
+            {
+                // Initialize baseline RMS immediately to render the meter
+                if (RmsBar != null && RmsText != null)
+                {
+                    RmsBar.Value = 0;
+                    RmsText.Text = "RMS: 0.0 (0%)";
+                    
+                    // Set initial color to green (quiet/good)
+                    var greenBrush = this.TryFindResource("AccentGreen") as SolidColorBrush ?? Brushes.Green;
+                    RmsBar.Foreground = greenBrush;
+                }
+
+                if (DiscordRmsBar != null && DiscordRmsText != null)
+                {
+                    DiscordRmsBar.Value = 0;
+                    DiscordRmsText.Text = "RMS: 0.0 (0%)";
+                    
+                    // Set initial color to green (quiet/good)
+                    var greenBrush = this.TryFindResource("AccentGreen") as SolidColorBrush ?? Brushes.Green;
+                    DiscordRmsBar.Foreground = greenBrush;
+                }
+
+                // Emit initial telemetry gauge
+                Telemetry.Gauge("gauge.audio.mic.rms", 0);
+
+                Console.WriteLine("🎵 RMS baseline initialized to 0 for immediate meter display");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to initialize RMS baseline: {ex.Message}");
             }
         }
 
