@@ -1,0 +1,18 @@
+task: 0023 - Backpressure: bounded channels with drop policy & cancellation propagation
+why:
+  symptoms:
+    - "Tail build-up risk; duplicate dispatch; potential stuck states."
+  diagnosis: >
+    Unbounded queues cause latency spikes. Use bounded channels/ring buffers per pipeline stage with explicit policy.
+scope:
+  repo: graftonnathan/Kinectv1
+  branch: dev
+changes:
+  - "Use System.Threading.Channels for Mic→ASR, Discord→ASR, LLM→TTS."
+  - "Policies: ASR frames drop-oldest; UI updates latest-wins; TTS queue length=1 with preempt."
+  - "Cancellation tokens plumbed end-to-end."
+acceptance:
+  - "Under burst load, latency remains bounded; no memory growth."
+telemetry:
+  - "gauge.queue.depth.{mic,discord,tts}"
+  - "counter.queue.drop.{mic,discord,tts}"

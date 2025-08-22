@@ -1,0 +1,22 @@
+task: 0019 - Make mic RMS immediate & stable
+why:
+  symptoms:
+    - "Mic RMS UI takes ~30s to start despite STT working."
+  diagnosis: >
+    RMS callback likely subscribed after pipeline warm-up or throttled by UI timer. Compute RMS in the audio callback
+    from the first buffer, publish via event to UI dispatcher at 30–60Hz.
+scope:
+  repo: graftonnathan/Kinectv1
+  branch: dev
+changes:
+  - "AudioUtils/VoiceRecognizer: compute RMS per 20ms frame; raise OnRms(float)."
+  - "MainWindow: subscribe at startup; throttle to 30–60Hz with latest-value wins."
+  - "Initialize baseline RMS=0 immediately to render the meter."
+steps:
+  - "Remove any Task.Delay-based warm-ups; avoid LINQ allocations."
+  - "Ensure first RMS update within 200ms of mic start."
+acceptance:
+  - "RMS responds within 200ms after enabling mic."
+  - "No UI freezes; CPU < 2% for RMS path."
+telemetry:
+  - "gauge.audio.mic.rms"

@@ -1,0 +1,25 @@
+task: 0018 - Tighten TTS preemption & ASR gating (stop unprompted replies / echo)
+why:
+  symptoms:
+    - "TTS responds unprompted; ASR picks up its own TTS or loopback."
+    - "Barge-in disabled, yet ASR dispatch still fires."
+  diagnosis: >
+    Need a shared playback state: while TTS speaking, suppress ASR dispatch (still compute VAD, but do not commit partial/final).
+    Also unify mid-utterance preemption to avoid silent headers/stuck states.
+scope:
+  repo: graftonnathan/Kinectv1
+  branch: dev
+changes:
+  - "OllamaService/VoiceProcessor: incorporate an ASR Suppressor token when TTS Active."
+  - "CoquiTTS/Kokoro: Preempt() cancels synthesis & playback atomically; finalizer drains buffers."
+  - "Wake-word or push-to-talk gate for Local scenario before dispatch to LLM."
+steps:
+  - "Add IPlaybackState with bool IsSpeaking + CancellationToken; raise events OnStart/OnStop."
+  - "In VoiceProcessor.TryDispatchToOllama: return early if IsSpeaking==true and barge-in disabled."
+  - "Fix stream headers: write headers only after first non-empty PCM chunk is available."
+acceptance:
+  - "No LLM/TTS dispatch during active playback when barge-in disabled."
+  - "Preemption leaves audio device clean; follow-on TTS starts within 150ms."
+telemetry:
+  - "gauge.tts.active {0|1}"
+  - "counter.asr.dispatch_blocked_due_to_tts"

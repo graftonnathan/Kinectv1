@@ -1,0 +1,15 @@
+task: 0020 - Diagnostics page: add ScrollViewer & copy/export
+why:
+  symptoms:
+    - "Cannot scroll to lower data in diagnostics."
+  diagnosis: "Panel lacks a ScrollViewer or has fixed height content."
+scope:
+  repo: graftonnathan/Kinectv1
+  branch: dev
+changes:
+  - "MainWindow.xaml: wrap diagnostics content in <ScrollViewer VerticalScrollBarVisibility='Auto'>."
+  - "Add 'Copy' and 'Save to .txt' buttons."
+  - "Virtualize lists; group sections (Audio, Discord, TTS, ASR, System)."
+acceptance:
+  - "Mouse wheel and scrollbar work; all sections reachable."
+  - "Copy/Save exports the current diagnostics text."

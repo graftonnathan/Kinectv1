@@ -1,0 +1,29 @@
+task: 0017 - Fix eSpeak IPA timeouts & mojibake → stable Kokoro phonemes
+why:
+  symptoms:
+    - "eSpeak timeouts (2.1–8s), frequent retries."
+    - "Unknown IPA symbols like 'Γòö', '├¬' (mojibake)."
+    - "Gibberish output from TTS."
+  diagnosis: >
+    eSpeak stdio is being read with wrong encoding or spawned excessively per chunk. Create a long-lived worker process with UTF-8
+    I/O, queue requests, and add output sanitization. Cache frequent phrases. Fallback to grapheme G2P if eSpeak stalls.
+scope:
+  repo: graftonnathan/Kinectv1
+  branch: dev
+changes:
+  - "KokoroTtsService.cs: eSpeakWorker (single process), StandardOutputEncoding=UTF-8, idle keepalive."
+  - "Add IPA cache (LRU 256 entries) keyed by lowercase text."
+  - "Timeout policy: 1.5s soft-cancel → 1 retry; then fallback to direct text or simplified rules."
+  - "Strip/normalize Unicode punctuation before eSpeak; map smart quotes to ASCII."
+steps:
+  - "Refactor to one worker thread consuming a BlockingCollection<{text, tcs}>."
+  - "Validate IPA charset; replace unsupported symbols; log count only."
+  - "Add setting to bypass eSpeak temporarily for troubleshooting."
+acceptance:
+  - "No eSpeak timeouts in a 2-minute read-aloud test."
+  - "No 'Unknown IPA symbols' logs; intelligible voice."
+  - "TTS latency p50 < 200ms for short phrases."
+telemetry:
+  - "counter.tts.espeak.requests"
+  - "counter.tts.espeak.timeouts"
+  - "timer.tts.pipeline.ms"
