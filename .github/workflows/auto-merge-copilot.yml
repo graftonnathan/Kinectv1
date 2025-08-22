@@ -1,0 +1,191 @@
+name: Auto-merge Copilot PRs to dev
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled, ready_for_review]
+    branches: [dev]
+  # Optional: manual trigger
+  workflow_dispatch: {}
+
+permissions:
+  contents: write            # needed to merge & delete branch
+  pull-requests: write       # needed to read/update PRs
+  checks: read               # read check statuses
+  statuses: read             # read combined status
+  actions: read              # read workflow conclusions
+
+concurrency:
+  group: ${{ github.repository }}-copilot-merge
+  cancel-in-progress: false  # queue merges; never run two at once
+
+jobs:
+  guard-and-merge:
+    runs-on: ubuntu-latest
+    env:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      WORKFLOW_APPROVER_TOKEN: ${{ secrets.WORKFLOW_APPROVER_TOKEN }}
+      ALLOWED_AUTHORS: "github-actions[bot],github-copilot,notamouse7260,graftonnathan"
+
+    steps:
+      - name: Dump PR context (debug)
+        if: github.event_name == 'pull_request'
+        run: |
+          echo "PR #${{ github.event.pull_request.number }}"
+          echo "Author: ${{ github.event.pull_request.user.login }}"
+          echo "Base:   ${{ github.event.pull_request.base.ref }}"
+          echo "Labels:  $(jq -r '.pull_request.labels[].name' <<< '${{ toJson(github.event) }}' | tr '\n' ',')"
+
+      - name: Validate PR is eligible
+        id: gate
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            if (!pr) core.setFailed("Not a PR event.");
+
+            // Base branch must be dev
+            if (pr.base.ref !== "dev") {
+              core.notice(`Skipping: base is ${pr.base.ref}, not dev.`);
+              core.setOutput("skip", "true");
+              return;
+            }
+
+            // Author allowlist
+            const allow = (process.env.ALLOWED_AUTHORS || "").split(",").map(s => s.trim()).filter(Boolean);
+            if (allow.length && !allow.includes(pr.user.login)) {
+              core.notice(`Skipping: author ${pr.user.login} not in allowlist.`);
+              core.setOutput("skip", "true");
+              return;
+            }
+
+            // Must not be draft
+            if (pr.draft) {
+              core.notice("Skipping: PR is draft.");
+              core.setOutput("skip", "true");
+              return;
+            }
+
+            // Label gate: require 'copilot:ready'
+            const hasReady = pr.labels?.some(l => l.name === "copilot:ready");
+            if (!hasReady) {
+              core.notice("Skipping: missing 'copilot:ready' label.");
+              core.setOutput("skip", "true");
+              return;
+            }
+
+            // Check rollup (SUCCESS or no checks)
+            const { owner, repo } = context.repo;
+            const number = pr.number;
+
+            const q = `query($owner:String!, $repo:String!, $number:Int!) {
+              repository(owner:$owner, name:$repo) {
+                pullRequest(number:$number) {
+                  commits(last: 1) {
+                    nodes {
+                      commit {
+                        statusCheckRollup { state }  # SUCCESS, FAILURE, PENDING, null
+                      }
+                    }
+                  }
+                }
+              }
+            }`;
+
+            const r = await github.graphql(q, { owner, repo, number });
+            const rollup = r.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup;
+            const state = rollup?.state || "NO_CHECKS";
+            core.info(`statusCheckRollup: ${state}`);
+
+            if (state === "FAILURE" || state === "PENDING") {
+              core.notice(`Skipping: checks are ${state}.`);
+              core.setOutput("skip", "true");
+              return;
+            }
+
+            // If we got here, we plan to merge
+            core.setOutput("skip", "false");
+            core.setOutput("headRef", pr.head.ref);
+            core.setOutput("number", String(pr.number));
+            core.setOutput("title", pr.title);
+            core.setOutput("url", pr.html_url);
+
+      - name: Exit early when gated
+        if: steps.gate.outputs.skip == 'true'
+        run: echo "Conditions not met; exiting."
+
+      # Optional: approve review if branch rules require it and PAT is provided
+      - name: Auto-approve PR review (optional)
+        if: steps.gate.outputs.skip == 'false' && env.WORKFLOW_APPROVER_TOKEN != ''
+        run: |
+          curl -sS -X POST \
+            -H "Authorization: token ${WORKFLOW_APPROVER_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/pulls/${{ steps.gate.outputs.number }}/reviews" \
+            -d '{"event":"APPROVE","body":"Automated approval: Copilot task marked complete."}' \
+            || echo "Review approval not needed or failed (non-blocking)."
+
+      - name: Merge PR (squash)
+        id: merge
+        if: steps.gate.outputs.skip == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const number = Number(core.getInput("number"));
+          result-encoding: string
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          result-encoding: string
+        env:
+          number: ${{ steps.gate.outputs.number }}
+        # Re-declare step due to actions/github-script input semantics
+      - name: Merge via API
+        if: steps.gate.outputs.skip == 'false'
+        run: |
+          set -e
+          OWNER="${GITHUB_REPOSITORY%/*}"
+          REPO="${GITHUB_REPOSITORY#*/}"
+          NUM="${{ steps.gate.outputs.number }}"
+          TITLE="${{ steps.gate.outputs.title }}"
+          BODY="Auto-merged by Copilot task runner."
+          # Try with GITHUB_TOKEN first
+          curl -sS -f -X PUT \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$OWNER/$REPO/pulls/$NUM/merge" \
+            -d "$(jq -n --arg t "$TITLE" --arg b "$BODY" --arg m "squash" '{commit_title:$t, commit_message:$b, merge_method:$m}')" \
+          || { 
+            echo "Fallback: trying PAT for merge...";
+            curl -sS -f -X PUT \
+              -H "Authorization: token ${WORKFLOW_APPROVER_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$OWNER/$REPO/pulls/$NUM/merge" \
+              -d "$(jq -n --arg t "$TITLE" --arg b "$BODY" --arg m "squash" '{commit_title:$t, commit_message:$b, merge_method:$m}')";
+          }
+
+      - name: Delete branch (head)
+        if: steps.gate.outputs.skip == 'false'
+        run: |
+          OWNER="${GITHUB_REPOSITORY%/*}"
+          REPO="${GITHUB_REPOSITORY#*/}"
+          REF="heads/${{ steps.gate.outputs.headRef }}"
+          # Ignore failure if branch already deleted
+          curl -sS -X DELETE \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$OWNER/$REPO/git/refs/$REF" \
+            || true
+
+      - name: Notify Discord (optional)
+        if: steps.gate.outputs.skip == 'false' && env.DISCORD_WEBHOOK_URL != ''
+        run: |
+          MSG="✅ Auto-merged PR #${{ steps.gate.outputs.number }} into dev
+${{ steps.gate.outputs.title }}
+${{ steps.gate.outputs.url }}"
+          python - <<'PY' > payload.json
+import json, os, sys
+content = os.environ.get("MSG","")
+sys.stdout.write(json.dumps({"content": content}))
+PY
+          curl -sS -X POST -H "Content-Type: application/json" \
+            --data-binary @payload.json "$DISCORD_WEBHOOK_URL" || true
