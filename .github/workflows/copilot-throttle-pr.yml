@@ -22,13 +22,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "GH_TOKEN=${GH_TOKEN}" >> "$GITHUB_ENV"
+          echo "REPO=${{ github.repository }}" >> "$GITHUB_ENV"
           gh --version
 
       # Guard: only act for PRs and only when assignee is *Copilot*
       - name: Guard & capture PR number
         id: guard
         run: |
-          # Is this an issue that is actually a PR?
           if [ -z "${{ github.event.issue.pull_request }}" ]; then
             echo "is_pr=false" >> $GITHUB_OUTPUT
             exit 0
@@ -36,7 +36,6 @@ jobs:
           echo "is_pr=true" >> $GITHUB_OUTPUT
           echo "pr=${{ github.event.issue.number }}" >> $GITHUB_OUTPUT
 
-          # Is the assignee Copilot (exact login)?
           if [ "${{ github.event.assignee.login }}" = "Copilot" ]; then
             echo "is_copilot=true" >> $GITHUB_OUTPUT
           else
@@ -53,7 +52,7 @@ jobs:
         run: |
           set -euo pipefail
           CURRENT="${{ steps.guard.outputs.pr }}"
-          JSON=$(gh pr list --state open --json number,assignees)
+          JSON=$(gh pr list -R "$REPO" --state open --json number,assignees)
           BUSY=$(jq --arg cur "$CURRENT" '
             [ .[]
               | select(.number != ($cur|tonumber))
@@ -67,8 +66,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           PR="${{ steps.guard.outputs.pr }}"
-          gh pr edit "$PR" --remove-assignee "Copilot" || true
-          gh pr comment "$PR" --body "⏸️ Copilot is already working on another PR. This one will be picked up automatically when free."
+          gh pr edit -R "$REPO" "$PR" --remove-assignee "Copilot" || true
+          gh pr comment -R "$REPO" "$PR" --body "⏸️ Copilot is already working on another PR. This one will be picked up automatically when free."
 
       - name: Auto-approve (Copilot is free)
         if: steps.busy.outputs.busy == '0'
@@ -76,8 +75,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
         run: |
           PR="${{ steps.guard.outputs.pr }}"
-          # Approve (PAT recommended so the review counts under branch protection)
-          gh pr review "$PR" --approve -b "Auto-approved for Copilot automerge"
+          gh pr review -R "$REPO" "$PR" --approve -b "Auto-approved for Copilot automerge"
 
       - name: Enable Auto-Merge (squash + delete branch)
         if: steps.busy.outputs.busy == '0'
@@ -85,4 +83,5 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
         run: |
           PR="${{ steps.guard.outputs.pr }}"
-          gh pr merge "$PR" --auto --squash --delete-branch || true
+          gh pr merge -R "$REPO" "$PR" --auto --squash --delete-branch || true
+
