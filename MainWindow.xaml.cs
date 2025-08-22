@@ -1732,9 +1732,15 @@ namespace Kinectv1
         {
             try
             {
-                // Set initial states from VoiceRecognizer (defaults to enabled)
+                // Initialize audio input state based on saved AudioInMode setting
+                var audioMode = AppSettings.LoadAudioInMode();
+                
+                // Set Discord input enabled if mode is DiscordVoice
+                _isDiscordInputEnabled = (audioMode == AudioInMode.DiscordVoice);
+                VoiceRecognizer.SetDiscordInputEnabled(_isDiscordInputEnabled);
+                
+                // Set microphone input enabled (for now, always enabled in LocalMic mode)
                 _isMicrophoneInputEnabled = VoiceRecognizer.IsMicrophoneInputEnabled();
-                _isDiscordInputEnabled = VoiceRecognizer.IsDiscordInputEnabled();
 
                 // Update UI checkboxes to match states
                 if (MicInputEnabledCheckBox != null)
@@ -1748,7 +1754,9 @@ namespace Kinectv1
                 }
 
                 Console.WriteLine($"🎛️ Audio input controls initialized:");
+                Console.WriteLine($"   Audio Input Mode: {audioMode}");
                 Console.WriteLine($"   Microphone: {(_isMicrophoneInputEnabled ? "Enabled" : "Disabled")}");
+                Console.WriteLine($"   Discord Input: {(_isDiscordInputEnabled ? "Enabled" : "Disabled")}");
 
                 // Update status displays
                 UpdateMicrophoneStatus();
@@ -2244,9 +2252,11 @@ namespace Kinectv1
         {
             try
             {
+                // Set audio input mode to Discord voice channel
+                AppSettings.SaveAudioInMode(AudioInMode.DiscordVoice);
                 _isDiscordInputEnabled = true;
                 VoiceRecognizer.SetDiscordInputEnabled(true);
-                Console.WriteLine("🤖 Discord input enabled via UI");
+                Console.WriteLine("🤖 Discord voice input enabled via UI (AudioInMode=DiscordVoice)");
 
                 // Update RMS display to show it's active
                 UpdateDiscordStatus();
@@ -2261,9 +2271,11 @@ namespace Kinectv1
         {
             try
             {
+                // Set audio input mode back to local microphone
+                AppSettings.SaveAudioInMode(AudioInMode.LocalMic);
                 _isDiscordInputEnabled = false;
                 VoiceRecognizer.SetDiscordInputEnabled(false);
-                Console.WriteLine("🤖 Discord input disabled via UI");
+                Console.WriteLine("🤖 Discord input disabled via UI (AudioInMode=LocalMic)");
 
                 // Clear Discord RMS display
                 UpdateDiscordStatus();

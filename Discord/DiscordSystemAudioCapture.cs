@@ -21,6 +21,14 @@ namespace Kinectv1.Discord
             {
                 if (_isRunning) return;
 
+                // Guard: Do not start system loopback when Discord voice ingest is active
+                var audioMode = AppSettings.LoadAudioInMode();
+                if (audioMode == AudioInMode.DiscordVoice)
+                {
+                    Console.WriteLine("🚫 System loopback capture blocked - Discord voice ingest is active");
+                    return;
+                }
+
                 try
                 {
                     _capture = new WasapiLoopbackCapture(); // default output device
@@ -31,6 +39,9 @@ namespace Kinectv1.Discord
                     _capture.StartRecording();
                     _isRunning = true;
                     Console.WriteLine("?? System loopback capture started (default output)");
+                    
+                    // Update telemetry gauge - system loopback is active
+                    Telemetry.Counter("audio.ingest.active", 1);
                 }
                 catch (Exception ex)
                 {
@@ -60,7 +71,11 @@ namespace Kinectv1.Discord
                 finally
                 {
                     if (_isRunning)
+                    {
                         Console.WriteLine("?? System loopback capture stopped");
+                        // Update telemetry gauge - system loopback is inactive
+                        Telemetry.Counter("audio.ingest.active", 0);
+                    }
                     _isRunning = false;
                 }
             }
