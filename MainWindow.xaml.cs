@@ -25,6 +25,12 @@ namespace Kinectv1
         private CancellationTokenSource _cancellationTokenSource = new CancellationTokenSource();
         private bool _isClosing = false;
 
+        // Latest-wins UI update mechanism to prevent update queue buildup
+        private volatile float _latestRmsValue = 0f;
+        private volatile float _latestDiscordRmsValue = 0f;
+        private volatile int _rmsUpdatePending = 0; // 0 = no update pending, 1 = update pending
+        private volatile int _discordRmsUpdatePending = 0;
+
         // ENHANCED DOUBLE REGISTRATION PREVENTION - Discord initialization protection
         private static int _discordInitInProgress = 0; // 0 = not in progress, 1 = in progress
 
@@ -465,43 +471,70 @@ namespace Kinectv1
         {
             if (_isClosing) return; // Prevent UI updates during shutdown
 
-            try
+            // Latest-wins policy: store the latest value and only dispatch if no update is pending
+            _latestRmsValue = rawRms;
+            
+            // Only schedule an update if one isn't already pending
+            if (Interlocked.CompareExchange(ref _rmsUpdatePending, 1, 0) == 0)
             {
-                Dispatcher.Invoke(() =>
+                try
                 {
-                    if (_isClosing) return; // Double check inside dispatcher
-
-                    // Check if UI elements are still valid
-                    if (RmsBar != null && RmsText != null)
+                    Dispatcher.BeginInvoke(new Action(() =>
                     {
-                        // Only update if microphone input is enabled
-                        if (_isMicrophoneInputEnabled)
+                        try
                         {
-                            // Smooth the RMS values for better visualization
-                            _smoothedRms = 0.7f * _smoothedRms + 0.3f * rawRms;
-                            var scaledRms = Math.Min(100, Math.Max(0, (_smoothedRms / 10000.0f) * 100));
+                            if (_isClosing) return; // Double check inside dispatcher
 
-                            RmsBar.Value = scaledRms;
-                            RmsText.Text = $"RMS: {_smoothedRms:F1} ({scaledRms:F0}%)";
+                            // Get the latest value (may have been updated since dispatch was scheduled)
+                            var currentRms = _latestRmsValue;
+                            
+                            // Check if UI elements are still valid
+                            if (RmsBar != null && RmsText != null)
+                            {
+                                // Only update if microphone input is enabled
+                                if (_isMicrophoneInputEnabled)
+                                {
+                                    // Smooth the RMS values for better visualization
+                                    _smoothedRms = 0.7f * _smoothedRms + 0.3f * currentRms;
+                                    var scaledRms = Math.Min(100, Math.Max(0, (_smoothedRms / 10000.0f) * 100));
 
-                            // FIXED: Color gradient - Green (low/quiet) -> Orange (medium) -> Red (high/loud)
-                            var greenBrush = this.TryFindResource("AccentGreen") as SolidColorBrush ?? Brushes.Green;
-                            var orangeBrush = this.TryFindResource("AccentOrange") as SolidColorBrush ?? Brushes.Orange;
-                            var redBrush = this.TryFindResource("AccentRed") as SolidColorBrush ?? Brushes.Red;
+                                    RmsBar.Value = scaledRms;
+                                    RmsText.Text = $"RMS: {_smoothedRms:F1} ({scaledRms:F0}%)";
 
-                            // FIXED: Proper gradient logic - Low=Green (good), Medium=Orange, High=Red (loud/bad)
-                            if (scaledRms <= 33)
-                                RmsBar.Foreground = greenBrush;     // 0-33% = Green (quiet/good)
-                            else if (scaledRms <= 66)
-                                RmsBar.Foreground = orangeBrush;    // 34-66% = Orange (medium)
-                            else
-                                RmsBar.Foreground = redBrush;       // 67-100% = Red (loud/bad)
+                                    // FIXED: Color gradient - Green (low/quiet) -> Orange (medium) -> Red (high/loud)
+                                    var greenBrush = this.TryFindResource("AccentGreen") as SolidColorBrush ?? Brushes.Green;
+                                    var orangeBrush = this.TryFindResource("AccentOrange") as SolidColorBrush ?? Brushes.Orange;
+                                    var redBrush = this.TryFindResource("AccentRed") as SolidColorBrush ?? Brushes.Red;
+
+                                    // FIXED: Proper gradient logic - Low=Green (good), Medium=Orange, High=Red (loud/bad)
+                                    if (scaledRms <= 33)
+                                        RmsBar.Foreground = greenBrush;     // 0-33% = Green (quiet/good)
+                                    else if (scaledRms <= 66)
+                                        RmsBar.Foreground = orangeBrush;    // 34-66% = Orange (medium)
+                                    else
+                                        RmsBar.Foreground = redBrush;       // 67-100% = Red (loud/bad)
+                                }
+                                // If disabled, the UpdateMicrophoneStatus() method handles the display
+                            }
                         }
-                        // If disabled, the UpdateMicrophoneStatus() method handles the display
+                        finally
+                        {
+                            // Reset the pending flag to allow future updates
+                            Interlocked.Exchange(ref _rmsUpdatePending, 0);
+                        }
+                    }), DispatcherPriority.Background);
+                }
+                catch (Exception ex)
+                {
+                    // Reset the pending flag if dispatch failed
+                    Interlocked.Exchange(ref _rmsUpdatePending, 0);
+                    if (!_isClosing)
+                    {
+                        Console.WriteLine($"Error scheduling RMS update: {ex.Message}");
                     }
-                });
+                }
             }
-            catch (Exception ex)
+        }
             {
                 // Suppress exceptions during shutdown
                 if (!_isClosing)
@@ -518,50 +551,69 @@ namespace Kinectv1
         {
             if (_isClosing) return; // Prevent UI updates during shutdown
 
-            try
+            // Latest-wins policy: store the latest value and only dispatch if no update is pending
+            _latestDiscordRmsValue = rawRms;
+            
+            // Only schedule an update if one isn't already pending
+            if (Interlocked.CompareExchange(ref _discordRmsUpdatePending, 1, 0) == 0)
             {
-                Dispatcher.Invoke(() =>
+                try
                 {
-                    if (_isClosing) return; // Double check inside dispatcher
-
-                    // Check if UI elements are still valid
-                    if (DiscordRmsBar != null && DiscordRmsText != null)
+                    Dispatcher.BeginInvoke(new Action(() =>
                     {
-                        // Only update if Discord input is enabled
-                        if (_isDiscordInputEnabled)
+                        try
                         {
-                            // Smooth the Discord RMS values for better visualization
-                            _smoothedDiscordRms = 0.7f * _smoothedDiscordRms + 0.3f * rawRms;
-                            
-                            // Discord audio uses a different scaling since it's typically normalized differently
-                            var scaledRms = Math.Min(100, Math.Max(0, (_smoothedDiscordRms / 1000.0f) * 100));
+                            if (_isClosing) return; // Double check inside dispatcher
 
-                            DiscordRmsBar.Value = scaledRms;
-                            DiscordRmsText.Text = $"RMS: {_smoothedDiscordRms:F1} ({scaledRms:F0}%)";
+                            // Get the latest value (may have been updated since dispatch was scheduled)
+                            var currentRms = _latestDiscordRmsValue;
 
-                            // Color gradient for Discord - Blue theme
-                            var blueBrush = this.TryFindResource("AccentBlue") as SolidColorBrush ?? Brushes.Blue;
-                            var purpleBrush = this.TryFindResource("AccentPurple") as SolidColorBrush ?? Brushes.Purple;
-                            var orangeBrush = this.TryFindResource("AccentOrange") as SolidColorBrush ?? Brushes.Orange;
+                            // Check if UI elements are still valid
+                            if (DiscordRmsBar != null && DiscordRmsText != null)
+                            {
+                                // Only update if Discord input is enabled
+                                if (_isDiscordInputEnabled)
+                                {
+                                    // Smooth the Discord RMS values for better visualization
+                                    _smoothedDiscordRms = 0.7f * _smoothedDiscordRms + 0.3f * currentRms;
+                                    
+                                    // Discord audio uses a different scaling since it's typically normalized differently
+                                    var scaledRms = Math.Min(100, Math.Max(0, (_smoothedDiscordRms / 1000.0f) * 100));
 
-                            // Discord-specific color gradient
-                            if (scaledRms <= 33)
-                                DiscordRmsBar.Foreground = blueBrush;      // 0-33% = Blue (quiet)
-                            else if (scaledRms <= 66)
-                                DiscordRmsBar.Foreground = purpleBrush;    // 34-66% = Purple (medium)
-                            else
-                                DiscordRmsBar.Foreground = orangeBrush;    // 67-100% = Orange (loud)
+                                    DiscordRmsBar.Value = scaledRms;
+                                    DiscordRmsText.Text = $"RMS: {_smoothedDiscordRms:F1} ({scaledRms:F0}%)";
+
+                                    // Color gradient for Discord - Blue theme
+                                    var blueBrush = this.TryFindResource("AccentBlue") as SolidColorBrush ?? Brushes.Blue;
+                                    var purpleBrush = this.TryFindResource("AccentPurple") as SolidColorBrush ?? Brushes.Purple;
+                                    var orangeBrush = this.TryFindResource("AccentOrange") as SolidColorBrush ?? Brushes.Orange;
+
+                                    // Discord-specific color gradient
+                                    if (scaledRms <= 33)
+                                        DiscordRmsBar.Foreground = blueBrush;      // 0-33% = Blue (quiet)
+                                    else if (scaledRms <= 66)
+                                        DiscordRmsBar.Foreground = purpleBrush;    // 34-66% = Purple (medium)
+                                    else
+                                        DiscordRmsBar.Foreground = orangeBrush;    // 67-100% = Orange (loud)
+                                }
+                                // If disabled, the UpdateDiscordStatus() method handles the display
+                            }
                         }
-                        // If disabled, the UpdateDiscordStatus() method handles the display
-                    }
-                });
-            }
-            catch (Exception ex)
-            {
-                // Suppress exceptions during shutdown
-                if (!_isClosing)
+                        finally
+                        {
+                            // Reset the pending flag to allow future updates
+                            Interlocked.Exchange(ref _discordRmsUpdatePending, 0);
+                        }
+                    }), DispatcherPriority.Background);
+                }
+                catch (Exception ex)
                 {
-                    Console.WriteLine($"Error updating Discord RMS level: {ex.Message}");
+                    // Reset the pending flag if dispatch failed
+                    Interlocked.Exchange(ref _discordRmsUpdatePending, 0);
+                    if (!_isClosing)
+                    {
+                        Console.WriteLine($"Error scheduling Discord RMS update: {ex.Message}");
+                    }
                 }
             }
         }
