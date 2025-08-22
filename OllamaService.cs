@@ -37,56 +37,97 @@ namespace Kinectv1
 
         static OllamaService()
         {
-            // Set a reasonable timeout for Ollama requests
-            _httpClient.Timeout = TimeSpan.FromMinutes(2);
-            
-            // UPDATED: Load saved model from AppSettings
-            var savedModel = AppSettings.LoadOllamaModel();
-            if (!string.IsNullOrEmpty(savedModel))
+            try
             {
-                _defaultModel = savedModel;
-                Console.WriteLine($"?? Loaded saved Ollama model from settings: {_defaultModel}");
-            }
-            else
-            {
-                Console.WriteLine($"?? Using default Ollama model: {_defaultModel}");
-            }
-            
-            // Load saved enabled state from AppSettings
-            var savedEnabled = AppSettings.LoadOllamaEnabled();
-            _isEnabled = savedEnabled;
-            Console.WriteLine($"?? Loaded Ollama enabled state from settings: {_isEnabled}");
-            
-            // Load system prompt on startup
-            LoadSystemPrompt();
-            
-            // Initialize conversation memory with settings from App.config
-            var maxMessagesPerSpeaker = AppSettings.LoadOllamaMaxMessagesPerSpeaker();
-            var maxSystemMessages = AppSettings.LoadOllamaMaxSystemMessages();
-            var timeoutMinutes = AppSettings.LoadOllamaConversationTimeoutMinutes();
-            var memoryEnabled = AppSettings.LoadOllamaMemoryEnabled();
-            
-            // NEW: Set 4000 token limit and enable file archiving as requested
-            var maxTokensPerConversation = 4000;
-            var createNewFileOnLimit = true;  // Enable new file creation instead of trimming
-            
-            if (memoryEnabled)
-            {
-                OllamaConversationManager.ConfigureMemory(
-                    maxMessagesPerSpeaker: maxMessagesPerSpeaker,
-                    maxSystemMessages: maxSystemMessages,
-                    conversationTimeout: TimeSpan.FromMinutes(timeoutMinutes),
-                    maxTokensPerConversation: maxTokensPerConversation,
-                    createNewFileOnLimit: createNewFileOnLimit
-                );
+                // Set a reasonable timeout for Ollama requests
+                _httpClient.Timeout = TimeSpan.FromMinutes(2);
                 
-                Console.WriteLine("?? OllamaService initialized with conversation memory support");
-                Console.WriteLine($"?? Token limit: {maxTokensPerConversation} tokens per conversation");
-                Console.WriteLine($"?? Archive mode: {(createNewFileOnLimit ? "Create new files on limit" : "Trim existing files")}");
+                // UPDATED: Load saved model from AppSettings
+                try
+                {
+                    var savedModel = AppSettings.LoadOllamaModel();
+                    if (!string.IsNullOrEmpty(savedModel))
+                    {
+                        _defaultModel = savedModel;
+                        Console.WriteLine($"?? Loaded saved Ollama model from settings: {_defaultModel}");
+                    }
+                    else
+                    {
+                        Console.WriteLine($"?? Using default Ollama model: {_defaultModel}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"? Warning: Failed to load Ollama model setting, using default: {ex.Message}");
+                }
+                
+                // Load saved enabled state from AppSettings
+                try
+                {
+                    var savedEnabled = AppSettings.LoadOllamaEnabled();
+                    _isEnabled = savedEnabled;
+                    Console.WriteLine($"?? Loaded Ollama enabled state from settings: {_isEnabled}");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"? Warning: Failed to load Ollama enabled setting, using default (false): {ex.Message}");
+                    _isEnabled = false;
+                }
+                
+                // Load system prompt on startup
+                try
+                {
+                    LoadSystemPrompt();
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"? Warning: Failed to load system prompt, using default: {ex.Message}");
+                    _systemPrompt = "You are a helpful AI assistant.";
+                }
+                
+                // Initialize conversation memory with settings from App.config
+                try
+                {
+                    var maxMessagesPerSpeaker = AppSettings.LoadOllamaMaxMessagesPerSpeaker();
+                    var maxSystemMessages = AppSettings.LoadOllamaMaxSystemMessages();
+                    var timeoutMinutes = AppSettings.LoadOllamaConversationTimeoutMinutes();
+                    var memoryEnabled = AppSettings.LoadOllamaMemoryEnabled();
+                    
+                    // NEW: Set 4000 token limit and enable file archiving as requested
+                    var maxTokensPerConversation = 4000;
+                    var createNewFileOnLimit = true;  // Enable new file creation instead of trimming
+                    
+                    if (memoryEnabled)
+                    {
+                        OllamaConversationManager.ConfigureMemory(
+                            maxMessagesPerSpeaker: maxMessagesPerSpeaker,
+                            maxSystemMessages: maxSystemMessages,
+                            conversationTimeout: TimeSpan.FromMinutes(timeoutMinutes),
+                            maxTokensPerConversation: maxTokensPerConversation,
+                            createNewFileOnLimit: createNewFileOnLimit
+                        );
+                        
+                        Console.WriteLine("?? OllamaService initialized with conversation memory support");
+                        Console.WriteLine($"?? Token limit: {maxTokensPerConversation} tokens per conversation");
+                        Console.WriteLine($"?? Archive mode: {(createNewFileOnLimit ? "Create new files on limit" : "Trim existing files")}");
+                    }
+                    else
+                    {
+                        Console.WriteLine("?? OllamaService initialized with conversation memory DISABLED");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"? Warning: Failed to initialize conversation memory, feature disabled: {ex.Message}");
+                }
             }
-            else
+            catch (Exception ex)
             {
-                Console.WriteLine("?? OllamaService initialized with conversation memory DISABLED");
+                Console.WriteLine($"? Error: OllamaService static constructor failed: {ex.Message}");
+                Console.WriteLine($"? Stack trace: {ex.StackTrace}");
+                // Ensure basic fields are initialized even if setup fails
+                _isEnabled = false;
+                _systemPrompt = "You are a helpful AI assistant.";
             }
         }
 
