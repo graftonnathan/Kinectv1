@@ -209,18 +209,6 @@
 	  <None Include=".github\workflows\asr-testing.yml" />
 	  <None Include=".github\workflows\copilot-task-runner.yml" />
 	  <None Include=".github\workflows\pr-summary.yml" />
-	  <None Include=".guidance\tasks\0000-template.yml" />
-	  <None Include=".guidance\tasks\0001-vad-dispatch-hardening.yml" />
-	  <None Include=".guidance\tasks\0002-telemetry.yml" />
-	  <None Include=".guidance\tasks\0003-backpressure.yml" />
-	  <None Include=".guidance\tasks\0004-tts-preemption.yml" />
-	  <None Include=".guidance\tasks\0005-asr-resampler.yml" />
-	  <None Include=".guidance\tasks\0006-speaker-fusion.yml" />
-	  <None Include=".guidance\tasks\0007-config-diagnostics.yml" />
-	  <None Include=".guidance\tasks\0008-threading-lifecycle.yml" />
-	  <None Include=".guidance\tasks\0009-error-taxonomy.yml" />
-	  <None Include=".guidance\tasks\0010-testing-harness.yml" />
-	  <None Include=".guidance\tasks\0011-performance.yml" />
 	</ItemGroup>
 
 	<!-- Enhanced verification with prompt files -->
