@@ -694,9 +694,7 @@
                 </Grid>
             </TabItem>
 
-            <!-- Models Configuration Tab -->
-            <TabItem Header="🧠 Models">
-                <local:ModelsSettingsView Margin="0,10,0,0"/>
+
             </TabItem>
 
             <!-- Diagnostics Tab -->

@@ -2715,5 +2715,137 @@ namespace Kinectv1
                 LogSettingError("AudioInMode", $"SAVE FAILED: {ex.Message}");
             }
         }
+        /// <summary>
+        /// Load audio input device ID
+        /// </summary>
+        public static int LoadAudioInputDeviceId()
+        {
+            try
+            {
+                var setting = GetApplicationSetting("AudioInputDeviceId") ?? "-1";
+                return int.TryParse(setting, out int value) ? value : -1;
+            }
+            catch (Exception ex)
+            {
+                LogSettingError("AudioInputDeviceId", ex.Message);
+                return -1;
+            }
+        }
+
+        /// <summary>
+        /// Save audio input device ID
+        /// </summary>
+        public static void SaveAudioInputDeviceId(int deviceId)
+        {
+            try
+            {
+                SetApplicationSetting("AudioInputDeviceId", deviceId.ToString());
+                Console.WriteLine($"💾 Saved audio input device ID: {deviceId}");
+            }
+            catch (Exception ex)
+            {
+                LogSettingError("AudioInputDeviceId", ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Load audio output device ID
+        /// </summary>
+        public static int LoadAudioOutputDeviceId()
+        {
+            try
+            {
+                var setting = GetApplicationSetting("AudioOutputDeviceId") ?? "-1";
+                return int.TryParse(setting, out int value) ? value : -1;
+            }
+            catch (Exception ex)
+            {
+                LogSettingError("AudioOutputDeviceId", ex.Message);
+                return -1;
+            }
+        }
+
+        /// <summary>
+        /// Save audio output device ID
+        /// </summary>
+        public static void SaveAudioOutputDeviceId(int deviceId)
+        {
+            try
+            {
+                SetApplicationSetting("AudioOutputDeviceId", deviceId.ToString());
+                Console.WriteLine($"💾 Saved audio output device ID: {deviceId}");
+            }
+            catch (Exception ex)
+            {
+                LogSettingError("AudioOutputDeviceId", ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Load microphone VAD threshold
+        /// </summary>
+        public static int LoadMicVadThreshold()
+        {
+            try
+            {
+                var setting = GetApplicationSetting("MicVadThreshold") ?? "300";
+                return int.TryParse(setting, out int value) ? value : 300;
+            }
+            catch (Exception ex)
+            {
+                LogSettingError("MicVadThreshold", ex.Message);
+                return 300;
+            }
+        }
+
+        /// <summary>
+        /// Save microphone VAD threshold
+        /// </summary>
+        public static void SaveMicVadThreshold(int threshold)
+        {
+            try
+            {
+                SetApplicationSetting("MicVadThreshold", threshold.ToString());
+                Console.WriteLine($"💾 Saved microphone VAD threshold: {threshold}");
+            }
+            catch (Exception ex)
+            {
+                LogSettingError("MicVadThreshold", ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Load Discord VAD threshold
+        /// </summary>
+        public static int LoadDiscordVadThreshold()
+        {
+            try
+            {
+                var setting = GetApplicationSetting("DiscordVadThreshold") ?? "25";
+                return int.TryParse(setting, out int value) ? value : 25;
+            }
+            catch (Exception ex)
+            {
+                LogSettingError("DiscordVadThreshold", ex.Message);
+                return 25;
+            }
+        }
+
+        /// <summary>
+        /// Save Discord VAD threshold
+        /// </summary>
+        public static void SaveDiscordVadThreshold(int threshold)
+        {
+            try
+            {
+                SetApplicationSetting("DiscordVadThreshold", threshold.ToString());
+                Console.WriteLine($"💾 Saved Discord VAD threshold: {threshold}");
+            }
+            catch (Exception ex)
+            {
+                LogSettingError("DiscordVadThreshold", ex.Message);
+            }
+        }
+
     }
 }
