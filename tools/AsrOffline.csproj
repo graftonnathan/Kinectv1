@@ -8,11 +8,11 @@
     <AssemblyTitle>ASR Offline Testing Tool</AssemblyTitle>
   </PropertyGroup>
 
-  <!-- Reference packages with explicit versions -->
+  <!-- Reference packages with central version management -->
   <ItemGroup>
-    <PackageReference Include="Vosk" Version="1.0.28" />
-    <PackageReference Include="NAudio" Version="2.2.1" />
-    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="Vosk" />
+    <PackageReference Include="NAudio" />
+    <PackageReference Include="Newtonsoft.Json" />
   </ItemGroup>
 
   <!-- Copy models if they exist -->
