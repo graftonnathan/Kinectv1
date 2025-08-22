@@ -1,4 +1,4 @@
-name: Copilot Throttle (PR assigned → approve & automerge, no labels)
+name: Copilot Throttle (PR assigned → ready, approve & automerge; no labels)
 
 on:
   pull_request_target:
@@ -9,8 +9,8 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: write        # needed to enable auto-merge & delete branch
-  pull-requests: write   # needed to edit assignees & submit reviews
+  contents: write        # enable auto-merge, delete branch
+  pull-requests: write   # edit assignees, mark ready, submit reviews
   issues: write
 
 jobs:
@@ -58,6 +58,26 @@ jobs:
           gh pr edit -R "$REPO" "$PR" --remove-assignee "Copilot" || true
           gh pr comment -R "$REPO" "$PR" --body "⏸️ Copilot is already working on another PR. It will be picked up automatically when free."
 
+      # NEW: make ready + strip WIP/Draft from title (before approval/auto-merge)
+      - name: Mark ready for review & clean title
+        if: steps.ctx.outputs.assignee == 'Copilot' && steps.busy.outputs.busy == '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          PR="${{ steps.ctx.outputs.pr }}"
+          # 1) Mark ready (no-op if already ready)
+          gh pr ready -R "$REPO" "$PR" || true
+
+          # 2) Remove leading [WIP]/WIP/Draft (case-insensitive) from the title
+          TITLE=$(gh pr view -R "$REPO" "$PR" --json title -q .title)
+          CLEAN=$(printf "%s" "$TITLE" \
+            | sed -E 's/^[[:space:]]*\[?[Ww][Ii][Pp]\]?[[:space:]]*[:\-]*[[:space:]]*//' \
+            | sed -E 's/^[[:space:]]*\[?[Dd]raft\]?[[:space:]]*[:\-]*[[:space:]]*//')
+          if [ "$CLEAN" != "$TITLE" ] && [ -n "$CLEAN" ]; then
+            gh pr edit -R "$REPO" "$PR" --title "$CLEAN"
+          fi
+
       - name: Auto-approve (Copilot is free)
         if: steps.ctx.outputs.assignee == 'Copilot' && steps.busy.outputs.busy == '0'
         env:
@@ -73,6 +93,7 @@ jobs:
         run: |
           PR="${{ steps.ctx.outputs.pr }}"
           gh pr merge -R "$REPO" "$PR" --auto --squash --delete-branch || true
+
 
           PR="${{ steps.guard.outputs.pr }}"
           gh pr merge -R "$REPO" "$PR" --auto --squash --delete-branch || true
