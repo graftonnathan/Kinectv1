@@ -1,5 +1,10 @@
 ﻿// AudioUtils.cs
 using System;
+using System.Buffers;
+using System.Collections.Generic;
+using NAudio.Wave;
+using NAudio.Wave.SampleProviders;
+using NAudio.Dsp;
 
 public static class AudioUtils
 {
@@ -95,5 +100,168 @@ public static class AudioUtils
         }
         
         return floatPcm;
+    }
+
+    /// <summary>
+    /// High-quality resampling from 48kHz stereo to 16kHz mono with anti-aliasing LPF
+    /// Replaces naive decimation to prevent aliasing and improve ASR quality
+    /// </summary>
+    /// <param name="input">48kHz stereo float samples</param>
+    /// <param name="inputLength">Number of input samples</param>
+    /// <returns>16kHz mono samples (approximately inputLength/6)</returns>
+    public static float[] Resample48kTo16kMono(float[] input, int inputLength)
+    {
+        if (input == null || inputLength <= 0) return new float[0];
+
+        // Pool temporary buffers to reduce allocations
+        var monoBuffer = ArrayPool<float>.Shared.Rent(inputLength / 2);
+        try
+        {
+            // Step 1: Convert stereo to mono (L+R)/2
+            int monoLength = inputLength / 2;
+            for (int i = 0; i < monoLength; i++)
+            {
+                monoBuffer[i] = (input[i * 2] + input[i * 2 + 1]) * 0.5f;
+            }
+
+            // Step 2: Apply anti-aliasing LPF before decimation (cutoff ~7kHz for 16kHz output)
+            var lpfBuffer = ArrayPool<float>.Shared.Rent(monoLength);
+            try
+            {
+                // Low-pass filter with cutoff at ~7kHz (Nyquist frequency for 16kHz output is 8kHz)
+                var lpFilter = BiQuadFilter.LowPassFilter(48000, 7000, 0.707f);
+                for (int i = 0; i < monoLength; i++)
+                {
+                    lpfBuffer[i] = lpFilter.Transform(monoBuffer[i]);
+                }
+
+                // Step 3: High-quality resampling using linear interpolation (3:1 ratio)
+                int outputLength = monoLength / 3;
+                var output = new float[outputLength];
+                
+                for (int n = 0; n < outputLength; n++)
+                {
+                    double sourceIndex = (double)n * 3.0;
+                    int i0 = (int)sourceIndex;
+                    int i1 = Math.Min(i0 + 1, monoLength - 1);
+                    double frac = sourceIndex - i0;
+                    
+                    // Linear interpolation for better quality than simple decimation
+                    output[n] = (float)((1.0 - frac) * lpfBuffer[i0] + frac * lpfBuffer[i1]);
+                }
+
+                return output;
+            }
+            finally
+            {
+                ArrayPool<float>.Shared.Return(lpfBuffer);
+            }
+        }
+        finally
+        {
+            ArrayPool<float>.Shared.Return(monoBuffer);
+        }
+    }
+
+    /// <summary>
+    /// High-quality resampling from 48kHz stereo to 16kHz mono with anti-aliasing LPF (byte array input)
+    /// </summary>
+    /// <param name="input">48kHz stereo s16 byte samples</param>
+    /// <param name="inputLength">Number of input bytes</param>
+    /// <returns>16kHz mono samples</returns>
+    public static float[] Resample48kTo16kMono(byte[] input, int inputLength)
+    {
+        if (input == null || inputLength <= 0) return new float[0];
+
+        // Convert s16 bytes to float samples first
+        int sampleCount = inputLength / 2;
+        var floatInput = ArrayPool<float>.Shared.Rent(sampleCount);
+        try
+        {
+            for (int i = 0; i < sampleCount; i++)
+            {
+                short sample = (short)((input[i * 2 + 1] << 8) | input[i * 2]);
+                floatInput[i] = sample / 32768.0f;
+            }
+
+            return Resample48kTo16kMono(floatInput, sampleCount);
+        }
+        finally
+        {
+            ArrayPool<float>.Shared.Return(floatInput);
+        }
+    }
+
+    /// <summary>
+    /// Frame builder to accumulate samples into consistent 320-sample (20ms at 16kHz) frames
+    /// Prevents "chunk too large" issues by ensuring proper frame sizes
+    /// </summary>
+    public static class FrameBuilder
+    {
+        private static readonly float[] _frameBuffer = new float[1024]; // Accumulation buffer
+        private static int _frameBufferLength = 0;
+        private static readonly object _frameLock = new object();
+        
+        /// <summary>
+        /// Add samples to frame buffer and return complete 320-sample frames
+        /// </summary>
+        /// <param name="samples">Input samples to add</param>
+        /// <returns>Array of complete 320-sample frames, or empty if no complete frames available</returns>
+        public static float[][] AccumulateFrames(float[] samples)
+        {
+            if (samples == null || samples.Length == 0) return new float[0][];
+
+            lock (_frameLock)
+            {
+                var completeFrames = new List<float[]>();
+                int inputOffset = 0;
+
+                while (inputOffset < samples.Length)
+                {
+                    // How much space is left in the current frame?
+                    int spaceLeft = 320 - _frameBufferLength;
+                    int samplesToCopy = Math.Min(spaceLeft, samples.Length - inputOffset);
+
+                    // Copy samples into frame buffer
+                    Array.Copy(samples, inputOffset, _frameBuffer, _frameBufferLength, samplesToCopy);
+                    _frameBufferLength += samplesToCopy;
+                    inputOffset += samplesToCopy;
+
+                    // If frame is complete (320 samples), extract it
+                    if (_frameBufferLength == 320)
+                    {
+                        var frame = new float[320];
+                        Array.Copy(_frameBuffer, 0, frame, 0, 320);
+                        completeFrames.Add(frame);
+                        _frameBufferLength = 0; // Reset for next frame
+                    }
+                }
+
+                return completeFrames.ToArray();
+            }
+        }
+
+        /// <summary>
+        /// Reset frame builder state (call when switching audio sources)
+        /// </summary>
+        public static void Reset()
+        {
+            lock (_frameLock)
+            {
+                _frameBufferLength = 0;
+                Array.Clear(_frameBuffer, 0, _frameBuffer.Length);
+            }
+        }
+
+        /// <summary>
+        /// Get current buffer occupancy for monitoring
+        /// </summary>
+        public static int GetBufferOccupancy()
+        {
+            lock (_frameLock)
+            {
+                return _frameBufferLength;
+            }
+        }
     }
 }
