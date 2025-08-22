@@ -1,0 +1,300 @@
+// Defaults.cs
+using System;
+using System.Collections.Generic;
+
+namespace Kinectv1
+{
+    /// <summary>
+    /// Default values for all application settings, organized by category
+    /// Used by the Restore Defaults functionality in the settings UI
+    /// </summary>
+    public static class Defaults
+    {
+        /// <summary>
+        /// Voice and Audio Processing defaults
+        /// </summary>
+        public static class Voice
+        {
+            public const float VoiceThreshold = 0.5f;
+            public const float VoiceActivityThreshold = 300f;
+            public const float DiscordVoiceActivityThreshold = 25f;
+            public const int VadSilenceTimeoutMs = 1000;
+            public const int VadDebounceTimeoutMs = 150;
+            public const float VoiceConfidenceThreshold = 0.6f;
+            public const float VoiceHighConfidenceThreshold = 0.8f;
+            public const int VoiceConfidenceBufferSize = 3;
+            public const bool BargeInEnabled = true;
+        }
+
+        /// <summary>
+        /// Text-to-Speech defaults
+        /// </summary>
+        public static class Tts
+        {
+            public const bool TtsEnabled = true;
+            public const bool TtsUseGpu = false;
+            public const string TtsModelPath = @"models\tts\kokoro-82M\onnx\model_q8f16.onnx";
+            public const string TtsModelFolder = @"models\tts\kokoro-82M";
+            public const string TtsSymbolsPath = @"models\tts\kokoro-82M\symbols.txt";
+            public const string TtsCmudictPath = "";
+            public const string TtsOutputDevice = "Default";
+            public const float TtsVolumeScale = 1.0f;
+            public const float TtsSpeed = 1.0f;
+        }
+
+        /// <summary>
+        /// Speech-to-Text defaults
+        /// </summary>
+        public static class Stt
+        {
+            public const string SttModelPath = @"models\stt\vosk-model-en-us-0.22";
+            public const string SttInputDevice = "Default";
+            public const bool SttEnabled = true;
+        }
+
+        /// <summary>
+        /// Discord Bot defaults
+        /// </summary>
+        public static class Discord
+        {
+            public const bool DiscordBotEnabled = false;
+            public const string DiscordBotToken = "";
+            public const bool DiscordAutoJoinVoice = false;
+            public const string DiscordGuildId = "";
+            public const string DiscordChannelId = "";
+        }
+
+        /// <summary>
+        /// Ollama AI defaults
+        /// </summary>
+        public static class Ollama
+        {
+            public const bool OllamaEnabled = false;
+            public const string OllamaModel = "";
+            public const string OllamaApiUrl = "http://localhost:11434";
+            public const bool OllamaMemoryEnabled = true;
+            public const int OllamaMaxMessagesPerSpeaker = 10;
+            public const int OllamaMaxSystemMessages = 5;
+            public const int OllamaConversationTimeoutMinutes = 30;
+            public const string ConversationHistoryPath = "history";
+            public const string SystemPromptPath = "";
+        }
+
+        /// <summary>
+        /// Kinect and Face Tracking defaults
+        /// </summary>
+        public static class Kinect
+        {
+            public const string KinectMode = "Webcam";
+            public const float FaceThreshold = 0.7f;
+            public const bool EnhancedFaceTrackingEnabled = true;
+            public const bool FaceTrackingDebugMode = false;
+        }
+
+        /// <summary>
+        /// Audio Device and Processing defaults
+        /// </summary>
+        public static class Audio
+        {
+            public const AudioInMode AudioInMode = Kinectv1.AudioInMode.LocalMic;
+            public const bool SystemAudioEnabled = false;
+        }
+
+        /// <summary>
+        /// UI and Application defaults
+        /// </summary>
+        public static class Ui
+        {
+            public const bool DarkMode = true;
+            public const AppScenario AppScenario = Kinectv1.AppScenario.Local;
+        }
+
+        /// <summary>
+        /// Telemetry and Logging defaults
+        /// </summary>
+        public static class Telemetry
+        {
+            public const bool TelemetryEnabled = false;
+        }
+
+        /// <summary>
+        /// Window Settings defaults
+        /// </summary>
+        public static class Window
+        {
+            public const double Width = 900;
+            public const double Height = 750;
+            public const double Left = 100;
+            public const double Top = 100;
+            public const string WindowState = "Normal";
+        }
+
+        /// <summary>
+        /// Apply defaults for a specific category
+        /// </summary>
+        public static void ApplyCategory(string category)
+        {
+            switch (category.ToLower())
+            {
+                case "voice":
+                    ApplyVoiceDefaults();
+                    break;
+                case "tts":
+                    ApplyTtsDefaults();
+                    break;
+                case "stt":
+                    ApplySttDefaults();
+                    break;
+                case "discord":
+                    ApplyDiscordDefaults();
+                    break;
+                case "ollama":
+                    ApplyOllamaDefaults();
+                    break;
+                case "kinect":
+                    ApplyKinectDefaults();
+                    break;
+                case "audio":
+                    ApplyAudioDefaults();
+                    break;
+                case "ui":
+                    ApplyUiDefaults();
+                    break;
+                case "telemetry":
+                    ApplyTelemetryDefaults();
+                    break;
+                case "window":
+                    ApplyWindowDefaults();
+                    break;
+                case "all":
+                    ApplyAllDefaults();
+                    break;
+                default:
+                    throw new ArgumentException($"Unknown category: {category}");
+            }
+        }
+
+        /// <summary>
+        /// Apply all default settings across all categories
+        /// </summary>
+        public static void ApplyAllDefaults()
+        {
+            ApplyVoiceDefaults();
+            ApplyTtsDefaults();
+            ApplySttDefaults();
+            ApplyDiscordDefaults();
+            ApplyOllamaDefaults();
+            ApplyKinectDefaults();
+            ApplyAudioDefaults();
+            ApplyUiDefaults();
+            ApplyTelemetryDefaults();
+            ApplyWindowDefaults();
+        }
+
+        private static void ApplyVoiceDefaults()
+        {
+            AppSettings.SaveVoiceThreshold(Voice.VoiceThreshold);
+            AppSettings.SaveVoiceActivityThreshold(Voice.VoiceActivityThreshold);
+            AppSettings.SaveDiscordVoiceActivityThreshold(Voice.DiscordVoiceActivityThreshold);
+            AppSettings.SaveVadSilenceTimeoutMs(Voice.VadSilenceTimeoutMs);
+            AppSettings.SaveVadDebounceTimeoutMs(Voice.VadDebounceTimeoutMs);
+            AppSettings.SaveVoiceConfidenceThreshold(Voice.VoiceConfidenceThreshold);
+            AppSettings.SaveVoiceHighConfidenceThreshold(Voice.VoiceHighConfidenceThreshold);
+            AppSettings.SaveVoiceConfidenceBufferSize(Voice.VoiceConfidenceBufferSize);
+            AppSettings.SaveBargeInEnabled(Voice.BargeInEnabled);
+        }
+
+        private static void ApplyTtsDefaults()
+        {
+            AppSettings.SaveTtsEnabled(Tts.TtsEnabled);
+            AppSettings.SaveTtsUseGpu(Tts.TtsUseGpu);
+            AppSettings.SaveTtsModelPath(Tts.TtsModelPath);
+            AppSettings.SaveTtsModelFolder(Tts.TtsModelFolder);
+            AppSettings.SaveTtsSymbolsPath(Tts.TtsSymbolsPath);
+            AppSettings.SaveTtsCmudictPath(Tts.TtsCmudictPath);
+            AppSettings.SaveTtsOutputDevice(Tts.TtsOutputDevice);
+            AppSettings.SaveTtsVolumeScale(Tts.TtsVolumeScale);
+            AppSettings.SaveTtsSpeed(Tts.TtsSpeed);
+        }
+
+        private static void ApplySttDefaults()
+        {
+            AppSettings.SaveSttModelPath(Stt.SttModelPath);
+            AppSettings.SaveSttInputDevice(Stt.SttInputDevice);
+            AppSettings.SaveSttEnabled(Stt.SttEnabled);
+        }
+
+        private static void ApplyDiscordDefaults()
+        {
+            AppSettings.SaveDiscordBotEnabled(Discord.DiscordBotEnabled);
+            AppSettings.SaveDiscordBotToken(Discord.DiscordBotToken);
+            AppSettings.SaveDiscordAutoJoinVoice(Discord.DiscordAutoJoinVoice);
+            AppSettings.SaveDiscordGuildId(Discord.DiscordGuildId);
+            AppSettings.SaveDiscordChannelId(Discord.DiscordChannelId);
+        }
+
+        private static void ApplyOllamaDefaults()
+        {
+            AppSettings.SaveOllamaEnabled(Ollama.OllamaEnabled);
+            AppSettings.SaveOllamaModel(Ollama.OllamaModel);
+            AppSettings.SaveOllamaApiUrl(Ollama.OllamaApiUrl);
+            AppSettings.SaveOllamaMemoryEnabled(Ollama.OllamaMemoryEnabled);
+            AppSettings.SaveOllamaMaxMessagesPerSpeaker(Ollama.OllamaMaxMessagesPerSpeaker);
+            AppSettings.SaveOllamaMaxSystemMessages(Ollama.OllamaMaxSystemMessages);
+            AppSettings.SaveOllamaConversationTimeoutMinutes(Ollama.OllamaConversationTimeoutMinutes);
+            AppSettings.SaveConversationHistoryPath(Ollama.ConversationHistoryPath);
+            AppSettings.SaveSystemPromptPath(Ollama.SystemPromptPath);
+        }
+
+        private static void ApplyKinectDefaults()
+        {
+            AppSettings.SaveKinectMode(Kinect.KinectMode);
+            AppSettings.SaveFaceThreshold(Kinect.FaceThreshold);
+            AppSettings.SaveEnhancedFaceTrackingEnabled(Kinect.EnhancedFaceTrackingEnabled);
+            AppSettings.SaveFaceTrackingDebugMode(Kinect.FaceTrackingDebugMode);
+        }
+
+        private static void ApplyAudioDefaults()
+        {
+            AppSettings.SaveAudioInMode(Audio.AudioInMode);
+            AppSettings.SaveSystemAudioEnabled(Audio.SystemAudioEnabled);
+        }
+
+        private static void ApplyUiDefaults()
+        {
+            AppSettings.SaveDarkMode(Ui.DarkMode);
+            AppSettings.SaveAppScenario(Ui.AppScenario);
+        }
+
+        private static void ApplyTelemetryDefaults()
+        {
+            AppSettings.SaveTelemetryEnabled(Telemetry.TelemetryEnabled);
+        }
+
+        private static void ApplyWindowDefaults()
+        {
+            AppSettings.SaveWindowSettings(Window.Width, Window.Height, Window.Left, Window.Top, Window.WindowState);
+        }
+
+        /// <summary>
+        /// Get list of available categories for the UI
+        /// </summary>
+        public static List<string> GetCategories()
+        {
+            return new List<string>
+            {
+                "Voice",
+                "TTS", 
+                "STT",
+                "Discord",
+                "Ollama",
+                "Kinect",
+                "Audio",
+                "UI",
+                "Telemetry",
+                "Window",
+                "All"
+            };
+        }
+    }
+}
