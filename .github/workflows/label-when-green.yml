@@ -39,4 +39,61 @@ jobs:
 
             // Ensure label exists (create if missing)
             async function ensureLabel(name, color, description) {
+              try {
+                const labels = await github.paginate(github.rest.issues.listLabelsForRepo, { owner, repo, per_page: 100 });
+                if (!labels.find(l => l.name.toLowerCase() === name.toLowerCase())) {
+                  await github.rest.issues.createLabel({ owner, repo, name, color, description }).catch(()=>{});
+                }
+              } catch (e) {
+                core.warning(`Could not verify/create label: ${e.message}`);
+              }
+            }
+
+            await ensureLabel('copilot:ready', '0E8A16', 'Auto-merge gate: CI green');
+
+            const allowedAuthors = new Set(['github-actions[bot]','github-copilot','notamouse7260','graftonnathan']);
+            const prs = await getCandidatePRs();
+
+            for (const pr of prs) {
+              if (!pr) continue;
+              if (pr.base.ref !== 'dev') continue;          // only PRs into dev
+              if (pr.draft) continue;                       // skip drafts
+              if (!allowedAuthors.has(pr.user.login) &&
+                  !pr.head.ref.startsWith('copilot/')) {
+                core.info(`Skip PR #${pr.number}: author=${pr.user.login}, head=${pr.head.ref}`);
+                continue;
+              }
+              // Skip if already labeled
+              if (pr.labels?.some(l => l.name === 'copilot:ready')) {
+                core.info(`PR #${pr.number} already labeled`);
+                continue;
+              }
+
+              // Query rollup of checks for the latest commit on the PR
+              const q = `query($owner:String!, $repo:String!, $number:Int!) {
+                repository(owner:$owner, name:$repo) {
+                  pullRequest(number:$number) {
+                    isDraft
+                    commits(last: 1) {
+                      nodes {
+                        commit { statusCheckRollup { state } }
+                      }
+                    }
+                  }
+                }
+              }`;
+              const r = await github.graphql(q, { owner, repo, number: pr.number });
+              const node = r.repository.pullRequest.commits.nodes[0];
+              const state = node?.commit?.statusCheckRollup?.state || 'NO_CHECKS';
+
+              core.info(`PR #${pr.number} rollup state: ${state}`);
+              if (state !== 'SUCCESS' && state !== 'NO_CHECKS') {
+                continue; // not green yet
+              }
+
+              await github.rest.issues.addLabels({
+                owner, repo, issue_number: pr.number, labels: ['copilot:ready']
+              });
+              core.notice(`Applied label copilot:ready to PR #${pr.number}`);
+            }
 
