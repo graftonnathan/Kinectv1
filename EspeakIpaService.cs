@@ -170,11 +170,53 @@ namespace Kinectv1
         {
             if (_disposed) return;
             _disposed = true;
+            
+            Console.WriteLine("🔧 EspeakIpaService: Starting graceful shutdown...");
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            
             try
             {
                 try { _cts?.Cancel(); } catch { }
                 try { _stdin?.Close(); } catch { }
-                try { if (_proc != null && !_proc.HasExited) _proc.Kill(); } catch { }
+                
+                // Give process 500ms to exit gracefully as specified
+                bool gracefulExit = false;
+                if (_proc != null && !_proc.HasExited)
+                {
+                    Console.WriteLine("🔧 EspeakIpaService: Waiting 500ms for graceful exit...");
+                    gracefulExit = _proc.WaitForExit(500);
+                }
+                
+                if (!gracefulExit && _proc != null && !_proc.HasExited)
+                {
+                    Console.WriteLine("⚠️ EspeakIpaService: Graceful exit timed out, killing process tree...");
+                    
+                    try
+                    {
+                        // Kill the entire process tree to handle any child processes
+                        KillProcessTree(_proc.Id);
+                        Telemetry.Counter("app.stop.forced_kill");
+                    }
+                    catch (Exception killEx)
+                    {
+                        Console.WriteLine($"❌ EspeakIpaService: Failed to kill process tree: {killEx.Message}");
+                        
+                        // Fallback to simple kill
+                        try 
+                        { 
+                            _proc.Kill(); 
+                            Console.WriteLine("🔨 EspeakIpaService: Fallback kill successful");
+                        } 
+                        catch (Exception fallbackEx) 
+                        { 
+                            Console.WriteLine($"❌ EspeakIpaService: Fallback kill failed: {fallbackEx.Message}"); 
+                        }
+                    }
+                }
+                else if (gracefulExit)
+                {
+                    Console.WriteLine("✅ EspeakIpaService: Process exited gracefully");
+                }
             }
             finally
             {
@@ -182,6 +224,52 @@ namespace Kinectv1
                 try { _cts?.Dispose(); } catch { }
                 try { _stderrPump?.Wait(300); } catch { }
                 try { _ioLock?.Dispose(); } catch { }
+                
+                stopwatch.Stop();
+                Console.WriteLine($"✅ EspeakIpaService: Shutdown completed in {stopwatch.ElapsedMilliseconds}ms");
+            }
+        }
+
+        /// <summary>
+        /// Kill a process and all its child processes (process tree)
+        /// </summary>
+        private static void KillProcessTree(int processId)
+        {
+            try
+            {
+                // Use taskkill to terminate the entire process tree
+                var killProcess = new Process
+                {
+                    StartInfo = new ProcessStartInfo
+                    {
+                        FileName = "taskkill",
+                        Arguments = $"/F /T /PID {processId}",
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true
+                    }
+                };
+                
+                killProcess.Start();
+                killProcess.WaitForExit(2000); // 2 second timeout for taskkill
+                
+                var exitCode = killProcess.ExitCode;
+                if (exitCode == 0)
+                {
+                    Console.WriteLine($"🔨 Successfully killed process tree for PID {processId}");
+                }
+                else
+                {
+                    Console.WriteLine($"⚠️ taskkill exit code {exitCode} for PID {processId}");
+                }
+                
+                killProcess.Dispose();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ KillProcessTree failed for PID {processId}: {ex.Message}");
+                throw; // Re-throw to trigger fallback
             }
         }
 

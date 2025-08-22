@@ -1615,6 +1615,38 @@ namespace Kinectv1
             }
         }
 
+        /// <summary>
+        /// Load barge-in setting (allows ASR to interrupt TTS when enabled)
+        /// </summary>
+        public static bool LoadBargeInEnabled()
+        {
+            try
+            {
+                return GetBool("BargeInEnabled");
+            }
+            catch (Exception ex)
+            {
+                LogSettingError("BargeInEnabled", $"READ FAILED: {ex.Message}");
+                return false; // Default: barge-in disabled
+            }
+        }
+
+        /// <summary>
+        /// Save barge-in setting
+        /// </summary>
+        public static void SaveBargeInEnabled(bool enabled)
+        {
+            try
+            {
+                SetBool("BargeInEnabled", enabled);
+                Console.WriteLine($"ASR: Saved barge-in enabled: {enabled}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"ERROR: Error saving barge-in setting: {ex.Message}");
+            }
+        }
+
         // UI Theme Settings
         public static bool LoadDarkMode()
         {
@@ -2048,6 +2080,45 @@ namespace Kinectv1
         }
 
         /// <summary>
+        /// Load speaker match minimum score threshold (default: 0.6)
+        /// </summary>
+        public static float LoadSpeakerMatchMinScore()
+        {
+            try
+            {
+                var value = GetFloat("SpeakerMatchMinScore", 0.6f);
+                if (value < 0.0f || value > 1.0f)
+                {
+                    LogSettingError("SpeakerMatchMinScore", $"OUT OF RANGE (expected 0.0-1.0, got {value})");
+                    return 0.6f; // Default threshold
+                }
+                return value;
+            }
+            catch (Exception ex)
+            {
+                LogSettingError("SpeakerMatchMinScore", $"read FAILED: {ex.Message}");
+                return 0.6f; // Default threshold
+            }
+        }
+
+        /// <summary>
+        /// Save speaker match minimum score threshold
+        /// </summary>
+        public static void SaveSpeakerMatchMinScore(float threshold)
+        {
+            try
+            {
+                var clampedThreshold = Math.Max(0.0f, Math.Min(1.0f, threshold));
+                SetFloat("SpeakerMatchMinScore", clampedThreshold);
+                Console.WriteLine($"Speaker: Match threshold set to {clampedThreshold:F2}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"ERROR: Error saving speaker match threshold: {ex.Message}");
+            }
+        }
+
+        /// <summary>
         /// Grouped summary of TTS pipeline settings
         /// </summary>
         public static string GetTtsSettingsSummary()
@@ -2084,6 +2155,7 @@ namespace Kinectv1
                        $"   Input Device: {LoadSttInputDevice()}\n" +
                        $"   Vosk Model: {LoadSttModelPath()}\n" +
                        $"   Speaker Embedding: {LoadSpeakerEmbeddingModelPath()}\n" +
+                       $"   Speaker Match Threshold: {LoadSpeakerMatchMinScore():F2}\n" +
                        $"   Mic VAD Threshold: {LoadVoiceActivityThreshold():F0}\n" +
                        $"   Discord VAD Threshold: {LoadDiscordVoiceActivityThreshold():F0}\n" +
                        $"   VAD Silence Timeout: {LoadVadSilenceTimeoutMs()}ms\n" +
@@ -2271,7 +2343,7 @@ namespace Kinectv1
                 Console.WriteLine($"   Enabled: {enabled}");
                 Console.WriteLine($"   File path: {filePath}");
                 Console.WriteLine($"   Sampling: {samplingPct}%");
-                Console.WriteLine($"   💡 Events are logged as NDJSON to console and file");
+                Console.WriteLine($"   💡 All events logged to file; console shows warnings+ and summaries");
                 Console.WriteLine($"   💡 File rotates at ~5MB to prevent disk fill");
             }
             catch (Exception ex)
@@ -2296,6 +2368,7 @@ namespace Kinectv1
                        $"   File path: {filePath}\n" +
                        $"   Sampling: {samplingPct}%\n" +
                        $"   Format: NDJSON (Newline Delimited JSON)\n" +
+                       $"   Console: Warnings+ and summaries only\n" +
                        $"   Rotation: ~5MB file size limit";
             }
             catch (Exception ex)

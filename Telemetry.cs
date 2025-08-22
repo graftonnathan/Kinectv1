@@ -98,10 +98,13 @@ namespace Kinectv1
 
                 var json = JsonConvert.SerializeObject(eventData, Formatting.None);
                 
-                // Console output (single line)
-                Console.WriteLine(json);
+                // Console output - only for important events to keep console quieter
+                if (level >= TelemetryLevel.Warning || name.Contains("health.snapshot") || name.Contains("app."))
+                {
+                    Console.WriteLine(json);
+                }
                 
-                // File output with rotation
+                // File output with rotation (all events)
                 WriteToFile(json);
             }
             catch (Exception ex)
@@ -109,6 +112,46 @@ namespace Kinectv1
                 // Silently fail to avoid disrupting application
                 Console.WriteLine($"Telemetry.Event error: {ex.Message}");
             }
+        }
+
+        /// <summary>
+        /// Emit an info-level telemetry event
+        /// </summary>
+        /// <param name="name">Event name</param>
+        /// <param name="data">Optional event data</param>
+        public static void Info(string name, object data = null)
+        {
+            Event(name, data, TelemetryLevel.Info);
+        }
+
+        /// <summary>
+        /// Emit a warning-level telemetry event
+        /// </summary>
+        /// <param name="name">Event name</param>
+        /// <param name="data">Optional event data</param>
+        public static void Warn(string name, object data = null)
+        {
+            Event(name, data, TelemetryLevel.Warning);
+        }
+
+        /// <summary>
+        /// Emit an error-level telemetry event
+        /// </summary>
+        /// <param name="name">Event name</param>
+        /// <param name="data">Optional event data</param>
+        public static void Error(string name, object data = null)
+        {
+            Event(name, data, TelemetryLevel.Error);
+        }
+
+        /// <summary>
+        /// Emit a structured metric event with data fields
+        /// </summary>
+        /// <param name="name">Metric name</param>
+        /// <param name="data">Metric data (will be JSON serialized)</param>
+        public static void Metric(string name, object data)
+        {
+            Event(name, data, TelemetryLevel.Info);
         }
 
         /// <summary>

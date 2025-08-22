@@ -19,7 +19,9 @@ namespace Kinectv1
                     return null;
                 }
 
-                var match = MemoryStore.MatchBestVoice(embedding, thresholdCos: _defaultThreshold);
+                // Use configurable threshold from settings
+                var threshold = Kinectv1.AppSettings.LoadSpeakerMatchMinScore();
+                var match = MemoryStore.MatchBestVoice(embedding, thresholdCos: threshold);
                 
                 if (match.HasValue)
                 {
@@ -92,7 +94,8 @@ namespace Kinectv1
 
         public static float GetDefaultThreshold()
         {
-            return _defaultThreshold;
+            // Return threshold from settings instead of hardcoded value
+            return Kinectv1.AppSettings.LoadSpeakerMatchMinScore();
         }
 
         public static void EnrollSpeaker(string name, float[] embedding)
