@@ -1,5 +1,6 @@
 // VoiceProcessor.cs
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
@@ -22,7 +23,13 @@ namespace Kinectv1
         private TimeSpan _silenceTimeout;
         private TimeSpan _vadDebounceTimeout;
         private DateTime _lastFinalResultTime = DateTime.MinValue;
-        private readonly List<float> _pcmBuffer = new List<float>();
+        
+        // Performance optimization: Replace List<float> with ArrayPool-based circular buffer
+        private const int PCM_BUFFER_SIZE = 48000; // 3 seconds at 16kHz
+        private readonly float[] _pcmBuffer = new float[PCM_BUFFER_SIZE];
+        private int _pcmBufferPosition = 0;
+        private int _pcmBufferCount = 0;
+        
         private string _lastTranscription = string.Empty;
         private string _pendingTranscription = string.Empty; // Store transcription for Ollama
         private DateTime _lastTranscriptionTime = DateTime.MinValue;
@@ -48,6 +55,10 @@ namespace Kinectv1
         private readonly float _highConfidenceThreshold;      // Configurable high confidence threshold
         private readonly Queue<VoskResult> _lowConfidenceBuffer; // Configurable buffer for low confidence results
         private readonly bool _confidenceLoggingEnabled;      // Configurable logging
+        private readonly int _bufferSize;                      // Buffer size for low confidence results
+        
+        // Performance optimization: cache split separators to avoid array allocation
+        private static readonly char[] _splitSeparators = { ' ', '\t', '\n' };
 
         public VoiceProcessor(VoskRecognizer recognizer, Action<string> onTranscription, Action<string, float> onSpeakerMatch, string triggerName, Action<float> onRmsLevel = null, Action<float[]> onVoiceEmbedding = null, Action<float> onDiscordRmsLevel = null)
         {
@@ -63,8 +74,8 @@ namespace Kinectv1
             _confidenceThreshold = AppSettings.LoadVoiceConfidenceThreshold();
             _highConfidenceThreshold = AppSettings.LoadVoiceHighConfidenceThreshold();
             _confidenceLoggingEnabled = AppSettings.LoadVoiceConfidenceLoggingEnabled();
-            var bufferSize = AppSettings.LoadVoiceConfidenceBufferSize();
-            _lowConfidenceBuffer = new Queue<VoskResult>(bufferSize);
+            _bufferSize = AppSettings.LoadVoiceConfidenceBufferSize();
+            _lowConfidenceBuffer = new Queue<VoskResult>(_bufferSize);
             
             // Load configurable VAD settings
             var silenceTimeoutMs = AppSettings.LoadVadSilenceTimeoutMs();
@@ -75,13 +86,59 @@ namespace Kinectv1
             Console.WriteLine($"?? VoiceProcessor initialized with confidence settings:");
             Console.WriteLine($"   Confidence threshold: {_confidenceThreshold:F2}");
             Console.WriteLine($"   High confidence threshold: {_highConfidenceThreshold:F2}");
-            Console.WriteLine($"   Buffer size: {bufferSize}");
+            Console.WriteLine($"   Buffer size: {_bufferSize}");
             Console.WriteLine($"   Logging enabled: {_confidenceLoggingEnabled}");
             Console.WriteLine($"   Microphone RMS callback: {(_onRmsLevel != null ? "Connected" : "Not connected")}");
             Console.WriteLine($"   Discord RMS callback: {(_onDiscordRmsLevel != null ? "Connected" : "Not connected")}");
             Console.WriteLine($"?? VAD settings:");
             Console.WriteLine($"   Silence timeout: {silenceTimeoutMs}ms");
             Console.WriteLine($"   Debounce timeout: {debounceTimeoutMs}ms");
+        }
+
+        /// <summary>
+        /// Add samples to circular PCM buffer using ArrayPool for temporary allocations
+        /// </summary>
+        private void AddToPcmBuffer(float[] samples)
+        {
+            foreach (var sample in samples)
+            {
+                _pcmBuffer[_pcmBufferPosition] = sample;
+                _pcmBufferPosition = (_pcmBufferPosition + 1) % PCM_BUFFER_SIZE;
+                if (_pcmBufferCount < PCM_BUFFER_SIZE) _pcmBufferCount++;
+            }
+        }
+
+        /// <summary>
+        /// Extract one second of audio from circular buffer using ArrayPool
+        /// </summary>
+        private float[] ExtractOneSecondFromBuffer()
+        {
+            const int oneSecondSamples = 16000; // 1 second at 16kHz
+            if (_pcmBufferCount < oneSecondSamples) return null;
+            
+            var result = ArrayPool<float>.Shared.Rent(oneSecondSamples);
+            try
+            {
+                int startPos = _pcmBufferPosition - _pcmBufferCount;
+                if (startPos < 0) startPos += PCM_BUFFER_SIZE;
+                
+                for (int i = 0; i < oneSecondSamples; i++)
+                {
+                    result[i] = _pcmBuffer[(startPos + i) % PCM_BUFFER_SIZE];
+                }
+                
+                // Remove extracted samples
+                _pcmBufferCount -= oneSecondSamples;
+                
+                // Copy result to final array
+                var finalResult = new float[oneSecondSamples];
+                Array.Copy(result, finalResult, oneSecondSamples);
+                return finalResult;
+            }
+            finally
+            {
+                ArrayPool<float>.Shared.Return(result);
+            }
         }
 
         /// <summary>
@@ -253,17 +310,15 @@ namespace Kinectv1
 
                 // Only add to buffer when voice is active
                 float[] floatPcm = AudioUtils.ConvertToFloatPcm(buffer, bytesRecorded);
-                _pcmBuffer.AddRange(floatPcm);
+                AddToPcmBuffer(floatPcm);
 
                 // FIXED: Only process recognition when voice is active (respects VAD settings)
                 ProcessRecognitionWithConfidence(buffer, bytesRecorded);
 
                 // Process voice embeddings when we have enough audio (1 second)
-                if (_pcmBuffer.Count >= 16000)
+                var oneSecond = ExtractOneSecondFromBuffer();
+                if (oneSecond != null)
                 {
-                    float[] oneSecond = _pcmBuffer.GetRange(0, 16000).ToArray();
-                    _pcmBuffer.RemoveRange(0, 16000);
-
                     // Generate speaker embedding
                     var emb = SpeakerEmbedder.Embed(oneSecond);
 
@@ -482,7 +537,8 @@ namespace Kinectv1
             float confidence = 0.8f; // Base confidence
             
             // Adjust based on text characteristics
-            var words = text.Split(new[] { ' ', '\t', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            // Performance: cache split separators to avoid array allocation on each call
+            var words = text.Split(_splitSeparators, StringSplitOptions.RemoveEmptyEntries);
             
             // Length factor
             if (text.Length < 3) confidence -= 0.3f;        // Very short
@@ -622,7 +678,8 @@ namespace Kinectv1
             
             // Buffer low confidence results for potential recovery
             _lowConfidenceBuffer.Enqueue(result);
-            if (_lowConfidenceBuffer.Count > _lowConfidenceBuffer.ToArray().Length) 
+            // Performance: avoid ToArray() allocation for length check
+            if (_lowConfidenceBuffer.Count > _bufferSize) 
                 _lowConfidenceBuffer.Dequeue();
             
             // Try to combine recent low confidence results
