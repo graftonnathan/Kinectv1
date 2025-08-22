@@ -40,6 +40,11 @@ namespace Kinectv1
         private static readonly float[] _defaultStyleVector = CreateDefaultStyleVector();
         private static readonly float[] _silencePadding = new float[(int)Math.Round(24000 * 0.01)]; // 10ms at 24kHz
         private static readonly List<float> _sharedOutputBuffer = new List<float>(1024 * 1024); // 1M samples pre-allocated
+        
+        // Reusable tensors to reduce allocations in hot paths
+        private static DenseTensor<float> _reuseStyleTensor = new DenseTensor<float>(new[] { 1, 256 });
+        private static DenseTensor<float> _reuseSpeedTensor = new DenseTensor<float>(new[] { 1 });
+        private static readonly List<NamedOnnxValue> _reuseInputsList = new List<NamedOnnxValue>(3);
 
         // Force staying on CUDA EP only (no per-segment CPU retry)
         private const bool EnableCpuSegmentRetry = false;
@@ -722,28 +727,30 @@ namespace Kinectv1
             audio = null;
             try
             {
-                var inputs = new List<NamedOnnxValue>
+                // Reuse inputs list to reduce allocations
+                lock (_reuseInputsList)
                 {
-                    NamedOnnxValue.CreateFromTensor("input_ids", inputIds),
-                    NamedOnnxValue.CreateFromTensor("style", styleTensor),
-                    NamedOnnxValue.CreateFromTensor("speed", speedTensor)
-                };
+                    _reuseInputsList.Clear();
+                    _reuseInputsList.Add(NamedOnnxValue.CreateFromTensor("input_ids", inputIds));
+                    _reuseInputsList.Add(NamedOnnxValue.CreateFromTensor("style", styleTensor));
+                    _reuseInputsList.Add(NamedOnnxValue.CreateFromTensor("speed", speedTensor));
 
-                using var results = session.Run(inputs);
-                var first = results.First().Value as Tensor<float>;
-                if (first == null) return false;
+                    using var results = session.Run(_reuseInputsList);
+                    var first = results.First().Value as Tensor<float>;
+                    if (first == null) return false;
 
-                if (first.Rank == 2)
-                {
-                    int n = first.Dimensions[1];
-                    audio = new float[n];
-                    for (int i = 0; i < n; i++) audio[i] = first[0, i];
+                    if (first.Rank == 2)
+                    {
+                        int n = first.Dimensions[1];
+                        audio = new float[n];
+                        for (int i = 0; i < n; i++) audio[i] = first[0, i];
+                    }
+                    else
+                    {
+                        audio = first.ToArray();
+                    }
+                    return true;
                 }
-                else
-                {
-                    audio = first.ToArray();
-                }
-                return true;
             }
             catch
             {
@@ -1007,16 +1014,18 @@ namespace Kinectv1
                     int innerTokenCount = Math.Max(0, ids.Length - 2);
                     var style = LoadStyleVectorAt(_voiceFiles.ContainsKey(vk) ? _voiceFiles[vk] : null, innerTokenCount) ?? _defaultStyleVector;
 
-                    // Build tensors by dimensions then copy values
+                    // Build tensors by dimensions then copy values - use reusable tensors to reduce allocations
                     var inputIds = new DenseTensor<long>(new[] { 1, ids.Length });
                     for (int i = 0; i < ids.Length; i++) inputIds[0, i] = ids[i];
-                    var styleTensor = new DenseTensor<float>(new[] { 1, 256 });
-                    for (int i = 0; i < 256; i++) styleTensor[0, i] = style[i];
-                    var speedTensor = new DenseTensor<float>(new[] { 1 });
-                    speedTensor[0] = _speed;
+                    
+                    // Reuse cached style tensor instead of creating new one
+                    for (int i = 0; i < 256; i++) _reuseStyleTensor[0, i] = style[i];
+                    
+                    // Reuse cached speed tensor instead of creating new one
+                    _reuseSpeedTensor[0] = _speed;
 
                     float[] audio = null;
-                    bool ok = TryRunModel(inputIds, styleTensor, speedTensor, out audio);
+                    bool ok = TryRunModel(inputIds, _reuseStyleTensor, _reuseSpeedTensor, out audio);
 
                     if (EnableCpuSegmentRetry && _usingGpu && (!ok || audio == null || audio.Length == 0 || IsDegenerateAudio(audio)))
                     {
@@ -1025,7 +1034,7 @@ namespace Kinectv1
                         EnsureCpuSession();
                         if (_cpuSession != null)
                         {
-                            ok = TryRunModelOnSession(_cpuSession, inputIds, styleTensor, speedTensor, out audio);
+                            ok = TryRunModelOnSession(_cpuSession, inputIds, _reuseStyleTensor, _reuseSpeedTensor, out audio);
                         }
                     }
 
@@ -1116,18 +1125,20 @@ namespace Kinectv1
                 int innerTokenCount = Math.Max(0, ids.Length - 2);
                 var style = LoadStyleVectorAt(_voiceFiles.ContainsKey(vk) ? _voiceFiles[vk] : null, innerTokenCount) ?? _defaultStyleVector;
 
-                // Build tensors by dimensions then copy values
+                // Build tensors by dimensions then copy values - use reusable tensors to reduce allocations
                 var inputIds = new DenseTensor<long>(new[] { 1, ids.Length });
                 for (int i = 0; i < ids.Length; i++) inputIds[0, i] = ids[i];
-                var styleTensor = new DenseTensor<float>(new[] { 1, 256 });
-                for (int i = 0; i < 256; i++) styleTensor[0, i] = style[i];
-                var speedTensor = new DenseTensor<float>(new[] { 1 });
-                speedTensor[0] = _speed;
+                
+                // Reuse cached style tensor instead of creating new one
+                for (int i = 0; i < 256; i++) _reuseStyleTensor[0, i] = style[i];
+                
+                // Reuse cached speed tensor instead of creating new one
+                _reuseSpeedTensor[0] = _speed;
 
                 cancellationToken.ThrowIfCancellationRequested();
 
                 float[] audio = null;
-                bool ok = TryRunModel(inputIds, styleTensor, speedTensor, out audio);
+                bool ok = TryRunModel(inputIds, _reuseStyleTensor, _reuseSpeedTensor, out audio);
 
                 if (EnableCpuSegmentRetry && _usingGpu && (!ok || audio == null || audio.Length == 0 || IsDegenerateAudio(audio)))
                 {
@@ -1136,7 +1147,7 @@ namespace Kinectv1
                     EnsureCpuSession();
                     if (_cpuSession != null)
                     {
-                        ok = TryRunModelOnSession(_cpuSession, inputIds, styleTensor, speedTensor, out audio);
+                        ok = TryRunModelOnSession(_cpuSession, inputIds, _reuseStyleTensor, _reuseSpeedTensor, out audio);
                     }
                 }
 

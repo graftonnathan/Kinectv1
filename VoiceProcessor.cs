@@ -55,6 +55,9 @@ namespace Kinectv1
         private readonly float _highConfidenceThreshold;      // Configurable high confidence threshold
         private readonly Queue<VoskResult> _lowConfidenceBuffer; // Configurable buffer for low confidence results
         private readonly bool _confidenceLoggingEnabled;      // Configurable logging
+        
+        // Performance optimization: cache split separators to avoid array allocation
+        private static readonly char[] _splitSeparators = { ' ', '\t', '\n' };
 
         public VoiceProcessor(VoskRecognizer recognizer, Action<string> onTranscription, Action<string, float> onSpeakerMatch, string triggerName, Action<float> onRmsLevel = null, Action<float[]> onVoiceEmbedding = null, Action<float> onDiscordRmsLevel = null)
         {
@@ -533,7 +536,8 @@ namespace Kinectv1
             float confidence = 0.8f; // Base confidence
             
             // Adjust based on text characteristics
-            var words = text.Split(new[] { ' ', '\t', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            // Performance: cache split separators to avoid array allocation on each call
+            var words = text.Split(_splitSeparators, StringSplitOptions.RemoveEmptyEntries);
             
             // Length factor
             if (text.Length < 3) confidence -= 0.3f;        // Very short
