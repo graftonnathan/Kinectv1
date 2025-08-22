@@ -18,7 +18,7 @@ env:
   COPILOT_REVIEWERS: "app/github-copilot,app/Copilot,app/copilot,Copilot"
   MERGE_METHOD: squash
   MAX_WAIT_MINUTES: "45"
-  DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+  DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
 
 jobs:
   run:
