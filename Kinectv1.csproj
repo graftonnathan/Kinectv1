@@ -182,6 +182,11 @@
 		<PackageReference Include="Discord.Net.WebSocket" />
 	</ItemGroup>
 	
+	<!-- Framework references for WPF and Windows Forms -->
+	<ItemGroup>
+		<Reference Include="System.Windows.Forms" />
+	</ItemGroup>
+	
 	<!-- Remove legacy Coqui TTS file copies (not used with Kokoro) -->
 	<ItemGroup>
 		<None Remove="copilot-instructions.md" />
