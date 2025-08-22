@@ -74,6 +74,21 @@ namespace Kinectv1
                             Console.WriteLine($"Error testing hosted services: {ex.Message}");
                         }
                     }
+                    else if (e.Key == Key.S && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
+                    {
+                        try
+                        {
+                            Console.WriteLine("🧪 Testing Shutdown Lifecycle (Ctrl+S pressed)");
+                            Task.Run(async () =>
+                            {
+                                await ShutdownLifecycleTest.RunAllTests();
+                            });
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"Error testing shutdown lifecycle: {ex.Message}");
+                        }
+                    }
                 };
 
                 // Hook GUI events
