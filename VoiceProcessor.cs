@@ -116,29 +116,20 @@ namespace Kinectv1
             const int oneSecondSamples = 16000; // 1 second at 16kHz
             if (_pcmBufferCount < oneSecondSamples) return null;
             
-            var result = ArrayPool<float>.Shared.Rent(oneSecondSamples);
-            try
+            // Directly create final array - no need for pooled intermediate
+            var result = new float[oneSecondSamples];
+            int startPos = _pcmBufferPosition - _pcmBufferCount;
+            if (startPos < 0) startPos += PCM_BUFFER_SIZE;
+            
+            for (int i = 0; i < oneSecondSamples; i++)
             {
-                int startPos = _pcmBufferPosition - _pcmBufferCount;
-                if (startPos < 0) startPos += PCM_BUFFER_SIZE;
-                
-                for (int i = 0; i < oneSecondSamples; i++)
-                {
-                    result[i] = _pcmBuffer[(startPos + i) % PCM_BUFFER_SIZE];
-                }
-                
-                // Remove extracted samples
-                _pcmBufferCount -= oneSecondSamples;
-                
-                // Copy result to final array
-                var finalResult = new float[oneSecondSamples];
-                Array.Copy(result, finalResult, oneSecondSamples);
-                return finalResult;
+                result[i] = _pcmBuffer[(startPos + i) % PCM_BUFFER_SIZE];
             }
-            finally
-            {
-                ArrayPool<float>.Shared.Return(result);
-            }
+            
+            // Remove extracted samples
+            _pcmBufferCount -= oneSecondSamples;
+            
+            return result;
         }
 
         /// <summary>
@@ -696,14 +687,19 @@ namespace Kinectv1
             
             if (_lowConfidenceBuffer.Count < 2) return;
             
-            // Try to find patterns or combine results
-            var allResults = _lowConfidenceBuffer.ToList();
-            var combinedText = TryCombineResults(allResults);
+            // Try to find patterns or combine results - avoid ToList() allocation
+            var combinedText = TryCombineResults(_lowConfidenceBuffer);
             
             if (!string.IsNullOrWhiteSpace(combinedText))
             {
-                // Calculate combined confidence
-                var avgConfidence = allResults.Average(r => r.Confidence);
+                // Calculate combined confidence without LINQ
+                float totalConfidence = 0f;
+                foreach (var result in _lowConfidenceBuffer)
+                {
+                    totalConfidence += result.Confidence;
+                }
+                var avgConfidence = totalConfidence / _lowConfidenceBuffer.Count;
+                
                 var combinedResult = new VoskResult
                 {
                     Text = combinedText,
@@ -736,34 +732,82 @@ namespace Kinectv1
 
         private string TryCombineResults(List<VoskResult> results)
         {
-            if (!results.Any()) return string.Empty;
+            if (results.Count == 0) return string.Empty;
             
-            // Strategy 1: Look for the longest common substring
-            var texts = results.Select(r => r.Text.Trim()).Where(t => !string.IsNullOrEmpty(t)).ToList();
-            if (!texts.Any()) return string.Empty;
-            
-            // If we only have one valid text, use it
-            if (texts.Count == 1) return texts[0];
-            
-            // Strategy 2: Find the most frequent text
-            var textFrequency = texts.GroupBy(t => t.ToLower())
-                                    .OrderByDescending(g => g.Count())
-                                    .ThenByDescending(g => g.Key.Length)
-                                    .FirstOrDefault();
-            
-            if (textFrequency != null && textFrequency.Count() > 1)
+            // Strategy 1: Collect non-empty texts without LINQ
+            var texts = new List<string>();
+            foreach (var result in results)
             {
-                return textFrequency.First(); // Return the most frequent text
+                var trimmed = result.Text.Trim();
+                if (!string.IsNullOrEmpty(trimmed))
+                {
+                    texts.Add(trimmed);
+                }
             }
             
-            // Strategy 3: Use the longest text if confidences are similar
-            var maxConfidence = results.Max(r => r.Confidence);
-            var highConfidenceResults = results.Where(r => r.Confidence >= maxConfidence - 0.1f).ToList();
+            if (texts.Count == 0) return string.Empty;
+            if (texts.Count == 1) return texts[0];
             
-            if (highConfidenceResults.Any())
+            // Strategy 2: Find most frequent text using Dictionary instead of LINQ GroupBy
+            var textFrequency = new Dictionary<string, int>();
+            foreach (var text in texts)
             {
-                var longestText = highConfidenceResults.OrderByDescending(r => r.Text.Length).First().Text;
-                if (longestText.Length >= 3) return longestText;
+                var lowerText = text.ToLower();
+                textFrequency[lowerText] = textFrequency.ContainsKey(lowerText) ? textFrequency[lowerText] + 1 : 1;
+            }
+            
+            string mostFrequentText = null;
+            int maxCount = 0;
+            int maxLength = 0;
+            
+            foreach (var kvp in textFrequency)
+            {
+                if (kvp.Value > maxCount || (kvp.Value == maxCount && kvp.Key.Length > maxLength))
+                {
+                    // Find original case version
+                    foreach (var text in texts)
+                    {
+                        if (text.ToLower() == kvp.Key)
+                        {
+                            mostFrequentText = text;
+                            maxCount = kvp.Value;
+                            maxLength = kvp.Key.Length;
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            if (maxCount > 1 && mostFrequentText != null)
+            {
+                return mostFrequentText;
+            }
+            
+            // Strategy 3: Find highest confidence and longest text without LINQ
+            float maxConfidence = 0f;
+            foreach (var result in results)
+            {
+                if (result.Confidence > maxConfidence)
+                {
+                    maxConfidence = result.Confidence;
+                }
+            }
+            
+            string longestText = null;
+            int longestLength = 0;
+            
+            foreach (var result in results)
+            {
+                if (result.Confidence >= maxConfidence - 0.1f && result.Text.Length > longestLength)
+                {
+                    longestText = result.Text;
+                    longestLength = result.Text.Length;
+                }
+            }
+            
+            if (longestText != null && longestLength >= 3)
+            {
+                return longestText;
             }
             
             return string.Empty;
@@ -875,10 +919,19 @@ namespace Kinectv1
                 // Clear old processed transcriptions to prevent memory leaks (keep only recent 10)
                 if (_processedTranscriptions.Count > 10)
                 {
-                    var oldestTranscriptions = _processedTranscriptions.Take(_processedTranscriptions.Count - 10).ToList();
-                    foreach (var oldTranscription in oldestTranscriptions)
+                    // Optimize: avoid LINQ and directly remove excess items
+                    var excessCount = _processedTranscriptions.Count - 10;
+                    var itemsToRemove = new List<string>();
+                    var count = 0;
+                    foreach (var transcription in _processedTranscriptions)
                     {
-                        _processedTranscriptions.Remove(oldTranscription);
+                        itemsToRemove.Add(transcription);
+                        if (++count >= excessCount) break;
+                    }
+                    
+                    foreach (var item in itemsToRemove)
+                    {
+                        _processedTranscriptions.Remove(item);
                     }
                 }
                 
