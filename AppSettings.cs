@@ -8,6 +8,16 @@ using System.Linq;
 
 namespace Kinectv1
 {
+    /// <summary>
+    /// Application scenario presets for configuration
+    /// </summary>
+    public enum AppScenario
+    {
+        Local,   // Local-only TTS and voice processing
+        Discord, // Discord bot integration with voice commands
+        Kiosk    // Public kiosk mode with restricted settings
+    }
+
     public static class AppSettings
     {
         // Thread-safe configuration access
@@ -163,6 +173,260 @@ namespace Kinectv1
         private static void SetInt(string name, int value) => WriteSettingRaw(name, value.ToString(CultureInfo.InvariantCulture));
         private static void SetDouble(string name, double value) => WriteSettingRaw(name, value.ToString(CultureInfo.InvariantCulture));
         private static void SetFloat(string name, float value) => WriteSettingRaw(name, value.ToString(CultureInfo.InvariantCulture));
+
+        // Scenario Configuration Methods
+
+        /// <summary>
+        /// Load current application scenario
+        /// </summary>
+        public static AppScenario LoadAppScenario()
+        {
+            try
+            {
+                var scenarioStr = GetString("AppScenario", "Local");
+                if (Enum.TryParse<AppScenario>(scenarioStr, true, out var scenario))
+                {
+                    return scenario;
+                }
+                return AppScenario.Local; // Default fallback
+            }
+            catch (Exception ex)
+            {
+                LogSettingError("AppScenario", $"read FAILED: {ex.Message}");
+                return AppScenario.Local;
+            }
+        }
+
+        /// <summary>
+        /// Save application scenario
+        /// </summary>
+        public static void SaveAppScenario(AppScenario scenario)
+        {
+            try
+            {
+                SetString("AppScenario", scenario.ToString());
+                Console.WriteLine($"📋 App scenario set to: {scenario}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"ERROR: Error saving app scenario: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Apply scenario defaults to all relevant settings
+        /// </summary>
+        public static void ApplyScenarioDefaults(AppScenario scenario)
+        {
+            try
+            {
+                Console.WriteLine($"📋 Applying {scenario} scenario defaults...");
+
+                switch (scenario)
+                {
+                    case AppScenario.Local:
+                        // Local scenario: Focus on TTS and local voice processing
+                        SaveTtsEnabled(true);
+                        SaveDiscordBotEnabled(false);
+                        SaveOllamaEnabled(true);
+                        SaveTelemetryEnabled(false);
+                        SaveVoiceConfidenceThreshold(0.5f);
+                        SaveVoiceActivityThreshold(300);
+                        SaveTtsUseGpu(false); // Conservative for local use
+                        break;
+
+                    case AppScenario.Discord:
+                        // Discord scenario: Enable bot integration and optimize for voice commands
+                        SaveTtsEnabled(true);
+                        SaveDiscordBotEnabled(true);
+                        SaveOllamaEnabled(true);
+                        SaveTelemetryEnabled(true);
+                        SaveVoiceConfidenceThreshold(0.7f); // Higher threshold for Discord
+                        SaveDiscordVoiceActivityThreshold(25f);
+                        SaveVadDebounceTimeoutMs(200);
+                        SaveDiscordAutoJoinVoice(true);
+                        break;
+
+                    case AppScenario.Kiosk:
+                        // Kiosk scenario: Public-facing, stable settings
+                        SaveTtsEnabled(true);
+                        SaveDiscordBotEnabled(false);
+                        SaveOllamaEnabled(false); // Disable AI for public use
+                        SaveTelemetryEnabled(false);
+                        SaveVoiceConfidenceThreshold(0.8f); // High threshold for accuracy
+                        SaveVoiceActivityThreshold(400); // Higher threshold to avoid noise
+                        SaveTtsUseGpu(false); // Stable CPU processing
+                        break;
+                }
+
+                Console.WriteLine($"✅ {scenario} scenario defaults applied successfully");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"ERROR: Error applying {scenario} scenario defaults: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Validate current configuration and return list of issues
+        /// </summary>
+        public static List<string> Validate()
+        {
+            var issues = new List<string>();
+
+            try
+            {
+                // TTS Validation
+                if (LoadTtsEnabled())
+                {
+                    var ttsModelPath = LoadTtsModelPath();
+                    if (string.IsNullOrEmpty(ttsModelPath) || !File.Exists(ttsModelPath))
+                    {
+                        issues.Add("❌ TTS: Model file not found or not configured");
+                    }
+
+                    var ttsModelFolder = LoadTtsModelFolder();
+                    if (string.IsNullOrEmpty(ttsModelFolder) || !Directory.Exists(ttsModelFolder))
+                    {
+                        issues.Add("❌ TTS: Model folder not found or not configured");
+                    }
+                }
+
+                // STT Validation
+                var sttModelPath = LoadSttModelPath();
+                if (string.IsNullOrEmpty(sttModelPath) || !Directory.Exists(sttModelPath))
+                {
+                    issues.Add("❌ STT: Vosk model directory not found");
+                }
+
+                // Discord Validation
+                if (LoadDiscordBotEnabled())
+                {
+                    var discordToken = LoadDiscordBotToken();
+                    if (string.IsNullOrEmpty(discordToken))
+                    {
+                        issues.Add("❌ Discord: Bot token not configured");
+                    }
+                    else if (discordToken.Length < 50) // Rough check for valid token length
+                    {
+                        issues.Add("⚠️ Discord: Bot token appears invalid (too short)");
+                    }
+                }
+
+                // Ollama Validation
+                if (LoadOllamaEnabled())
+                {
+                    var ollamaModel = LoadOllamaModel();
+                    if (string.IsNullOrEmpty(ollamaModel))
+                    {
+                        issues.Add("❌ Ollama: No model selected");
+                    }
+
+                    var systemPromptPath = LoadSystemPromptPath();
+                    if (!string.IsNullOrEmpty(systemPromptPath) && !File.Exists(systemPromptPath))
+                    {
+                        issues.Add("⚠️ Ollama: System prompt file not found");
+                    }
+                }
+
+                // Audio Device Validation
+                var sttInputDevice = LoadSttInputDevice();
+                var ttsOutputDevice = LoadTtsOutputDevice();
+                
+                // Basic device name validation
+                if (string.IsNullOrEmpty(sttInputDevice))
+                {
+                    issues.Add("⚠️ Audio: STT input device not configured");
+                }
+                if (string.IsNullOrEmpty(ttsOutputDevice))
+                {
+                    issues.Add("⚠️ Audio: TTS output device not configured");
+                }
+
+                // Scenario-specific validation
+                var currentScenario = LoadAppScenario();
+                switch (currentScenario)
+                {
+                    case AppScenario.Discord:
+                        if (!LoadDiscordBotEnabled())
+                        {
+                            issues.Add("⚠️ Scenario: Discord scenario but Discord bot is disabled");
+                        }
+                        break;
+
+                    case AppScenario.Kiosk:
+                        if (LoadOllamaEnabled())
+                        {
+                            issues.Add("⚠️ Scenario: Kiosk scenario should disable Ollama for public use");
+                        }
+                        if (LoadTelemetryEnabled())
+                        {
+                            issues.Add("⚠️ Scenario: Kiosk scenario should disable telemetry for privacy");
+                        }
+                        break;
+                }
+
+                if (issues.Count == 0)
+                {
+                    issues.Add("✅ All configuration checks passed");
+                }
+            }
+            catch (Exception ex)
+            {
+                issues.Add($"❌ Validation failed: {ex.Message}");
+            }
+
+            return issues;
+        }
+
+        /// <summary>
+        /// Get comprehensive diagnostics report including scenario and validation
+        /// </summary>
+        public static string GetDiagnosticsReport()
+        {
+            try
+            {
+                var report = new StringBuilder();
+                report.AppendLine("🔍 Configuration Diagnostics Report");
+                report.AppendLine("=".PadRight(50, '='));
+                report.AppendLine();
+
+                // Current scenario
+                var currentScenario = LoadAppScenario();
+                report.AppendLine($"📋 Current Scenario: {currentScenario}");
+                report.AppendLine();
+
+                // Validation results
+                report.AppendLine("🔍 Validation Results:");
+                var validationIssues = Validate();
+                foreach (var issue in validationIssues)
+                {
+                    report.AppendLine($"   {issue}");
+                }
+                report.AppendLine();
+
+                // Grouped settings summaries
+                report.AppendLine(GetTtsSettingsSummary());
+                report.AppendLine();
+                report.AppendLine(GetSttSettingsSummary());
+                report.AppendLine();
+                report.AppendLine(GetDiscordBotSettingsSummary());
+                report.AppendLine();
+                report.AppendLine(GetAudioDeviceSettingsSummary());
+                report.AppendLine();
+                report.AppendLine(GetVoiceConfidenceSettingsSummary());
+                report.AppendLine();
+                report.AppendLine(GetTelemetrySettingsSummary());
+                report.AppendLine();
+                report.AppendLine(GetFusionSettingsSummary());
+
+                return report.ToString();
+            }
+            catch (Exception ex)
+            {
+                return $"❌ ERROR: Could not generate diagnostics report: {ex.Message}";
+            }
+        }
 
         /// <summary>
         /// Initialize settings on application startup - loads from App.config (no Settings.Default)

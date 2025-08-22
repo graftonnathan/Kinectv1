@@ -299,14 +299,7 @@
     <Grid Margin="15">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
-            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
         <!-- Theme Toggle Button -->
@@ -318,8 +311,59 @@
                     ToolTip="Switch between light and dark theme"/>
         </StackPanel>
 
+        <!-- Main TabControl -->
+        <TabControl Grid.Row="1" Name="MainTabControl" Background="Transparent" BorderThickness="0">
+            <TabControl.Resources>
+                <Style TargetType="TabItem">
+                    <Setter Property="Template">
+                        <Setter.Value>
+                            <ControlTemplate TargetType="TabItem">
+                                <Border Name="Border" Background="{DynamicResource SurfaceBackground}" 
+                                        BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1,1,1,0" 
+                                        CornerRadius="4,4,0,0" Margin="0,0,2,0" Padding="12,8">
+                                    <ContentPresenter x:Name="ContentSite" VerticalAlignment="Center" 
+                                                      HorizontalAlignment="Center" ContentSource="Header" 
+                                                      Margin="0" RecognizesAccessKey="True">
+                                        <ContentPresenter.Resources>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
+                                                <Setter Property="FontWeight" Value="SemiBold"/>
+                                                <Setter Property="FontSize" Value="13"/>
+                                            </Style>
+                                        </ContentPresenter.Resources>
+                                    </ContentPresenter>
+                                </Border>
+                                <ControlTemplate.Triggers>
+                                    <Trigger Property="IsSelected" Value="True">
+                                        <Setter TargetName="Border" Property="Background" Value="{DynamicResource SurfaceBackgroundLight}"/>
+                                        <Setter TargetName="Border" Property="BorderBrush" Value="{DynamicResource AccentBlue}"/>
+                                    </Trigger>
+                                    <Trigger Property="IsMouseOver" Value="True">
+                                        <Setter TargetName="Border" Property="Background" Value="{DynamicResource SurfaceBackgroundLight}"/>
+                                    </Trigger>
+                                </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                        </Setter.Value>
+                    </Setter>
+                </Style>
+            </TabControl.Resources>
+
+            <!-- Main Application Tab -->
+            <TabItem Header="🎤 Main Application">
+                <Grid Margin="0,10,0,0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
         <!-- Voice Transcription Section -->
-        <StackPanel Grid.Row="1" Margin="0,0,0,15">
+        <StackPanel Grid.Row="0" Margin="0,0,0,15">
             <TextBlock Text="Voice Transcription:" FontWeight="Bold" FontSize="14" 
                        Foreground="{DynamicResource TextPrimary}" Margin="0,0,0,5"/>
             <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="4" 
@@ -331,7 +375,7 @@
         </StackPanel>
 
         <!-- Audio Level Display -->
-        <StackPanel Grid.Row="2" Margin="0,0,0,15">
+        <StackPanel Grid.Row="1" Margin="0,0,0,15">
             <TextBlock Text="Audio Levels:" FontWeight="Bold" FontSize="14" 
                        Foreground="{DynamicResource TextPrimary}" Margin="0,0,0,5"/>
 
@@ -407,7 +451,7 @@
         </StackPanel>
 
         <!-- Speaker Recognition -->
-        <StackPanel Grid.Row="3" Margin="0,0,0,15">
+        <StackPanel Grid.Row="2" Margin="0,0,0,15">
             <TextBlock Text="Speaker Recognition:" FontWeight="Bold" FontSize="14" 
                        Foreground="{DynamicResource TextPrimary}" Margin="0,0,0,5"/>
             <Border BorderBrush="{DynamicResource AccentBlue}" BorderThickness="1" CornerRadius="4"
@@ -419,7 +463,7 @@
         </StackPanel>
 
         <!-- Enrollment Section - Unified Row -->
-        <StackPanel Grid.Row="4" Margin="0,0,0,15">
+        <StackPanel Grid.Row="3" Margin="0,0,0,15">
             <TextBlock Text="Enrollment:" FontWeight="Bold" FontSize="14" 
                        Foreground="{DynamicResource TextPrimary}" Margin="0,0,0,8"/>
 
@@ -484,7 +528,7 @@
         </StackPanel>
 
         <!-- Control Buttons Row -->
-        <StackPanel Grid.Row="5" Orientation="Horizontal" Margin="0,0,0,15">
+        <StackPanel Grid.Row="4" Orientation="Horizontal" Margin="0,0,0,15">
             <Button Name="ShowVideoButton" Content="📺 Show Video" Padding="10,6" 
                     Click="ShowVideoButton_Click" Style="{StaticResource ThemedButtonStyle}"
                     Background="{DynamicResource AccentPurple}" Margin="0,0,15,0"/>
@@ -508,14 +552,14 @@
         </StackPanel>
 
         <!-- Status Display -->
-        <Border Grid.Row="6" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="4" 
+        <Border Grid.Row="5" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="4" 
                 Margin="0,0,0,10" Background="{DynamicResource SurfaceBackground}">
             <TextBlock Text="Application ready - Enhanced face and voice recognition active!" 
                        Padding="10" FontWeight="Bold" Foreground="{DynamicResource AccentGreen}" FontSize="12"/>
         </Border>
 
         <!-- Ollama AI Section -->
-        <Border Grid.Row="7" BorderBrush="{DynamicResource AccentBlue}" BorderThickness="2" CornerRadius="6" 
+        <Border Grid.Row="6" BorderBrush="{DynamicResource AccentBlue}" BorderThickness="2" CornerRadius="6" 
                 Background="{DynamicResource SurfaceBackground}">
             <StackPanel Margin="15">
                 <Grid Margin="0,0,0,10">
@@ -567,7 +611,7 @@
         </Border>
 
         <!-- TTS (Text-to-Speech) Section - New Addition -->
-        <Border Grid.Row="8" BorderBrush="{DynamicResource AccentOrange}" BorderThickness="2" CornerRadius="6" 
+        <Border Grid.Row="7" BorderBrush="{DynamicResource AccentOrange}" BorderThickness="2" CornerRadius="6" 
                 Background="{DynamicResource SurfaceBackground}" Margin="0,10,0,0">
             <StackPanel Margin="15">
                 <Grid Margin="0,0,0,10">
@@ -646,5 +690,143 @@
                 </StackPanel>
             </StackPanel>
         </Border>
+                </Grid>
+            </TabItem>
+
+            <!-- Diagnostics Tab -->
+            <TabItem Header="🔍 Diagnostics">
+                <Grid Margin="0,10,0,0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- Scenario Configuration Section -->
+                    <Border Grid.Row="0" BorderBrush="{DynamicResource AccentBlue}" BorderThickness="2" CornerRadius="6" 
+                            Background="{DynamicResource SurfaceBackground}" Margin="0,0,0,15">
+                        <StackPanel Margin="15">
+                            <Grid Margin="0,0,0,10">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="15"/>
+                                    <ColumnDefinition Width="200"/>
+                                    <ColumnDefinition Width="15"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+
+                                <TextBlock Grid.Column="0" Text="Application Scenario:" FontWeight="Bold" FontSize="14" 
+                                           Foreground="{DynamicResource TextPrimary}" VerticalAlignment="Center"/>
+
+                                <ComboBox Grid.Column="2" Name="ScenarioComboBox" Height="35" 
+                                          SelectionChanged="ScenarioComboBox_SelectionChanged"
+                                          Style="{StaticResource ThemedComboBoxStyle}"
+                                          ToolTip="Select application scenario to apply appropriate defaults">
+                                    <ComboBoxItem Content="Local - Local processing only" Tag="Local"/>
+                                    <ComboBoxItem Content="Discord - Bot integration enabled" Tag="Discord"/>
+                                    <ComboBoxItem Content="Kiosk - Public-facing mode" Tag="Kiosk"/>
+                                </ComboBox>
+
+                                <Button Grid.Column="4" Name="ApplyScenarioButton" Content="Apply Defaults" 
+                                        Height="35" Padding="12,6" Click="ApplyScenarioButton_Click"
+                                        Style="{StaticResource ThemedButtonStyle}"
+                                        Background="{DynamicResource AccentGreen}"
+                                        ToolTip="Apply scenario-specific default settings"/>
+                            </Grid>
+
+                            <TextBlock Name="ScenarioDescriptionText" Text="Select a scenario to see its description." 
+                                       FontSize="12" Foreground="{DynamicResource TextSecondary}" 
+                                       Margin="0,5,0,0" TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Validation Results Section -->
+                    <Border Grid.Row="1" BorderBrush="{DynamicResource AccentOrange}" BorderThickness="2" CornerRadius="6" 
+                            Background="{DynamicResource SurfaceBackground}" Margin="0,0,0,15">
+                        <StackPanel Margin="15">
+                            <Grid Margin="0,0,0,10">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+
+                                <TextBlock Grid.Column="0" Text="Configuration Validation:" FontWeight="Bold" FontSize="14" 
+                                           Foreground="{DynamicResource TextPrimary}" VerticalAlignment="Center"/>
+
+                                <Button Grid.Column="2" Name="RefreshValidationButton" Content="🔄 Refresh" 
+                                        Height="30" Padding="10,5" Click="RefreshValidationButton_Click"
+                                        Style="{StaticResource ThemedButtonStyle}"
+                                        Background="{DynamicResource SurfaceBackgroundLight}"
+                                        ToolTip="Refresh validation results"/>
+                            </Grid>
+
+                            <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="4"
+                                    Background="{DynamicResource WindowBackground}">
+                                <ScrollViewer MaxHeight="150" VerticalScrollBarVisibility="Auto">
+                                    <ItemsControl Name="ValidationResultsList" Margin="10">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding}" FontSize="11" FontFamily="Consolas" 
+                                                           Foreground="{DynamicResource TextSecondary}" Margin="0,1"/>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </ScrollViewer>
+                            </Border>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Full Diagnostics Report -->
+                    <Border Grid.Row="2" BorderBrush="{DynamicResource AccentPurple}" BorderThickness="2" CornerRadius="6" 
+                            Background="{DynamicResource SurfaceBackground}">
+                        <StackPanel Margin="15">
+                            <Grid Margin="0,0,0,10">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="10"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+
+                                <TextBlock Grid.Column="0" Text="Full Diagnostics Report:" FontWeight="Bold" FontSize="14" 
+                                           Foreground="{DynamicResource TextPrimary}" VerticalAlignment="Center"/>
+
+                                <Button Grid.Column="2" Name="RefreshDiagnosticsButton" Content="🔄 Refresh" 
+                                        Height="30" Padding="10,5" Click="RefreshDiagnosticsButton_Click"
+                                        Style="{StaticResource ThemedButtonStyle}"
+                                        Background="{DynamicResource SurfaceBackgroundLight}"
+                                        ToolTip="Refresh full diagnostics report"/>
+
+                                <Button Grid.Column="4" Name="CopyDiagnosticsButton" Content="📋 Copy" 
+                                        Height="30" Padding="10,5" Click="CopyDiagnosticsButton_Click"
+                                        Style="{StaticResource ThemedButtonStyle}"
+                                        Background="{DynamicResource AccentBlue}"
+                                        ToolTip="Copy diagnostics report to clipboard"/>
+                            </Grid>
+
+                            <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="4"
+                                    Background="{DynamicResource WindowBackground}">
+                                <TextBox Name="DiagnosticsReportTextBox" TextWrapping="Wrap" IsReadOnly="True" 
+                                         VerticalScrollBarVisibility="Auto" Background="Transparent" BorderThickness="0" 
+                                         Padding="10" FontSize="11" FontFamily="Consolas"
+                                         Foreground="{DynamicResource TextSecondary}"
+                                         Style="{StaticResource ThemedTextBoxStyle}"/>
+                            </Border>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Status Bar -->
+                    <Border Grid.Row="3" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="4" 
+                            Margin="0,15,0,0" Background="{DynamicResource SurfaceBackground}">
+                        <TextBlock Name="DiagnosticsStatusText" Text="Diagnostics ready - Select scenario and refresh validation" 
+                                   Padding="10" FontWeight="Bold" Foreground="{DynamicResource AccentBlue}" FontSize="12"/>
+                    </Border>
+                </Grid>
+            </TabItem>
+        </TabControl>
     </Grid>
 </Window>
