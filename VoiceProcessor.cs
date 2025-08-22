@@ -55,6 +55,7 @@ namespace Kinectv1
         private readonly float _highConfidenceThreshold;      // Configurable high confidence threshold
         private readonly Queue<VoskResult> _lowConfidenceBuffer; // Configurable buffer for low confidence results
         private readonly bool _confidenceLoggingEnabled;      // Configurable logging
+        private readonly int _bufferSize;                      // Buffer size for low confidence results
         
         // Performance optimization: cache split separators to avoid array allocation
         private static readonly char[] _splitSeparators = { ' ', '\t', '\n' };
@@ -73,8 +74,8 @@ namespace Kinectv1
             _confidenceThreshold = AppSettings.LoadVoiceConfidenceThreshold();
             _highConfidenceThreshold = AppSettings.LoadVoiceHighConfidenceThreshold();
             _confidenceLoggingEnabled = AppSettings.LoadVoiceConfidenceLoggingEnabled();
-            var bufferSize = AppSettings.LoadVoiceConfidenceBufferSize();
-            _lowConfidenceBuffer = new Queue<VoskResult>(bufferSize);
+            _bufferSize = AppSettings.LoadVoiceConfidenceBufferSize();
+            _lowConfidenceBuffer = new Queue<VoskResult>(_bufferSize);
             
             // Load configurable VAD settings
             var silenceTimeoutMs = AppSettings.LoadVadSilenceTimeoutMs();
@@ -85,7 +86,7 @@ namespace Kinectv1
             Console.WriteLine($"?? VoiceProcessor initialized with confidence settings:");
             Console.WriteLine($"   Confidence threshold: {_confidenceThreshold:F2}");
             Console.WriteLine($"   High confidence threshold: {_highConfidenceThreshold:F2}");
-            Console.WriteLine($"   Buffer size: {bufferSize}");
+            Console.WriteLine($"   Buffer size: {_bufferSize}");
             Console.WriteLine($"   Logging enabled: {_confidenceLoggingEnabled}");
             Console.WriteLine($"   Microphone RMS callback: {(_onRmsLevel != null ? "Connected" : "Not connected")}");
             Console.WriteLine($"   Discord RMS callback: {(_onDiscordRmsLevel != null ? "Connected" : "Not connected")}");
@@ -677,7 +678,8 @@ namespace Kinectv1
             
             // Buffer low confidence results for potential recovery
             _lowConfidenceBuffer.Enqueue(result);
-            if (_lowConfidenceBuffer.Count > _lowConfidenceBuffer.ToArray().Length) 
+            // Performance: avoid ToArray() allocation for length check
+            if (_lowConfidenceBuffer.Count > _bufferSize) 
                 _lowConfidenceBuffer.Dequeue();
             
             // Try to combine recent low confidence results
