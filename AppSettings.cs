@@ -25,7 +25,10 @@ namespace Kinectv1
 
         private static void LogSettingError(string name, string detail)
         {
-            Console.WriteLine($"Error: {name}: {detail}");
+            var error = AppError.Config("CONFIG_SETTING_ERROR", 
+                $"Setting '{name}': {detail}",
+                "Check configuration values on Diagnostics page.");
+            Console.WriteLine(error.GetDisplayString());
         }
 
         // Helpers to read/write settings without Properties.Settings.Default

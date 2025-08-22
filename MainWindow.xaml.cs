@@ -1297,7 +1297,47 @@ namespace Kinectv1
             {
                 TtsStatusText.Text = $"🎤 TTS: Error - {error}";
                 Console.WriteLine($"TTS Error: {error}");
+                
+                // Show centralized error if it contains AppError format
+                ShowAppError(error);
             });
+        }
+
+        /// <summary>
+        /// Centralized error display system for AppError instances
+        /// </summary>
+        private void ShowAppError(string errorMessage)
+        {
+            try
+            {
+                // Simple detection of AppError format (starts with emoji)
+                if (errorMessage.StartsWith("⚙️") || errorMessage.StartsWith("📁") || 
+                    errorMessage.StartsWith("🎙️") || errorMessage.StartsWith("🌐") ||
+                    errorMessage.StartsWith("🖥️") || errorMessage.StartsWith("🗣️") ||
+                    errorMessage.StartsWith("🎤") || errorMessage.StartsWith("🤖") ||
+                    errorMessage.StartsWith("❓") || errorMessage.StartsWith("❌"))
+                {
+                    // Display in console for now - could be enhanced with UI toast/banner
+                    Console.WriteLine($"🔔 AppError: {errorMessage}");
+                    
+                    // Optional: Flash window title to indicate error
+                    var originalTitle = this.Title;
+                    this.Title = $"⚠️ Error - {originalTitle}";
+                    
+                    // Reset title after 3 seconds
+                    var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
+                    timer.Tick += (s, e) =>
+                    {
+                        this.Title = originalTitle;
+                        timer.Stop();
+                    };
+                    timer.Start();
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error in ShowAppError: {ex.Message}");
+            }
         }
 
         /// <summary>
@@ -1370,8 +1410,10 @@ namespace Kinectv1
 
                     Console.WriteLine($"❌ Discord Bot Error: {error}");
 
-                    // You can show Discord error notifications here
-                    // For example, update a status label or show a message box for critical errors
+                    // Show centralized error display
+                    ShowAppError(error);
+
+                    // Legacy specific handling for backwards compatibility
                     if (error.Contains("token") || error.Contains("authentication"))
                     {
                         // Critical authentication error - might want to show user notification

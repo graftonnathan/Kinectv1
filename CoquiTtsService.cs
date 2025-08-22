@@ -82,7 +82,10 @@ namespace Kinectv1
             }
             catch (Exception ex)
             {
-                OnTtsError?.Invoke(ex.Message);
+                var error = AppError.TTS("TTS_SPEAK_ERROR", 
+                    $"TTS speak operation failed: {ex.Message}",
+                    "Check TTS configuration and audio output settings.", ex);
+                OnTtsError?.Invoke(error.GetDisplayString());
                 return false;
             }
         }
@@ -259,7 +262,10 @@ namespace Kinectv1
             }
             catch (Exception ex)
             {
-                OnTtsError?.Invoke(ex.Message);
+                var error = AppError.TTS("TTS_STREAMING_ERROR", 
+                    $"TTS streaming operation failed: {ex.Message}",
+                    "Check TTS configuration and audio output settings.", ex);
+                OnTtsError?.Invoke(error.GetDisplayString());
                 return false;
             }
         }
