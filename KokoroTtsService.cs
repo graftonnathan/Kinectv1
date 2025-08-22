@@ -2,6 +2,7 @@ using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 using Newtonsoft.Json.Linq;
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -35,8 +36,21 @@ namespace Kinectv1
         private static readonly Dictionary<string, float[]> _voiceBinCache = new Dictionary<string, float[]>(StringComparer.OrdinalIgnoreCase);
         private static bool _retryingAfterGpuFallback = false;
 
+        // Performance optimizations: cached arrays and pooled objects
+        private static readonly float[] _defaultStyleVector = CreateDefaultStyleVector();
+        private static readonly float[] _silencePadding = new float[(int)Math.Round(24000 * 0.01)]; // 10ms at 24kHz
+        private static readonly List<float> _sharedOutputBuffer = new List<float>(1024 * 1024); // 1M samples pre-allocated
+
         // Force staying on CUDA EP only (no per-segment CPU retry)
         private const bool EnableCpuSegmentRetry = false;
+
+        // Create default style vector once to avoid repeated Enumerable.Repeat().ToArray()
+        private static float[] CreateDefaultStyleVector()
+        {
+            var vector = new float[256];
+            for (int i = 0; i < 256; i++) vector[i] = 0.01f;
+            return vector;
+        }
 
         [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
         private static extern IntPtr LoadLibrary(string lpFileName);
@@ -954,7 +968,20 @@ namespace Kinectv1
                     {
                         var ms = Math.Max(0, seg.BreakMs);
                         int samples = (int)Math.Round((_nativeSampleRate / 1000.0) * ms);
-                        output.AddRange(new float[samples]);
+                        if (samples > 0)
+                        {
+                            // Use ArrayPool for break silence instead of new allocation
+                            var silence = ArrayPool<float>.Shared.Rent(samples);
+                            try
+                            {
+                                Array.Clear(silence, 0, samples);
+                                for (int i = 0; i < samples; i++) output.Add(silence[i]);
+                            }
+                            finally
+                            {
+                                ArrayPool<float>.Shared.Return(silence);
+                            }
+                        }
                         continue;
                     }
 
@@ -978,7 +1005,7 @@ namespace Kinectv1
                     }
 
                     int innerTokenCount = Math.Max(0, ids.Length - 2);
-                    var style = LoadStyleVectorAt(_voiceFiles.ContainsKey(vk) ? _voiceFiles[vk] : null, innerTokenCount) ?? Enumerable.Repeat(0.01f, 256).ToArray();
+                    var style = LoadStyleVectorAt(_voiceFiles.ContainsKey(vk) ? _voiceFiles[vk] : null, innerTokenCount) ?? _defaultStyleVector;
 
                     // Build tensors by dimensions then copy values
                     var inputIds = new DenseTensor<long>(new[] { 1, ids.Length });
@@ -1016,7 +1043,8 @@ namespace Kinectv1
                     // Shorter minimal pad (~10ms) only for non-explicit breaks
                     if (!seg.HasExplicitBreak)
                     {
-                        output.AddRange(new float[(int)Math.Round(_nativeSampleRate * 0.01)]);
+                        // Use pre-allocated silence padding instead of new allocation
+                        output.AddRange(_silencePadding);
                     }
                 }
 
@@ -1048,7 +1076,26 @@ namespace Kinectv1
                 {
                     var ms = Math.Max(0, seg.BreakMs);
                     int samples = (int)Math.Round((_nativeSampleRate / 1000.0) * ms);
-                    yield return new float[samples];
+                    if (samples > 0)
+                    {
+                        // Use ArrayPool for break silence instead of new allocation
+                        var silence = ArrayPool<float>.Shared.Rent(samples);
+                        try
+                        {
+                            Array.Clear(silence, 0, samples);
+                            var result = new float[samples];
+                            Array.Copy(silence, result, samples);
+                            yield return result;
+                        }
+                        finally
+                        {
+                            ArrayPool<float>.Shared.Return(silence);
+                        }
+                    }
+                    else
+                    {
+                        yield return Array.Empty<float>();
+                    }
                     continue;
                 }
 
@@ -1067,7 +1114,7 @@ namespace Kinectv1
                 if (ids == null || ids.Length < 2) continue;
 
                 int innerTokenCount = Math.Max(0, ids.Length - 2);
-                var style = LoadStyleVectorAt(_voiceFiles.ContainsKey(vk) ? _voiceFiles[vk] : null, innerTokenCount) ?? Enumerable.Repeat(0.01f, 256).ToArray();
+                var style = LoadStyleVectorAt(_voiceFiles.ContainsKey(vk) ? _voiceFiles[vk] : null, innerTokenCount) ?? _defaultStyleVector;
 
                 // Build tensors by dimensions then copy values
                 var inputIds = new DenseTensor<long>(new[] { 1, ids.Length });
@@ -1109,7 +1156,10 @@ namespace Kinectv1
                 // Shorter minimal pad (~10ms) only for non-explicit breaks
                 if (!seg.HasExplicitBreak)
                 {
-                    yield return new float[(int)Math.Round(_nativeSampleRate * 0.01)];
+                    // Return a copy of pre-allocated silence padding
+                    var padding = new float[_silencePadding.Length];
+                    Array.Copy(_silencePadding, padding, _silencePadding.Length);
+                    yield return padding;
                 }
             }
         }

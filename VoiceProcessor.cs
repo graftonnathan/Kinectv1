@@ -1,5 +1,6 @@
 // VoiceProcessor.cs
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
@@ -22,7 +23,13 @@ namespace Kinectv1
         private TimeSpan _silenceTimeout;
         private TimeSpan _vadDebounceTimeout;
         private DateTime _lastFinalResultTime = DateTime.MinValue;
-        private readonly List<float> _pcmBuffer = new List<float>();
+        
+        // Performance optimization: Replace List<float> with ArrayPool-based circular buffer
+        private const int PCM_BUFFER_SIZE = 48000; // 3 seconds at 16kHz
+        private readonly float[] _pcmBuffer = new float[PCM_BUFFER_SIZE];
+        private int _pcmBufferPosition = 0;
+        private int _pcmBufferCount = 0;
+        
         private string _lastTranscription = string.Empty;
         private string _pendingTranscription = string.Empty; // Store transcription for Ollama
         private DateTime _lastTranscriptionTime = DateTime.MinValue;
@@ -82,6 +89,52 @@ namespace Kinectv1
             Console.WriteLine($"?? VAD settings:");
             Console.WriteLine($"   Silence timeout: {silenceTimeoutMs}ms");
             Console.WriteLine($"   Debounce timeout: {debounceTimeoutMs}ms");
+        }
+
+        /// <summary>
+        /// Add samples to circular PCM buffer using ArrayPool for temporary allocations
+        /// </summary>
+        private void AddToPcmBuffer(float[] samples)
+        {
+            foreach (var sample in samples)
+            {
+                _pcmBuffer[_pcmBufferPosition] = sample;
+                _pcmBufferPosition = (_pcmBufferPosition + 1) % PCM_BUFFER_SIZE;
+                if (_pcmBufferCount < PCM_BUFFER_SIZE) _pcmBufferCount++;
+            }
+        }
+
+        /// <summary>
+        /// Extract one second of audio from circular buffer using ArrayPool
+        /// </summary>
+        private float[] ExtractOneSecondFromBuffer()
+        {
+            const int oneSecondSamples = 16000; // 1 second at 16kHz
+            if (_pcmBufferCount < oneSecondSamples) return null;
+            
+            var result = ArrayPool<float>.Shared.Rent(oneSecondSamples);
+            try
+            {
+                int startPos = _pcmBufferPosition - _pcmBufferCount;
+                if (startPos < 0) startPos += PCM_BUFFER_SIZE;
+                
+                for (int i = 0; i < oneSecondSamples; i++)
+                {
+                    result[i] = _pcmBuffer[(startPos + i) % PCM_BUFFER_SIZE];
+                }
+                
+                // Remove extracted samples
+                _pcmBufferCount -= oneSecondSamples;
+                
+                // Copy result to final array
+                var finalResult = new float[oneSecondSamples];
+                Array.Copy(result, finalResult, oneSecondSamples);
+                return finalResult;
+            }
+            finally
+            {
+                ArrayPool<float>.Shared.Return(result);
+            }
         }
 
         /// <summary>
@@ -253,17 +306,15 @@ namespace Kinectv1
 
                 // Only add to buffer when voice is active
                 float[] floatPcm = AudioUtils.ConvertToFloatPcm(buffer, bytesRecorded);
-                _pcmBuffer.AddRange(floatPcm);
+                AddToPcmBuffer(floatPcm);
 
                 // FIXED: Only process recognition when voice is active (respects VAD settings)
                 ProcessRecognitionWithConfidence(buffer, bytesRecorded);
 
                 // Process voice embeddings when we have enough audio (1 second)
-                if (_pcmBuffer.Count >= 16000)
+                var oneSecond = ExtractOneSecondFromBuffer();
+                if (oneSecond != null)
                 {
-                    float[] oneSecond = _pcmBuffer.GetRange(0, 16000).ToArray();
-                    _pcmBuffer.RemoveRange(0, 16000);
-
                     // Generate speaker embedding
                     var emb = SpeakerEmbedder.Embed(oneSecond);
 
