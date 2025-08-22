@@ -1,4 +1,4 @@
-name: Copilot Assign Next (broad, no labels)
+name: Copilot Assign Next (request reviewer, no labels)
 
 on:
   schedule:
@@ -18,7 +18,7 @@ jobs:
   assign-next:
     runs-on: ubuntu-latest
     env:
-      COPILOT_HANDLE: Copilot   # change if your Copilot assignee login differs
+      COPILOT_HANDLE: Copilot   # change if your Copilot login differs
     steps:
       - name: Auth gh
         env:
@@ -28,37 +28,37 @@ jobs:
           echo "REPO=${{ github.repository }}" >> "$GITHUB_ENV"
           gh --version
 
-      - name: Exit if Copilot is already assigned to any open PR
+      - name: Exit if Copilot already requested anywhere
         id: busy
         run: |
           set -euo pipefail
-          BUSY=$(gh pr list -R "$REPO" --state open --json number,assignees -L 1000 \
-                 | jq --arg u "${{ env.COPILOT_HANDLE }}" \
-                      '[.[] | select([.assignees[].login?] | index($u))] | length')
+          BUSY=$(gh pr list -R "$REPO" --search "is:open review-requested:${{ env.COPILOT_HANDLE }}" -L 100 \
+                 --json number | jq 'length')
           echo "busy=$BUSY" >> "$GITHUB_OUTPUT"
 
-      # Pick the oldest open PR where Copilot is NOT an assignee (drafts allowed)
-      - name: Find oldest eligible PR
+      - name: Pick oldest PR without Copilot as reviewer
         if: ${{ steps.busy.outputs.busy == '0' }}
         id: pick
         run: |
           set -euo pipefail
-          PR=$(gh pr list -R "$REPO" --state open --json number,assignees,updatedAt,isDraft -L 1000 \
-               | jq -r --arg u "${{ env.COPILOT_HANDLE }}" '
-                    map(select(.assignees | map(.login) | index($u) | not))
-                    | sort_by(.updatedAt)
-                    | .[0].number // empty')
+          PR=$(gh pr list -R "$REPO" --search "is:open -review-requested:${{ env.COPILOT_HANDLE }}" -L 100 \
+               --json number,updatedAt | jq -r 'sort_by(.updatedAt) | .[0].number // empty')
           echo "pr=$PR" >> "$GITHUB_OUTPUT"
 
-      - name: Assign Copilot to chosen PR
+      - name: Request review from Copilot
         if: ${{ steps.busy.outputs.busy == '0' && steps.pick.outputs.pr != '' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           PR="${{ steps.pick.outputs.pr }}"
-          echo "Assigning ${{ env.COPILOT_HANDLE }} to PR #$PR"
-          gh pr edit -R "$REPO" "$PR" --add-assignee "${{ env.COPILOT_HANDLE }}" || true
-          gh pr comment -R "$REPO" "$PR" --body "🤖 Assigning to **${{ env.COPILOT_HANDLE }}** (auto)."
+          echo "Requesting review from ${{ env.COPILOT_HANDLE }} on PR #$PR"
+          gh pr edit -R "$REPO" "$PR" --add-reviewer "${{ env.COPILOT_HANDLE }}" || true
+          gh pr comment -R "$REPO" "$PR" --body "🤖 Requested review from **${{ env.COPILOT_HANDLE }}** (auto)."
+
+      - name: Nothing to assign
+        if: ${{ steps.busy.outputs.busy == '0' && steps.pick.outputs.pr == '' }}
+        run: echo "No eligible PRs (all open PRs already requested Copilot)."
+
 
       - name: Nothing to assign
         if: ${{ steps.busy.outputs.busy == '0' && steps.pick.outputs.pr == '' }}
