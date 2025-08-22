@@ -1,8 +1,8 @@
-name: Process PR queue (one at a time, no labels; no /search API)
+name: Process PR queue (one at a time; app-safe; auto-merge)
 
 on:
   schedule:
-    - cron: "*/4 * * * *"         # every 4 minutes
+    - cron: "*/4 * * * *"
   workflow_dispatch:
 
 concurrency:
@@ -15,8 +15,9 @@ permissions:
   issues: write
 
 env:
-  COPILOT_HANDLE: "Copilot"       # change if your Copilot reviewer handle differs
-  MERGE_METHOD: squash            # squash | merge | rebase
+  # Copilot reviewer variants to try (left→right). Keep/adjust as needed.
+  COPILOT_REVIEWERS: "app/github-copilot,app/Copilot,app/copilot,Copilot"
+  MERGE_METHOD: squash
   MAX_WAIT_MINUTES: "45"
 
 jobs:
@@ -34,90 +35,73 @@ jobs:
           echo "NAME=${GITHUB_REPOSITORY#*/}"  >> "$GITHUB_ENV"
           gh --version
 
-      # -------- Discover active & next WITHOUT /search API ----------
-      - name: Discover active & next PR
-        id: choose
+      # 1) Choose the focus PR = oldest open PR by updatedAt
+      - name: Discover open PRs and pick focus
+        id: pick
         shell: bash
         run: |
           set -euo pipefail
+          list=$(gh pr list -R "$REPO" --state open --json number,updatedAt -L 200 \
+                 | jq -r 'sort_by(.updatedAt) | .[].number')
+          if [[ -z "$list" ]]; then
+            echo "pr=" >> "$GITHUB_OUTPUT"
+            echo "No open PRs."
+            exit 0
+          fi
+          focus=$(printf "%s\n" "$list" | head -n1)
+          echo "pr=$focus" >> "$GITHUB_OUTPUT"
+          printf "%s\n" "$list" > /tmp/open_prs.txt
+          echo "Focus PR: #$focus"
 
-          # Get up to 200 open PRs (oldest first by updatedAt)
-          all=$(gh pr list -R "$REPO" --state open --json number,updatedAt -L 200 \
-               | jq -c 'sort_by(.updatedAt)')
+      - name: Stop if nothing to do
+        if: ${{ steps.pick.outputs.pr == '' }}
+        run: echo "Queue empty."
 
-          # Function: does PR already have Copilot requested?
-          has_copilot() {
-            local pr="$1"
-            local json
-            json=$(gh pr view -R "$REPO" "$pr" --json reviewRequests 2>/dev/null || echo '{}')
-            jq -e --arg u "${{ env.COPILOT_HANDLE }}" \
-               'any(.reviewRequests[].login?; . == $u)' <<<"$json" >/dev/null
-          }
+      # 2) Enforce single active: drop Copilot reviewer from all except focus
+      - name: Remove Copilot from non-focus PRs (force; ignore errors)
+        if: ${{ steps.pick.outputs.pr != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          focus="${{ steps.pick.outputs.pr }}"
+          IFS=',' read -r -a RVS <<< "${{ env.COPILOT_REVIEWERS }}"
+          while read -r n; do
+            [[ "$n" = "$focus" ]] && continue
+            for r in "${RVS[@]}"; do
+              gh pr edit -R "$REPO" "$n" --remove-reviewer "$r" >/dev/null 2>&1 || true
+            done
+          done < /tmp/open_prs.txt
 
-          active=""
-          pick=""
-
-          # First pass: find oldest PR where Copilot IS already requested
-          for pr in $(jq -r '.[].number' <<<"$all"); do
-            if has_copilot "$pr"; then
-              active="$pr"
+      # 3) Ensure Copilot is requested on focus
+      - name: Request Copilot on focus PR (try app slugs first)
+        if: ${{ steps.pick.outputs.pr != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          PR="${{ steps.pick.outputs.pr }}"
+          IFS=',' read -r -a RVS <<< "${{ env.COPILOT_REVIEWERS }}"
+          ok=""
+          for r in "${RVS[@]}"; do
+            if gh pr edit -R "$REPO" "$PR" --add-reviewer "$r" >/dev/null 2>&1; then
+              echo "Requested reviewer: $r"
+              ok="yes"
               break
             fi
           done
-
-          # Second pass: if none active, pick oldest PR WITHOUT Copilot requested
-          if [[ -z "$active" ]]; then
-            for pr in $(jq -r '.[].number' <<<"$all"); do
-              if ! has_copilot "$pr"; then
-                pick="$pr"
-                break
-              fi
-            done
+          if [[ -z "$ok" ]]; then
+            echo "Warning: could not request Copilot (tried: ${RVS[*]}). Continuing anyway."
           fi
+          gh pr comment -R "$REPO" "$PR" --body "🤖 Queue focusing PR #$PR."
 
-          echo "active=$active" >> "$GITHUB_OUTPUT"
-          echo "pick=$pick"     >> "$GITHUB_OUTPUT"
-
-      - name: Enforce single active (remove Copilot from extras)
-        if: ${{ steps.choose.outputs.active != '' }}
+      # 4) Prep & approve
+      - name: Prepare focus PR (ready + clean WIP/Draft + approve)
+        if: ${{ steps.pick.outputs.pr != '' }}
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          act="${{ steps.choose.outputs.active }}"
-          # Find all PRs with Copilot requested
-          all=$(gh pr list -R "$REPO" --state open --json number -L 200 | jq -r '.[].number')
-          for n in $all; do
-            if [[ "$n" == "$act" ]]; then continue; fi
-            json=$(gh pr view -R "$REPO" "$n" --json reviewRequests 2>/dev/null || echo '{}')
-            if jq -e --arg u "${{ env.COPILOT_HANDLE }}" 'any(.reviewRequests[].login?; . == $u)' <<<"$json" >/dev/null; then
-              gh pr edit -R "$REPO" "$n" --remove-reviewer "${{ env.COPILOT_HANDLE }}" || true
-              gh pr comment -R "$REPO" "$n" --body "⏸️ Copilot is busy with PR #$act; review request removed for now."
-            fi
-          done
-
-      - name: Request Copilot on picked PR
-        if: ${{ steps.choose.outputs.active == '' && steps.choose.outputs.pick != '' }}
-        shell: bash
-        run: |
-          PR="${{ steps.choose.outputs.pick }}"
-          echo "Requesting Copilot review on PR #$PR"
-          gh pr edit -R "$REPO" "$PR" --add-reviewer "${{ env.COPILOT_HANDLE }}" || true
-          gh pr comment -R "$REPO" "$PR" --body "🤖 Queued for **${{ env.COPILOT_HANDLE }}**."
-
-      - name: Stop if nothing to do
-        if: ${{ steps.choose.outputs.active == '' && steps.choose.outputs.pick == '' }}
-        run: echo "Queue empty."
-
-      - name: Determine active PR number
-        id: focus
-        run: |
-          echo "pr=${{ steps.choose.outputs.active || steps.choose.outputs.pick }}" >> "$GITHUB_OUTPUT"
-
-      - name: Prepare active PR (ready + clean WIP/Draft)
-        if: ${{ steps.focus.outputs.pr != '' }}
-        shell: bash
-        run: |
-          PR="${{ steps.focus.outputs.pr }}"
+          PR="${{ steps.pick.outputs.pr }}"
           gh pr ready -R "$REPO" "$PR" || true
           TITLE=$(gh pr view -R "$REPO" "$PR" --json title -q .title)
           CLEAN=$(printf "%s" "$TITLE" \
@@ -126,37 +110,32 @@ jobs:
           if [ "$CLEAN" != "$TITLE" ] && [ -n "$CLEAN" ]; then
             gh pr edit -R "$REPO" "$PR" --title "$CLEAN"
           fi
-
-      - name: Approve (counts with PAT; falls back to GITHUB_TOKEN)
-        if: ${{ steps.focus.outputs.pr != '' }}
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
-        run: |
-          PR="${{ steps.focus.outputs.pr }}"
           gh pr review -R "$REPO" "$PR" --approve -b "Auto-approved by orchestrator"
 
+      # 5) Flip auto-merge now (squash); ignore if not allowed
       - name: Enable auto-merge (squash + delete branch)
-        if: ${{ steps.focus.outputs.pr != '' }}
+        if: ${{ steps.pick.outputs.pr != '' }}
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
         run: |
-          PR="${{ steps.focus.outputs.pr }}"
-          # Flip "merge when green" now; ignore error if auto-merge not allowed
-          gh pr merge -R "$REPO" "$PR" --auto --squash --delete-branch || true
+          PR="${{ steps.pick.outputs.pr }}"
+          gh pr merge -R "$REPO" "$PR" --auto --${{ env.MERGE_METHOD }} --delete-branch || true
 
+      # 6) Fallback: wait for green then merge ourselves
       - name: Wait for checks to pass, then merge
-        if: ${{ steps.focus.outputs.pr != '' }}
+        if: ${{ steps.pick.outputs.pr != '' }}
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          PR="${{ steps.focus.outputs.pr }}"
+          PR="${{ steps.pick.outputs.pr }}"
+          OWNER="${GITHUB_REPOSITORY%/*}"
+          NAME="${GITHUB_REPOSITORY#*/}"
           limit=$(( ${{ env.MAX_WAIT_MINUTES }} * 60 ))
           interval=30
           elapsed=0
           echo "Waiting up to $limit seconds for checks on PR #$PR…"
-
           while (( elapsed < limit )); do
             pr_json=$(gh api graphql -f owner="$OWNER" -f name="$NAME" -F pr="$PR" -f query='
               query($owner:String!,$name:String!,$pr:Int!){
@@ -171,7 +150,6 @@ jobs:
             isDraft=$(jq -r '.data.repository.pullRequest.isDraft' <<<"$pr_json")
             mergeState=$(jq -r '.data.repository.pullRequest.mergeStateStatus' <<<"$pr_json")
             sha=$(jq -r '.data.repository.pullRequest.headRefOid' <<<"$pr_json")
-
             rollup=$(gh api graphql -f owner="$OWNER" -f name="$NAME" -F sha="$sha" -f query='
               query($owner:String!,$name:String!,$sha:GitObjectID!){
                 repository(owner:$owner,name:$name){
@@ -179,7 +157,6 @@ jobs:
                 }
               }')
             state=$(jq -r '.data.repository.object.statusCheckRollup.state // "PENDING"' <<<"$rollup")
-
             echo "state=$state mergeState=$mergeState draft=$isDraft elapsed=${elapsed}s"
             if [[ "$isDraft" == "false" && "$state" == "SUCCESS" && "$mergeState" != "BLOCKED" ]]; then
               gh pr merge -R "$REPO" "$PR" --${{ env.MERGE_METHOD }} --delete-branch
@@ -189,10 +166,5 @@ jobs:
             sleep "$interval"
             elapsed=$(( elapsed + interval ))
           done
-
           echo "Checks not green in time; leaving PR #$PR open."
 
-            elapsed=$(( elapsed + interval ))
-          done
-
-          echo "Checks not green in time; leaving PR #$PR open."
