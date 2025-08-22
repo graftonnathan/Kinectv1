@@ -1,4 +1,4 @@
-name: Process PR queue (one at a time; app-safe; auto-merge)
+name: Process PR queue (one at a time; app-safe; auto-merge + Discord)
 
 on:
   schedule:
@@ -15,15 +15,14 @@ permissions:
   issues: write
 
 env:
-  # Copilot reviewer variants to try (left→right). Keep/adjust as needed.
   COPILOT_REVIEWERS: "app/github-copilot,app/Copilot,app/copilot,Copilot"
   MERGE_METHOD: squash
   MAX_WAIT_MINUTES: "45"
+  DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
 
 jobs:
   run:
     runs-on: ubuntu-latest
-
     steps:
       - name: Setup gh auth
         env:
@@ -35,7 +34,24 @@ jobs:
           echo "NAME=${GITHUB_REPOSITORY#*/}"  >> "$GITHUB_ENV"
           gh --version
 
-      # 1) Choose the focus PR = oldest open PR by updatedAt
+      - name: Setup notifier
+        run: |
+          if [ -z "${DISCORD_WEBHOOK}" ]; then
+            echo "NO_DISCORD=1" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          cat > notify.sh <<'BASH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          webhook="$1"; title="$2"; desc="$3"; color="$4"; url="${5:-}"
+          ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          jq -nc --arg title "$title" --arg desc "$desc" --arg url "$url" --arg ts "$ts" --argjson color "$color" '
+            {embeds:[{title:$title, description:$desc, url:(if ($url|length)>0 then $url else null end), color:color, timestamp:$ts}]}
+          ' | curl -sS -H "Content-Type: application/json" -X POST -d @- "$webhook" >/dev/null || true
+          BASH
+          chmod +x notify.sh
+
+      # 1) Choose focus PR
       - name: Discover open PRs and pick focus
         id: pick
         shell: bash
@@ -52,12 +68,15 @@ jobs:
           echo "pr=$focus" >> "$GITHUB_OUTPUT"
           printf "%s\n" "$list" > /tmp/open_prs.txt
           echo "Focus PR: #$focus"
+          if [ "${NO_DISCORD:-}" != "1" ]; then
+            ./notify.sh "$DISCORD_WEBHOOK" "Copilot Orchestrator" "📌 Focusing PR #$focus" 3447003 "https://github.com/$REPO/pull/$focus"
+          fi
 
       - name: Stop if nothing to do
         if: ${{ steps.pick.outputs.pr == '' }}
         run: echo "Queue empty."
 
-      # 2) Enforce single active: drop Copilot reviewer from all except focus
+      # 2) Enforce single active
       - name: Remove Copilot from non-focus PRs (force; ignore errors)
         if: ${{ steps.pick.outputs.pr != '' }}
         shell: bash
@@ -65,14 +84,23 @@ jobs:
           set -euo pipefail
           focus="${{ steps.pick.outputs.pr }}"
           IFS=',' read -r -a RVS <<< "${{ env.COPILOT_REVIEWERS }}"
+          removed=0
           while read -r n; do
             [[ "$n" = "$focus" ]] && continue
             for r in "${RVS[@]}"; do
-              gh pr edit -R "$REPO" "$n" --remove-reviewer "$r" >/dev/null 2>&1 || true
+              if gh pr edit -R "$REPO" "$n" --remove-reviewer "$r" >/dev/null 2>&1; then
+                removed=$((removed+1))
+              fi
             done
           done < /tmp/open_prs.txt
+          echo "removed=$removed" >> "$GITHUB_OUTPUT"
 
-      # 3) Ensure Copilot is requested on focus
+      - name: Notify cleanup
+        if: ${{ steps.pick.outputs.pr != '' && env.NO_DISCORD != '1' }}
+        run: |
+          ./notify.sh "$DISCORD_WEBHOOK" "Copilot Orchestrator" "🧹 Removed Copilot from ${{ steps.remove_copilot.outputs.removed || '0' }} other PR(s)" 15844367
+
+      # 3) Ensure Copilot requested on focus
       - name: Request Copilot on focus PR (try app slugs first)
         if: ${{ steps.pick.outputs.pr != '' }}
         shell: bash
@@ -88,10 +116,13 @@ jobs:
               break
             fi
           done
-          if [[ -z "$ok" ]]; then
-            echo "Warning: could not request Copilot (tried: ${RVS[*]}). Continuing anyway."
+          if [ "${NO_DISCORD:-}" != "1" ]; then
+            if [[ -n "$ok" ]]; then
+              ./notify.sh "$DISCORD_WEBHOOK" "Copilot Orchestrator" "🤖 Requested Copilot on PR #$PR" 3447003 "https://github.com/$REPO/pull/$PR"
+            else
+              ./notify.sh "$DISCORD_WEBHOOK" "Copilot Orchestrator" "⚠️ Could not request Copilot on PR #$PR (tried: ${RVS[*]})" 15158332 "https://github.com/$REPO/pull/$PR"
+            fi
           fi
-          gh pr comment -R "$REPO" "$PR" --body "🤖 Queue focusing PR #$PR."
 
       # 4) Prep & approve
       - name: Prepare focus PR (ready + clean WIP/Draft + approve)
@@ -111,8 +142,11 @@ jobs:
             gh pr edit -R "$REPO" "$PR" --title "$CLEAN"
           fi
           gh pr review -R "$REPO" "$PR" --approve -b "Auto-approved by orchestrator"
+          if [ "${NO_DISCORD:-}" != "1" ]; then
+            ./notify.sh "$DISCORD_WEBHOOK" "Copilot Orchestrator" "✅ Approved PR #$PR" 3066993 "https://github.com/$REPO/pull/$PR"
+          fi
 
-      # 5) Flip auto-merge now (squash); ignore if not allowed
+      # 5) Flip auto-merge now (ignore if not allowed)
       - name: Enable auto-merge (squash + delete branch)
         if: ${{ steps.pick.outputs.pr != '' }}
         env:
@@ -120,8 +154,11 @@ jobs:
         run: |
           PR="${{ steps.pick.outputs.pr }}"
           gh pr merge -R "$REPO" "$PR" --auto --${{ env.MERGE_METHOD }} --delete-branch || true
+          if [ "${NO_DISCORD:-}" != "1" ]; then
+            ./notify.sh "$DISCORD_WEBHOOK" "Copilot Orchestrator" "🟦 Auto-merge armed (squash) for PR #$PR" 3447003 "https://github.com/$REPO/pull/$PR"
+          fi
 
-      # 6) Fallback: wait for green then merge ourselves
+      # 6) Fallback: wait then merge ourselves
       - name: Wait for checks to pass, then merge
         if: ${{ steps.pick.outputs.pr != '' }}
         shell: bash
@@ -135,15 +172,12 @@ jobs:
           limit=$(( ${{ env.MAX_WAIT_MINUTES }} * 60 ))
           interval=30
           elapsed=0
-          echo "Waiting up to $limit seconds for checks on PR #$PR…"
           while (( elapsed < limit )); do
             pr_json=$(gh api graphql -f owner="$OWNER" -f name="$NAME" -F pr="$PR" -f query='
               query($owner:String!,$name:String!,$pr:Int!){
                 repository(owner:$owner,name:$name){
                   pullRequest(number:$pr){
-                    isDraft
-                    mergeStateStatus
-                    headRefOid
+                    isDraft mergeStateStatus headRefOid
                   }
                 }
               }')
@@ -157,14 +191,16 @@ jobs:
                 }
               }')
             state=$(jq -r '.data.repository.object.statusCheckRollup.state // "PENDING"' <<<"$rollup")
-            echo "state=$state mergeState=$mergeState draft=$isDraft elapsed=${elapsed}s"
             if [[ "$isDraft" == "false" && "$state" == "SUCCESS" && "$mergeState" != "BLOCKED" ]]; then
               gh pr merge -R "$REPO" "$PR" --${{ env.MERGE_METHOD }} --delete-branch
-              echo "Merged PR #$PR"
+              if [ "${NO_DISCORD:-}" != "1" ]; then
+                ./notify.sh "$DISCORD_WEBHOOK" "Copilot Orchestrator" "🎉 Merged PR #$PR" 3066993 "https://github.com/$REPO/pull/$PR"
+              fi
               exit 0
             fi
-            sleep "$interval"
-            elapsed=$(( elapsed + interval ))
+            sleep "$interval"; elapsed=$((elapsed+interval))
           done
-          echo "Checks not green in time; leaving PR #$PR open."
+          if [ "${NO_DISCORD:-}" != "1" ]; then
+            ./notify.sh "$DISCORD_WEBHOOK" "Copilot Orchestrator" "⏲️ Timeout waiting for green on PR #$PR (left open)" 15844367 "https://github.com/$REPO/pull/$PR"
+          fi
 
