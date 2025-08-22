@@ -2271,7 +2271,7 @@ namespace Kinectv1
                 Console.WriteLine($"   Enabled: {enabled}");
                 Console.WriteLine($"   File path: {filePath}");
                 Console.WriteLine($"   Sampling: {samplingPct}%");
-                Console.WriteLine($"   💡 Events are logged as NDJSON to console and file");
+                Console.WriteLine($"   💡 All events logged to file; console shows warnings+ and summaries");
                 Console.WriteLine($"   💡 File rotates at ~5MB to prevent disk fill");
             }
             catch (Exception ex)
@@ -2296,6 +2296,7 @@ namespace Kinectv1
                        $"   File path: {filePath}\n" +
                        $"   Sampling: {samplingPct}%\n" +
                        $"   Format: NDJSON (Newline Delimited JSON)\n" +
+                       $"   Console: Warnings+ and summaries only\n" +
                        $"   Rotation: ~5MB file size limit";
             }
             catch (Exception ex)
