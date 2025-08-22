@@ -1,0 +1,47 @@
+name: Copilot Throttle (one assignment at a time)
+
+on:
+  pull_request:
+    types: [assigned]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+env:
+  QUEUE_LABEL: "copilot:todo"
+  INPROGRESS_LABEL: "copilot:in-progress"
+  COPILOT_HANDLE: "Copilot"   # change if your Copilot assignee name differs (case-sensitive per UI)
+
+jobs:
+  enforce-single-assignment:
+    if: contains(github.event.pull_request.assignees.*.login, env.COPILOT_HANDLE)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup gh
+        run: echo "GH_TOKEN=${{ github.token }}" >> "$GITHUB_ENV"
+
+      - name: Check for existing Copilot-assigned PR
+        id: find_existing
+        run: |
+          set -euo pipefail
+          REPO="${GITHUB_REPOSITORY}"
+          CURRENT="${{ github.event.pull_request.number }}"
+          # Find all open PRs assigned to Copilot (excluding current)
+          JSON=$(gh pr list --state open --json number,assignees \
+                 | jq --arg u "${COPILOT_HANDLE}" --arg cur "$CURRENT" '
+                      map(select(.number != ($cur|tonumber))) 
+                      | map(select(.assignees[].login? == $u))')
+          COUNT=$(jq 'length' <<< "$JSON")
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+
+      - name: Queue this PR if another is already assigned
+        if: steps.find_existing.outputs.count != '0'
+        run: |
+          set -euo pipefail
+          PR="${{ github.event.pull_request.number }}"
+          echo "Another Copilot assignment exists; re-queuing PR #$PR"
+          gh pr edit "$PR" --remove-assignee "${COPILOT_HANDLE}" || true
+          gh pr edit "$PR" --add-label "$QUEUE_LABEL" || true
+          gh pr comment "$PR" --body "⏳ Copilot is busy with another PR. This PR has been **queued** via label \`$QUEUE_LABEL\` and will be assigned automatically when free."

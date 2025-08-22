@@ -1,0 +1,47 @@
+name: Copilot Assign Next (promote from queue)
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+env:
+  QUEUE_LABEL: "copilot:todo"
+  COPILOT_HANDLE: "Copilot"
+
+jobs:
+  promote-from-queue:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup gh
+        run: echo "GH_TOKEN=${{ github.token }}" >> "$GITHUB_ENV"
+
+      - name: Skip if Copilot already has an assigned PR
+        id: check_busy
+        run: |
+          set -euo pipefail
+          BUSY=$(gh pr list --state open --json number,assignees \
+                 | jq --arg u "${COPILOT_HANDLE}" '[.[] | select(.assignees[].login? == $u)] | length')
+          echo "busy_count=$BUSY" >> "$GITHUB_OUTPUT"
+
+      - name: Assign next queued PR to Copilot
+        if: steps.check_busy.outputs.busy_count == '0'
+        run: |
+          set -euo pipefail
+          # Oldest PR with QUEUE_LABEL
+          PR=$(gh pr list --state open --label "$QUEUE_LABEL" --json number,updatedAt \
+               | jq -r 'sort_by(.updatedAt) | .[0].number // empty')
+          if [[ -z "$PR" ]]; then
+            echo "No queued PRs."
+            exit 0
+          fi
+          gh pr edit "$PR" --add-assignee "${COPILOT_HANDLE}" || true
+          gh pr edit "$PR" --remove-label "$QUEUE_LABEL" || true
+          gh pr comment "$PR" --body "🤖 Assigning to **${COPILOT_HANDLE}** from queue. Work starting now."
