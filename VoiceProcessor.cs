@@ -867,9 +867,10 @@ namespace Kinectv1
                 }
 
                 // NEW: Check if TTS is currently speaking (ASR suppression during TTS playback)
-                if (TtsPlaybackController.Instance.IsSpeaking)
+                // Only suppress ASR if barge-in is disabled (per requirements)
+                if (TtsPlaybackController.Instance.IsSpeaking && !AppSettings.LoadBargeInEnabled())
                 {
-                    Console.WriteLine($"?? DISPATCH BLOCKED: '{transcription}' from {source} (TTS currently speaking - ASR suppressed)");
+                    Console.WriteLine($"?? DISPATCH BLOCKED: '{transcription}' from {source} (TTS currently speaking - ASR suppressed, barge-in disabled)");
                     Telemetry.Counter("asr.dispatch_blocked_due_to_tts");
                     return;
                 }
