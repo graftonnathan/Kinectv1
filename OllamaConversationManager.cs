@@ -50,6 +50,10 @@ namespace Kinectv1
                 
                 // Load the history path from settings (with fallback to "history")
                 var historyPathSetting = AppSettings.LoadConversationHistoryPath();
+                if (string.IsNullOrWhiteSpace(historyPathSetting))
+                {
+                    historyPathSetting = "history"; // Final fallback
+                }
                 _historyDirectory = Path.Combine(currentDir, historyPathSetting);
                 
                 Console.WriteLine($"?? Conversation manager initialized:");

@@ -1126,12 +1126,12 @@ namespace Kinectv1
                 var value = GetInt("OllamaMaxMessagesPerSpeaker");
                 if (value <= 0 || value > 100)
                     LogSettingError("OllamaMaxMessagesPerSpeaker", $"OUT OF RANGE (expected 1-100, got {value})");
-                return value;
+                return value > 0 ? value : 20; // Default to 20 if invalid
             }
             catch (Exception ex)
             {
                 LogSettingError("OllamaMaxMessagesPerSpeaker", $"READ FAILED: {ex.Message}");
-                return 0;
+                return 20; // Default value
             }
         }
 
@@ -1142,12 +1142,12 @@ namespace Kinectv1
                 var value = GetInt("OllamaMaxSystemMessages");
                 if (value <= 0 || value > 10)
                     LogSettingError("OllamaMaxSystemMessages", $"OUT OF RANGE (expected 1-10, got {value})");
-                return value;
+                return value > 0 ? value : 3; // Default to 3 if invalid
             }
             catch (Exception ex)
             {
                 LogSettingError("OllamaMaxSystemMessages", $"READ FAILED: {ex.Message}");
-                return 0;
+                return 3; // Default value
             }
         }
 
@@ -1158,12 +1158,12 @@ namespace Kinectv1
                 var value = GetInt("OllamaConversationTimeoutMinutes");
                 if (value <= 0 || value > 1440)
                     LogSettingError("OllamaConversationTimeoutMinutes", $"OUT OF RANGE (expected 1-1440, got {value})");
-                return value;
+                return value > 0 ? value : 30; // Default to 30 minutes if invalid
             }
             catch (Exception ex)
             {
                 LogSettingError("OllamaConversationTimeoutMinutes", $"READ FAILED: {ex.Message}");
-                return 0;
+                return 30; // Default value
             }
         }
 
@@ -1202,6 +1202,7 @@ namespace Kinectv1
                 if (string.IsNullOrWhiteSpace(path))
                 {
                     LogSettingError("ConversationHistoryPath", "EMPTY");
+                    return "history"; // Default fallback
                 }
                 else
                 {
@@ -1213,7 +1214,7 @@ namespace Kinectv1
             catch (Exception ex)
             {
                 LogSettingError("ConversationHistoryPath", $"READ FAILED: {ex.Message}");
-                return null;
+                return "history"; // Default fallback
             }
         }
 
