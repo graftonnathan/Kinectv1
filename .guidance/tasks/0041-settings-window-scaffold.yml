@@ -1,0 +1,20 @@
+# Copilot Agent Task
+version: 1
+name: "Create WPF SettingsWindow shell (TreeView + ContentPresenter)"
+goal: |
+  Create a `SettingsWindow` with a TreeView on the left and a ContentPresenter on the right using MVVM.
+
+context:
+  repo_paths:
+    - ./
+
+tasks:
+  - Add `/src/UI/Settings/SettingsWindow.xaml` with Grid layout.
+  - Left pane: `TreeView` bound to `SettingsCategoryVM`.
+  - Right pane: `ContentPresenter` bound to `SelectedCategory.EditorView`.
+  - `SettingsViewModel` tracks selection and dirty state.
+
+acceptance_criteria:
+  - Window loads and can switch between placeholder categories.
+  - MVVM bindings work.
+  - Resizable window keeps layout intact.

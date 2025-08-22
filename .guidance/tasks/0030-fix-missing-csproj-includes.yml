@@ -1,0 +1,47 @@
+# Copilot Agent Task
+version: 1
+name: "Fix missing file references in project files"
+goal: |
+  Identify and fix missing file references in .csproj files. Add the missing files or update the project to remove/replace them.
+  
+  Examples to address:
+  - Kinectv1.csproj -> tools\**\*
+  - Kinectv1.csproj -> .github\copilot-instructions.md
+  - Kinectv1.csproj -> .github\workflows\agent-bridge.yml
+  - Kinectv1.csproj -> .github\workflows\asr-testing.yml
+  - Kinectv1.csproj -> .github\workflows\copilot-assign-next.yml
+  - Kinectv1.csproj -> .github\workflows\copilot-task-runner.yml
+  - Kinectv1.csproj -> .github\workflows\copilot-throttle-pr.yml
+  - Kinectv1.csproj -> .github\workflows\pr-summary.yml
+  - Kinectv1.csproj -> .guidance\tasks\0000-template.yml
+  - Kinectv1.csproj -> .guidance\tasks\0001-vad-dispatch-hardening.yml
+  - Kinectv1.csproj -> .guidance\tasks\0002-telemetry.yml
+  - Kinectv1.csproj -> .guidance\tasks\0003-backpressure.yml
+  - Kinectv1.csproj -> .guidance\tasks\0004-tts-preemption.yml
+  - Kinectv1.csproj -> .guidance\tasks\0005-asr-resampler.yml
+  - Kinectv1.csproj -> .guidance\tasks\0006-speaker-fusion.yml
+  - Kinectv1.csproj -> .guidance\tasks\0007-config-diagnostics.yml
+  - Kinectv1.csproj -> .guidance\tasks\0008-threading-lifecycle.yml
+  - Kinectv1.csproj -> .guidance\tasks\0009-error-taxonomy.yml
+  - Kinectv1.csproj -> .guidance\tasks\0010-testing-harness.yml
+  - Kinectv1.csproj -> .guidance\tasks\0011-performance.yml
+  
+  Steps:
+  - Open each affected .csproj.
+  - Verify Compile, None, and EmbeddedResource includes.
+  - If files should exist: restore/commit them or correct paths.
+  - If obsolete: remove the Include item or replace with correct asset.
+  - Build locally to confirm.
+
+context:
+  repo_paths:
+    - Kinectv1.sln
+    - Kinectv1.csproj
+    - tests/Tests.csproj
+    - tools/AsrOffline.csproj
+
+acceptance_criteria:
+  - Changes compile locally with `dotnet build` (Debug, Any CPU).
+  - All referenced files in .csproj exist and relative paths are correct.
+  - No leftover merge conflict markers (`<<<<<<<`, `>>>>>>>`) in the repo.
+  - CI passes on push and PR.

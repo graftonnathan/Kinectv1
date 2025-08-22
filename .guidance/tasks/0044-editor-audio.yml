@@ -1,0 +1,19 @@
+# Copilot Agent Task
+version: 1
+name: "Implement Audio settings editor"
+goal: |
+  Provide an `AudioSettingsView` with device ComboBoxes, threshold sliders, and test buttons.
+
+context:
+  repo_paths:
+    - ./
+
+tasks:
+  - Add ComboBoxes bound to `AudioDeviceService`.
+  - Add sliders for thresholds and output volume.
+  - Add 'Test' button to verify devices.
+
+acceptance_criteria:
+  - Selected devices persist after restart.
+  - Preview tests play/capture without crash.
+  - Thresholds map to pipeline.

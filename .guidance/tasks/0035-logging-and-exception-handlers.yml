@@ -1,0 +1,23 @@
+# Copilot Agent Task
+version: 1
+name: "Add unified logging and crash handlers"
+goal: |
+  Add centralized logging and unhandled exception handling.
+  
+  Steps:
+  - Wire AppDomain.CurrentDomain.UnhandledException and DispatcherUnhandledException (WPF) handlers.
+  - Log to rolling file and Debug output.
+  - Ensure logs include audio device names, model file paths, and GPU/CPU mode.
+
+context:
+  repo_paths:
+    - Kinectv1.sln
+    - Kinectv1.csproj
+    - tests/Tests.csproj
+    - tools/AsrOffline.csproj
+
+acceptance_criteria:
+  - Changes compile locally with `dotnet build` (Debug, Any CPU).
+  - All referenced files in .csproj exist and relative paths are correct.
+  - No leftover merge conflict markers (`<<<<<<<`, `>>>>>>>`) in the repo.
+  - CI passes on push and PR.

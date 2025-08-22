@@ -1,0 +1,22 @@
+# Copilot Agent Task
+version: 1
+name: "Graceful Discord voice disconnect on exit"
+goal: |
+  Ensure Discord voice client disconnects cleanly on app exit.
+  
+  Steps:
+  - Hook application exit to call leave/disconnect using the SDK, await completion, and dispose clients.
+  - Add timeout & fallback to prevent 4006 reconnect errors.
+
+context:
+  repo_paths:
+    - Kinectv1.sln
+    - Kinectv1.csproj
+    - tests/Tests.csproj
+    - tools/AsrOffline.csproj
+
+acceptance_criteria:
+  - Changes compile locally with `dotnet build` (Debug, Any CPU).
+  - All referenced files in .csproj exist and relative paths are correct.
+  - No leftover merge conflict markers (`<<<<<<<`, `>>>>>>>`) in the repo.
+  - CI passes on push and PR.

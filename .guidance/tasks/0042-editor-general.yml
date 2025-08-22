@@ -1,0 +1,19 @@
+# Copilot Agent Task
+version: 1
+name: "Implement General settings editor"
+goal: |
+  Provide a `GeneralSettingsView` that binds to `AppSettings.General`.
+
+context:
+  repo_paths:
+    - ./
+
+tasks:
+  - Add `/src/UI/Settings/Editors/GeneralSettingsView.xaml` with dropdowns/toggles for Theme, Language, Logging Level.
+  - Bind to `GeneralSettingsVM`.
+  - Include validation where appropriate.
+
+acceptance_criteria:
+  - Changing fields updates bound view model and marks dirty.
+  - Invalid input shows feedback.
+  - Values persist after Save/Apply.

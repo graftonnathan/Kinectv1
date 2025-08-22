@@ -1,0 +1,23 @@
+# Copilot Agent Task
+version: 1
+name: "Implement immediate TTS stop-and-restart on new output"
+goal: |
+  Implement immediate TTS interruption and restart behavior.
+  
+  Steps:
+  - On new LLM output event, stop current audio stream, dispose resources, and start a fresh stream for new text.
+  - Ensure audio buffers are flushed and devices released to prevent initial silence.
+  - Add test to simulate rapid successive outputs.
+
+context:
+  repo_paths:
+    - Kinectv1.sln
+    - Kinectv1.csproj
+    - tests/Tests.csproj
+    - tools/AsrOffline.csproj
+
+acceptance_criteria:
+  - Changes compile locally with `dotnet build` (Debug, Any CPU).
+  - All referenced files in .csproj exist and relative paths are correct.
+  - No leftover merge conflict markers (`<<<<<<<`, `>>>>>>>`) in the repo.
+  - CI passes on push and PR.

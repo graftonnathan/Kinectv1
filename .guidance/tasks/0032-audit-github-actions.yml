@@ -1,0 +1,28 @@
+# Copilot Agent Task
+version: 1
+name: "Audit GitHub Actions workflows and fix parsing issues"
+goal: |
+  Audit `.github/workflows` for invalid context usage (e.g., env.* in if: conditions, missing permissions, matrix misuse).
+  
+  Steps:
+  - Ensure if: guards reference vars.*, github.*, or env.* only where supported. Avoid env.* in if: at workflow level without env: defined.
+  - Verify permissions: minimal set for the jobs.
+  - Add concurrency: group to prevent duplicate runs.
+  - Confirm triggers for PRs and pushes are correct.
+  - Validate YAML with act or GitHub's linter.
+  
+  Acceptance:
+  - Workflows parse without errors and run in a PR.
+
+context:
+  repo_paths:
+    - Kinectv1.sln
+    - Kinectv1.csproj
+    - tests/Tests.csproj
+    - tools/AsrOffline.csproj
+
+acceptance_criteria:
+  - Changes compile locally with `dotnet build` (Debug, Any CPU).
+  - All referenced files in .csproj exist and relative paths are correct.
+  - No leftover merge conflict markers (`<<<<<<<`, `>>>>>>>`) in the repo.
+  - CI passes on push and PR.

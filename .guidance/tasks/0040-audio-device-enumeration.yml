@@ -1,0 +1,19 @@
+# Copilot Agent Task
+version: 1
+name: "Implement audio device enumeration + stable identifiers"
+goal: |
+  Enumerate system audio input/output devices and expose stable identifiers to store in settings.
+
+context:
+  repo_paths:
+    - ./
+
+tasks:
+  - Add `/src/Audio/AudioDeviceService.cs` using NAudio or WASAPI to list devices with IDs and friendly names.
+  - Expose methods: `GetInputDevices()`, `GetOutputDevices()`, `TryResolveDevice(id)`.
+  - Handle devices disappearing with graceful fallback.
+
+acceptance_criteria:
+  - List of input/output devices returned.
+  - Selecting a device stores its stable ID and can be resolved.
+  - Graceful fallback when a device is missing.

@@ -1,0 +1,19 @@
+# Copilot Agent Task
+version: 1
+name: "Add validation, tooltips, and inline errors"
+goal: |
+  Implement validation with IDataErrorInfo or INotifyDataErrorInfo.
+
+context:
+  repo_paths:
+    - ./
+
+tasks:
+  - Common validators in `/src/UI/Validation/*`.
+  - Adorn fields with validation templates.
+  - Block Apply/Save if critical errors.
+
+acceptance_criteria:
+  - Invalid fields show messages.
+  - Cannot save when critical errors exist.
+  - Warnings allow save with confirmation.

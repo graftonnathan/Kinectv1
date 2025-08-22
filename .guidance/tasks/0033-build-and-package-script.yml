@@ -1,0 +1,23 @@
+# Copilot Agent Task
+version: 1
+name: "Add build.ps1 for reproducible builds"
+goal: |
+  Create a reproducible local build script and packaging steps for the Kinect v1 app.
+  
+  Steps:
+  - Add build.ps1 that restores NuGet, builds Debug/Release, and publishes artifacts.
+  - Ensure AnyCPU/x64 targets are consistent with Kinect v1 SDK requirements.
+  - Emit artifacts to artifacts/ with version stamp from git tag or date.
+
+context:
+  repo_paths:
+    - Kinectv1.sln
+    - Kinectv1.csproj
+    - tests/Tests.csproj
+    - tools/AsrOffline.csproj
+
+acceptance_criteria:
+  - Changes compile locally with `dotnet build` (Debug, Any CPU).
+  - All referenced files in .csproj exist and relative paths are correct.
+  - No leftover merge conflict markers (`<<<<<<<`, `>>>>>>>`) in the repo.
+  - CI passes on push and PR.

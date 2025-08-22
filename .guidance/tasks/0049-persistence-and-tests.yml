@@ -1,0 +1,19 @@
+# Copilot Agent Task
+version: 1
+name: "Persistence and integration tests for Settings"
+goal: |
+  Add tests to ensure settings round-trip and device fallback.
+
+context:
+  repo_paths:
+    - ./
+
+tasks:
+  - Unit tests for JsonSettingsProvider.
+  - Integration test for SettingsWindow.
+  - Test device-missing fallback.
+
+acceptance_criteria:
+  - Tests run green.
+  - Round-trip equals expected values.
+  - Missing device fallback verified.
