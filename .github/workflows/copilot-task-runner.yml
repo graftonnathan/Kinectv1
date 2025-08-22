@@ -1,4 +1,4 @@
-name: Process PR queue (one at a time, no labels; GraphQL-based)
+name: Process PR queue (one at a time, no labels; REST search)
 
 on:
   schedule:
@@ -15,8 +15,8 @@ permissions:
   issues: write
 
 env:
-  COPILOT_USER: "Copilot"                 # what the UI shows
-  COPILOT_APP_SLUGS: "copilot,github-copilot"  # try both just in case
+  COPILOT_USER: "Copilot"                 # UI name
+  COPILOT_APP_SLUGS: "copilot,github-copilot"  # app slugs to treat as Copilot
   MERGE_METHOD: squash                    # squash | merge | rebase
   MAX_WAIT_MINUTES: "45"
 
@@ -35,96 +35,59 @@ jobs:
           echo "NAME=${GITHUB_REPOSITORY#*/}"  >> "$GITHUB_ENV"
           gh --version
 
-      # ---- Discover active & next via GraphQL (reliable with GitHub Apps) ----
+      # ---- Discover active & next using REST Search API (supports app reviewers) ----
       - name: Discover active & next PR
         id: choose
         shell: bash
         run: |
           set -euo pipefail
-          readarray -td, APP_SLUGS <<< "${{ env.COPILOT_APP_SLUGS }}"; unset 'APP_SLUGS[-1]'
-          APP_JQ_FILTER=$(printf '("%s") or ' "${APP_SLUGS[@]}"; echo 'false')
+          REPO="${REPO}"
 
-          QUERY='
-            query($owner:String!,$name:String!){
-              repository(owner:$owner,name:$name){
-                pullRequests(states:OPEN, first:100, orderBy:{field:UPDATED_AT,direction:ASC}){
-                  nodes{
-                    number
-                    updatedAt
-                    isDraft
-                    headRefName
-                    author{ login }
-                    reviewRequests(first:20){
-                      nodes{
-                        requestedReviewer{
-                          __typename
-                          ... on User{ login }
-                          ... on App{ slug }
-                          ... on Team{ slug organization{ login } }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }'
+          # Build queries
+          IFS=',' read -r -a SLUGS <<< "${{ env.COPILOT_APP_SLUGS }}"
+          # PRs WITH Copilot requested (union of app slugs + user handle)
+          with_queries=()
+          for s in "${SLUGS[@]}"; do with_queries+=("repo:${REPO} is:pr is:open review-requested:app/${s}"); done
+          with_queries+=("repo:${REPO} is:pr is:open review-requested:${{ env.COPILOT_USER }}")
 
-          resp=$(gh api graphql -f owner="$OWNER" -f name="$NAME" -f query="$QUERY")
-          prs=$(jq -c '.data.repository.pullRequests.nodes' <<<"$resp")
+          # PRs WITHOUT Copilot requested (negate all)
+          neg=""
+          for s in "${SLUGS[@]}"; do neg+=" -review-requested:app/${s}"; done
+          neg+=" -review-requested:${{ env.COPILOT_USER }}"
+          without_query="repo:${REPO} is:pr is:open${neg}"
 
-          # Helper: does PR already request Copilot (user OR app slug)?
-          with_copilot=$(jq '[.[] |
-            select( any(.reviewRequests.nodes[]?.requestedReviewer?;
-                        (.requestedReviewer.__typename=="User" and .requestedReviewer.login=="'${{ env.COPILOT_USER }}'")
-                     or (.requestedReviewer.__typename=="App"  and ( .requestedReviewer.slug | test('${APP_JQ_FILTER}')) )
-            )) ]' <<<"$prs")
+          # Collect WITH Copilot (merge results, de-dup)
+          with_all="[]"
+          for q in "${with_queries[@]}"; do
+            page=$(gh api search/issues -f q="$q" -F per_page=100 | jq '.items')
+            with_all=$(jq -c --argjson a "$with_all" --argjson b "$page" '$a + $b' <<< "{}" 2>/dev/null || echo "$with_all")
+            with_all=$(jq -c --argjson page "$page" '. + $page' <<< "$with_all")
+          done
+          with_all=$(jq -c 'map({number,updated_at}) | unique_by(.number)' <<< "$with_all")
 
-          active=$(jq -r '.[0].number // empty' <<<"$with_copilot")  # oldest with Copilot requested
+          # Active = oldest with Copilot requested
+          active=$(jq -r 'sort_by(.updated_at) | .[0].number // empty' <<< "$with_all")
 
-          # Candidates = open PRs that DO NOT already request Copilot
-          candidates=$(jq '[ .[] | select( any(.reviewRequests.nodes[]?.requestedReviewer?;
-                              (.requestedReviewer.__typename=="User" and .requestedReviewer.login=="'${{ env.COPILOT_USER }}'")
-                           or (.requestedReviewer.__typename=="App" and ( .requestedReviewer.slug | test('${APP_JQ_FILTER}')) )
-                           ) | not ) ]' <<<"$prs")
-
-          pick=$(jq -r '.[0].number // empty' <<<"$candidates")      # oldest without Copilot
+          # Next pick = oldest open PR WITHOUT Copilot requested
+          without=$(gh api search/issues -f q="$without_query" -F per_page=100 | jq '.items | map({number,updated_at})')
+          pick=$(jq -r 'sort_by(.updated_at) | .[0].number // empty' <<< "$without")
 
           echo "active=$active" >> "$GITHUB_OUTPUT"
           echo "pick=$pick"     >> "$GITHUB_OUTPUT"
+          echo "$with_all" > /tmp/with_copilot.json
 
-      # Keep only one active: if there are multiple with Copilot requested, drop Copilot from the extras
+      # Keep only one active: drop Copilot from extras
       - name: Enforce single active (remove Copilot from extras)
         if: ${{ steps.choose.outputs.active != '' }}
         shell: bash
         run: |
           set -euo pipefail
-          # Recompute the full list so we can drop extras
-          resp=$(gh api graphql -f owner="$OWNER" -f name="$NAME" -f query='
-            query($owner:String!,$name:String!){
-              repository(owner:$owner,name:$name){
-                pullRequests(states:OPEN, first:100, orderBy:{field:UPDATED_AT,direction:ASC}){
-                  nodes{ number reviewRequests(first:20){
-                    nodes{ requestedReviewer{ __typename ... on User{login} ... on App{slug} } }
-                  }}
-                }
-              }
-            }')
-          prs=$(jq -c '.data.repository.pullRequests.nodes' <<<"$resp")
-          # Map PR number -> has Copilot
-          echo "$prs" | jq -r \
-            --arg user "${{ env.COPILOT_USER }}" \
-            --argjson slugs "$(printf '%s\n' "${{ env.COPILOT_APP_SLUGS }}" | jq -R 'split(",")')" \
-            --arg act "${{ steps.choose.outputs.active }}" '
-              .[]
-              | {n:.number, has: (any(.reviewRequests.nodes[]?.requestedReviewer?;
-                          (.requestedReviewer.__typename=="User" and .requestedReviewer.login==$user)
-                       or (.requestedReviewer.__typename=="App" and (.requestedReviewer.slug | IN($slugs[]))) )) }
-              | select(.has==true and (.n != ($act|tonumber)))
-              | .n' \
+          act="${{ steps.choose.outputs.active }}"
+          jq -r --arg act "$act" 'map(.number) | unique | .[] | select(. != ($act|tonumber))' /tmp/with_copilot.json \
           | while read -r n; do
               gh pr edit -R "$REPO" "$n" --remove-reviewer "app/Copilot"  || true
-              gh pr edit -R "$REPO" "$n" --remove-reviewer "Copilot"      || true
-              gh pr comment -R "$REPO" "$n" --body "⏸️ Copilot is busy with PR #${{ steps.choose.outputs.active }}; review request removed for now."
+              gh pr edit -R "$REPO" "$n" --remove-reviewer "${{ env.COPILOT_USER }}" || true
+              gh pr comment -R "$REPO" "$n" --body "⏸️ Copilot is busy with PR #$act; review request removed for now."
             done
 
       # If no active, request Copilot on the oldest candidate
@@ -134,16 +97,15 @@ jobs:
         run: |
           PR="${{ steps.choose.outputs.pick }}"
           echo "Requesting Copilot review on PR #$PR"
-          # Try app reviewer first, then user handle as fallback
           gh pr edit -R "$REPO" "$PR" --add-reviewer "app/Copilot"  || \
-          gh pr edit -R "$REPO" "$PR" --add-reviewer "Copilot"      || true
+          gh pr edit -R "$REPO" "$PR" --add-reviewer "${{ env.COPILOT_USER }}" || true
           gh pr comment -R "$REPO" "$PR" --body "🤖 Queued for **Copilot**."
 
       - name: Stop if nothing to do
         if: ${{ steps.choose.outputs.active == '' && steps.choose.outputs.pick == '' }}
         run: echo "Queue empty."
 
-      # Focus PR is either the already-active one, or the one we just requested
+      # Focus PR is either the active one, or the one we just requested
       - name: Determine active PR number
         id: focus
         run: |
