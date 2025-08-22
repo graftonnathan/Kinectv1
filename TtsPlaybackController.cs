@@ -7,13 +7,56 @@ namespace Kinectv1
     /// <summary>
     /// Controls TTS playback with robust interrupt/flush semantics.
     /// Owns a CancellationTokenSource and utteranceId for each TTS operation.
+    /// Implements IPlaybackState for ASR gating coordination.
     /// </summary>
-    public class TtsPlaybackController
+    public class TtsPlaybackController : IPlaybackState
     {
         private static readonly object _lock = new object();
         private static CancellationTokenSource _currentCts;
         private static string _currentUtteranceId;
         private static int _utteranceCounter = 0;
+
+        // IPlaybackState implementation
+        private static readonly TtsPlaybackController _instance = new TtsPlaybackController();
+        public static IPlaybackState Instance => _instance;
+
+        /// <summary>
+        /// True if TTS is currently speaking/playing audio
+        /// </summary>
+        public bool IsSpeaking 
+        { 
+            get 
+            { 
+                lock (_lock)
+                {
+                    return _currentCts != null && !_currentCts.IsCancellationRequested;
+                }
+            } 
+        }
+
+        /// <summary>
+        /// Cancellation token for the current TTS operation
+        /// </summary>
+        public CancellationToken PlaybackCancellationToken 
+        { 
+            get 
+            { 
+                lock (_lock)
+                {
+                    return _currentCts?.Token ?? CancellationToken.None;
+                }
+            } 
+        }
+
+        /// <summary>
+        /// Event raised when TTS playback starts
+        /// </summary>
+        public event Action OnPlaybackStart;
+
+        /// <summary>
+        /// Event raised when TTS playback stops (completed or canceled)
+        /// </summary>
+        public event Action OnPlaybackStop;
 
         /// <summary>
         /// Start a new utterance, canceling any current utterance immediately.
@@ -29,9 +72,12 @@ namespace Kinectv1
 
             string utteranceId;
             CancellationToken token;
+            bool wasAlreadySpeaking;
 
             lock (_lock)
             {
+                wasAlreadySpeaking = _currentCts != null && !_currentCts.IsCancellationRequested;
+                
                 // Cancel any existing utterance
                 _currentCts?.Cancel();
                 _currentCts?.Dispose();
@@ -42,6 +88,20 @@ namespace Kinectv1
                 _currentUtteranceId = utteranceId;
                 _currentCts = new CancellationTokenSource();
                 token = _currentCts.Token;
+            }
+
+            // Raise playback start event if we weren't already speaking
+            if (!wasAlreadySpeaking)
+            {
+                try
+                {
+                    _instance.OnPlaybackStart?.Invoke();
+                    Telemetry.Gauge("tts.active", 1);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[TtsPlaybackController] Error raising OnPlaybackStart: {ex.Message}");
+                }
             }
 
             try
@@ -84,6 +144,17 @@ namespace Kinectv1
                         _currentCts?.Dispose();
                         _currentCts = null;
                         _currentUtteranceId = null;
+                        
+                        // Raise playback stop event
+                        try
+                        {
+                            _instance.OnPlaybackStop?.Invoke();
+                            Telemetry.Gauge("tts.active", 0);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"[TtsPlaybackController] Error raising OnPlaybackStop: {ex.Message}");
+                        }
                     }
                 }
             }
@@ -100,6 +171,8 @@ namespace Kinectv1
                 {
                     Console.WriteLine($"[TtsPlaybackController] Canceling current utterance: {_currentUtteranceId}");
                     _currentCts.Cancel();
+                    
+                    // The OnPlaybackStop event will be raised in the finally block of StartUtterance
                 }
             }
         }
