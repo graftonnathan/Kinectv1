@@ -1,8 +1,128 @@
-name: Agent Bridge (Wrapper → Orchestrator)
+name: Agent Bridge (Tasks → Issues)
 
 on:
+  push:
+    paths:
+      - ".guidance/tasks/**/*.yml"
+      - ".guidance/tasks/**/*.yaml"
+  schedule:
+    - cron: "*/10 * * * *"   # backfill every 10 minutes
   workflow_dispatch:
 
+permissions:
+  contents: read
+  issues: write
+
 jobs:
-  forward:
-    uses: ./.github/workflows/copilot-task-runner.yml
+  open-or-update-issues:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create/Update issues for task files
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const path = require("path");
+            const isTaskFile = (p) =>
+              p && p.startsWith(".guidance/tasks/") &&
+              (p.endsWith(".yml") || p.endsWith(".yaml"));
+
+            // 1) Determine which task files to process
+            let targets = new Set();
+
+            if (context.eventName === "push" && context.payload.commits) {
+              for (const c of context.payload.commits) {
+                for (const f of [...(c.added||[]), ...(c.modified||[])]) {
+                  if (isTaskFile(f)) targets.add(f);
+                }
+              }
+            }
+
+            // On schedule/dispatch OR if push had none, scan the folder (backfill)
+            if (targets.size === 0) {
+              try {
+                const { data: entries } = await github.rest.repos.getContent({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  path: ".guidance/tasks",
+                  ref: context.ref?.replace("refs/heads/", "") || undefined
+                });
+                for (const it of entries) {
+                  if (it.type === "file" && isTaskFile(it.path)) {
+                    targets.add(it.path);
+                  }
+                }
+              } catch (e) {
+                core.warning(`No .guidance/tasks directory found (${e.status||e.message})`);
+              }
+            }
+
+            if (targets.size === 0) {
+              core.info("No task files to process.");
+              return;
+            }
+
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const currentRef = context.payload.ref?.replace("refs/heads/", "");
+
+            for (const f of targets) {
+              // 2) Fetch file content (for link & optional preview)
+              let fileData;
+              try {
+                const { data } = await github.rest.repos.getContent({
+                  owner, repo, path: f, ref: currentRef
+                });
+                if (Array.isArray(data) || !data.content) continue;
+                fileData = Buffer.from(data.content, data.encoding || "base64").toString("utf8");
+              } catch (e) {
+                core.warning(`Unable to fetch ${f}: ${e.message}`);
+                continue;
+              }
+
+              // 3) Build a stable marker so we can find/update the same issue later
+              const marker = `<!-- agent-bridge:${f} -->`;
+              const fileName = path.basename(f);
+              const issueTitle = `Agent Task: ${fileName}`;
+
+              // 4) Search for an existing OPEN issue with our marker in the body
+              const q = `repo:${owner}/${repo} is:issue in:body "${marker}" state:open`;
+              const { data: search } = await github.rest.search.issuesAndPullRequests({ q });
+              const existing = search.items?.[0];
+
+              // 5) Compose (or refresh) the body
+              const fileUrl = `https://github.com/${owner}/${repo}/blob/${currentRef || 'HEAD'}/${f}`;
+              const body = [
+                marker,
+                `**Source task file:** ${fileUrl}`,
+                "",
+                "<details><summary>Task file preview</summary>",
+                "",
+                "```yaml",
+                fileData.slice(0, 5000),   // keep body sane; GH comment limit ~65k
+                "```",
+                "",
+                "</details>",
+                "",
+                "_This issue is auto-generated and kept in sync with the task file._"
+              ].join("\n");
+
+              if (existing) {
+                core.info(`Updating existing issue #${existing.number} for ${f}`);
+                await github.rest.issues.update({
+                  owner, repo,
+                  issue_number: existing.number,
+                  title: issueTitle,
+                  body
+                });
+              } else {
+                core.info(`Creating new issue for ${f}`);
+                await github.rest.issues.create({
+                  owner, repo,
+                  title: issueTitle,
+                  body
+                });
+              }
+            }
