@@ -1,0 +1,46 @@
+name: Copilot Dispatcher
+
+on:
+  workflow_dispatch:
+    inputs:
+      glob:
+        description: Task glob
+        default: ".guidance/tasks/*.yml"
+        required: true
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  dispatch-all:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: List tasks
+        id: list
+        run: |
+          ls -1 "${{ inputs.glob }}" | sort | tee tasks.txt
+
+      - name: Dispatch each task (will be serialized by runner)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          while read -r t; do
+            echo "Dispatching $t"
+            gh api repos/${{ github.repository }}/dispatches \
+              -f event_type=copilot-task \
+              -f client_payload:='{"task_path":"'"$t"'"}'
+            sleep 2
+          done < tasks.txt
+
+      - name: Discord notify (queued)
+        if: secrets.DISCORD_WEBHOOK_URL != ''
+        run: |
+          COUNT=$(wc -l < tasks.txt)
+          MSG="🧾 Queued ${COUNT} task(s) for Copilot. They will run one at a time."
+          python - <<'PY' > payload.json
+          import json, os; print(json.dumps({"content": os.environ["MSG"]}))
+          PY
+          curl -sS -X POST -H "Content-Type: application/json" --data-binary @payload.json "$DISCORD_WEBHOOK_URL" || true
