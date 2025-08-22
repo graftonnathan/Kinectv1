@@ -44,7 +44,7 @@ namespace Kinectv1
                 this.ShowInTaskbar = true;
                 this.Title = "Kinect Face & Voice Recognition";
 
-                // Add keyboard shortcut for testing fusion (Ctrl+F)
+                // Add keyboard shortcuts for testing
                 this.KeyDown += (sender, e) =>
                 {
                     if (e.Key == Key.F && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
@@ -57,6 +57,21 @@ namespace Kinectv1
                         catch (Exception ex)
                         {
                             Console.WriteLine($"Error testing fusion: {ex.Message}");
+                        }
+                    }
+                    else if (e.Key == Key.H && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
+                    {
+                        try
+                        {
+                            Console.WriteLine("🧪 Testing Hosted Services Manager (Ctrl+H pressed)");
+                            Task.Run(async () =>
+                            {
+                                await HostedServicesTest.RunAllTests();
+                            });
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"Error testing hosted services: {ex.Message}");
                         }
                     }
                 };

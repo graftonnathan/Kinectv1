@@ -52,16 +52,28 @@ namespace Kinectv1
                         return Task.CompletedTask; // Already started
                     }
 
+                    // Check for cancellation before starting
+                    cancellationToken.ThrowIfCancellationRequested();
+
                     Console.WriteLine($"🎤 Starting VoiceRecognizer service with model: {_modelPath}");
                     
                     // Use existing static Start method
                     VoiceRecognizer.Start(_modelPath, _triggerName);
+                    
+                    // Check for cancellation after starting
+                    cancellationToken.ThrowIfCancellationRequested();
                     
                     _isStarted = true;
                     Console.WriteLine("✅ VoiceRecognizer service started successfully");
                 }
 
                 return Task.CompletedTask;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                Console.WriteLine("🎤 VoiceRecognizer startup was cancelled");
+                _isStarted = false;
+                return Task.CompletedTask; // Don't throw on cancellation during startup
             }
             catch (Exception ex)
             {

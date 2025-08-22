@@ -55,8 +55,24 @@ namespace Kinectv1
                     return;
                 }
 
-                // Use existing StartAsync method
-                var success = await DiscordNetBotManager.StartAsync();
+                // Use existing StartAsync method with cancellation token awareness
+                using var combinedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                combinedCts.CancelAfter(TimeSpan.FromSeconds(30)); // Startup timeout
+                
+                // Monitor for cancellation during startup
+                var startupTask = DiscordNetBotManager.StartAsync();
+                var delayTask = Task.Delay(Timeout.Infinite, combinedCts.Token);
+                
+                var completedTask = await Task.WhenAny(startupTask, delayTask);
+                
+                if (completedTask == delayTask)
+                {
+                    // Startup was cancelled or timed out
+                    Console.WriteLine("🤖 Discord Bot startup was cancelled or timed out");
+                    return;
+                }
+                
+                var success = await startupTask;
                 
                 lock (_lock)
                 {
@@ -70,6 +86,14 @@ namespace Kinectv1
                 else
                 {
                     Console.WriteLine("⚠️ Discord Bot service failed to start (check configuration)");
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                Console.WriteLine("🤖 Discord Bot startup was cancelled");
+                lock (_lock)
+                {
+                    _isStarted = false;
                 }
             }
             catch (Exception ex)
