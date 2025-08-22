@@ -12,6 +12,7 @@ using System.Collections.Concurrent;
 using System.IO;
 using NAudio.Wave;
 using System.Diagnostics;
+using System.Threading.Channels;
 
 namespace Kinectv1.Discord
 {
@@ -52,7 +53,7 @@ namespace Kinectv1.Discord
         private static readonly SemaphoreSlim _speakLock = new SemaphoreSlim(1, 1);
         private static CancellationTokenSource _speakHoldCts;
 
-        // TTS queue
+        // TTS queue with System.Threading.Channels - length=1 with preempt policy
         private class TtsJob
         {
             public string Text { get; set; }
@@ -60,7 +61,14 @@ namespace Kinectv1.Discord
             public TaskCompletionSource<bool> Tcs { get; set; }
             public CancellationTokenSource Cts { get; set; }
         }
-        private static readonly BlockingCollection<TtsJob> _ttsQueue = new BlockingCollection<TtsJob>(boundedCapacity: 10);
+        private static readonly Channel<TtsJob> _ttsChannel = Channel.CreateBounded<TtsJob>(new BoundedChannelOptions(1)
+        {
+            FullMode = BoundedChannelFullMode.DropOldest,
+            SingleReader = true,
+            SingleWriter = false
+        });
+        private static readonly ChannelWriter<TtsJob> _ttsWriter = _ttsChannel.Writer;
+        private static readonly ChannelReader<TtsJob> _ttsReader = _ttsChannel.Reader;
         private static volatile bool _ttsWorkerRunning = false;
         private static readonly object _ttsWorkerLock = new object();
         private static readonly object _ttsCancelLock = new object();
@@ -69,8 +77,8 @@ namespace Kinectv1.Discord
         private static int _sttBargeHooked = 0;
         private static DateTime _lastTtsEnded = DateTime.MinValue;
         
-        // Backpressure configuration and metrics for TTS queue
-        private const int MAX_TTS_QUEUE_SIZE = 10; // Allow up to 10 pending TTS jobs
+        // Backpressure configuration and metrics for TTS queue - length=1 with preemption
+        private const int MAX_TTS_QUEUE_SIZE = 1; // TTS queue length=1 with preempt policy
         private static long _totalTtsDrops = 0;
 
         // Voice join handshake state management (4006 prevention)
@@ -295,13 +303,13 @@ namespace Kinectv1.Discord
                 Interlocked.Exchange(ref _clientCreated, 0);
                 Interlocked.Exchange(ref _commandServiceCreated, 0);
                 
-                // Clean up TTS queue with proper disposal and cancellation
+                // Clean up TTS channel with proper disposal and cancellation
                 try 
                 { 
-                    _ttsQueue?.CompleteAdding();
+                    _ttsWriter?.Complete();
                     
                     // Cancel any remaining TTS jobs
-                    while (_ttsQueue?.TryTake(out var job) == true)
+                    while (_ttsReader.TryRead(out var job))
                     {
                         try 
                         { 
@@ -310,8 +318,6 @@ namespace Kinectv1.Discord
                         } 
                         catch { }
                     }
-                    
-                    _ttsQueue?.Dispose(); 
                 } 
                 catch { }
                 
@@ -685,38 +691,17 @@ namespace Kinectv1.Discord
                 Cts = linked
             };
             
-            // Backpressure: Drop oldest if queue is full
-            if (!_ttsQueue.TryAdd(job))
+            // Backpressure: With length=1 and DropOldest, channel automatically drops old items
+            if (!_ttsWriter.TryWrite(job))
             {
-                // Queue is full - implement drop policy (oldest first)
-                if (_ttsQueue.TryTake(out var oldJob))
-                {
-                    // Cancel the old job before dropping it
-                    try 
-                    { 
-                        oldJob.Cts?.Cancel(); 
-                        oldJob.Tcs?.SetCanceled(); 
-                    } 
-                    catch { }
-                    
-                    if (!_ttsQueue.TryAdd(job))
-                    {
-                        // Still couldn't add - re-add the old job back  
-                        _ttsQueue.TryAdd(oldJob);
-                        job.Tcs.SetException(new InvalidOperationException("TTS queue full - backpressure active"));
-                    }
-                    else
-                    {
-                        Interlocked.Increment(ref _totalTtsDrops);
-                        Console.WriteLine($"⚠️ TTS backpressure: Dropped oldest job for new text '{text.Substring(0, Math.Min(50, text.Length))}...' (total drops: {_totalTtsDrops})");
-                    }
-                }
-                else
-                {
-                    Interlocked.Increment(ref _totalTtsDrops);
-                    Console.WriteLine($"⚠️ TTS backpressure: Queue full, dropping job for '{text.Substring(0, Math.Min(50, text.Length))}...' (total drops: {_totalTtsDrops})");
-                    job.Tcs.SetException(new InvalidOperationException("TTS queue full - backpressure active"));
-                }
+                // Channel is closed or writer is completed
+                job.Tcs.SetException(new InvalidOperationException("TTS channel closed - service shutting down"));
+            }
+            else
+            {
+                // Successfully enqueued - count as potential drop if queue was full
+                // Note: Channel with DropOldest policy automatically handles dropping
+                Telemetry.Gauge("gauge.queue.depth.tts", 1); // Always 1 for single-item queue
             }
             StartTtsWorkerIfNeeded();
             return job.Tcs.Task;
@@ -749,18 +734,21 @@ namespace Kinectv1.Discord
                     {
                         while (true)
                         {
-                            if (!_ttsQueue.TryTake(out var job))
+                            // Wait for next TTS job from channel
+                            if (!await _ttsReader.WaitToReadAsync())
+                            {
+                                // Channel is closed
+                                lock (_ttsWorkerLock) { _ttsWorkerRunning = false; }
+                                return;
+                            }
+
+                            if (!_ttsReader.TryRead(out var job))
                             {
                                 await Task.Delay(25);
-                                if (_ttsQueue.Count == 0)
-                                {
-                                    lock (_ttsWorkerLock) { _ttsWorkerRunning = false; }
-                                    return;
-                                }
                                 continue;
                             }
 
-                            Console.WriteLine($"[TTS] Dequeued job (len={job.Text?.Length ?? 0}). Queue remaining={_ttsQueue.Count}");
+                            Console.WriteLine($"[TTS] Dequeued job (len={job.Text?.Length ?? 0}). Queue size=1 (single item channel)");
                             lock (_ttsCancelLock) { _currentTtsCts = job.Cts; }
 
                             bool ok = false;
@@ -994,7 +982,8 @@ namespace Kinectv1.Discord
         {
             try
             {
-                var queueCount = _ttsQueue?.Count ?? 0;
+                // With single-item channel, count is always 0 or 1
+                var queueCount = _ttsReader.CanRead ? 1 : 0;
                 return (queueCount, _totalTtsDrops);
             }
             catch
