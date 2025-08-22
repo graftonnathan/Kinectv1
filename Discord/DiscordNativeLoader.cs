@@ -174,8 +174,10 @@ namespace Kinectv1.Discord
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"? Critical error loading Discord.Net native libraries: {ex.Message}");
-                    Console.WriteLine($"?? Stack trace: {ex.StackTrace}");
+                    var error = AppError.Discord("DISCORD_NATIVE_LOAD_ERROR", 
+                        $"Critical error loading Discord.Net native libraries: {ex.Message}",
+                        "Download Discord native libraries or check Discord bot configuration.", ex);
+                    Console.WriteLine($"❌ {error.GetDisplayString()}");
                     return false;
                 }
             }
@@ -211,12 +213,18 @@ namespace Kinectv1.Discord
             }
             catch (DllNotFoundException ex)
             {
-                Console.WriteLine($"? Native verification failed - DLL not found: {ex.Message}");
+                var error = AppError.Discord("DISCORD_DLL_NOT_FOUND", 
+                    $"Native verification failed - DLL not found: {ex.Message}",
+                    "Download opus.dll and libsodium.dll, or run download-discord-natives.ps1", ex);
+                Console.WriteLine($"❌ {error.GetDisplayString()}");
                 _librariesLoaded = false;
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"? Native verification error: {ex.Message}");
+                var error = AppError.Discord("DISCORD_NATIVE_VERIFICATION_ERROR", 
+                    $"Native verification error: {ex.Message}",
+                    "Check Discord native library installation or disable Discord features.", ex);
+                Console.WriteLine($"❌ {error.GetDisplayString()}");
                 _librariesLoaded = false;
             }
         }

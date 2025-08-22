@@ -103,14 +103,20 @@ namespace Kinectv1.Discord
                 }
                 if (string.IsNullOrEmpty(token) || token.Length < 50)
                 {
-                    OnErrorOccurred?.Invoke("Discord bot token invalid");
+                    var error = AppError.Discord("DISCORD_TOKEN_INVALID", 
+                        "Discord bot token invalid or too short",
+                        "Check DiscordBotToken in settings on Diagnostics page.");
+                    OnErrorOccurred?.Invoke(error.GetDisplayString());
                     return false;
                 }
                 return true;
             }
             catch (Exception ex)
             {
-                OnErrorOccurred?.Invoke($"Config test failed: {ex.Message}");
+                var error = AppError.Discord("DISCORD_CONFIG_TEST_ERROR", 
+                    $"Config test failed: {ex.Message}",
+                    "Check Discord configuration and network connectivity.", ex);
+                OnErrorOccurred?.Invoke(error.GetDisplayString());
                 return false;
             }
         }

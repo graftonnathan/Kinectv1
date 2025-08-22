@@ -136,7 +136,10 @@ namespace Kinectv1
 
                     if (!File.Exists(_modelPath))
                     {
-                        Console.WriteLine($"[Kokoro] Model not found: {_modelPath}");
+                        var error = AppError.TTS("TTS_MODEL_NOT_FOUND", 
+                            $"TTS model not found: {_modelPath}",
+                            "Verify model path on Diagnostics page or download the Kokoro model.");
+                        Console.WriteLine($"[Kokoro] {error.GetDisplayString()}");
                         return false;
                     }
 
@@ -187,7 +190,10 @@ namespace Kinectv1
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"[Kokoro] Init failed: {ex.Message}");
+                    var error = AppError.TTS("TTS_INIT_FAILED", 
+                        $"Kokoro TTS initialization failed: {ex.Message}",
+                        "Check model files and GPU settings, or verify model path on Diagnostics page.", ex);
+                    Console.WriteLine($"[Kokoro] {error.GetDisplayString()}");
                     return false;
                 }
             }

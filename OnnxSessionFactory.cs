@@ -174,22 +174,35 @@ namespace Kinectv1
                         else
                         {
                             Telemetry.Counter("onnx.cuda_ep_unavailable");
-                            Console.WriteLine("[Onnx] CUDA EP not available or provider DLLs missing - skipping CUDA");
+                            var error = AppError.GPU("GPU_PROVIDER_MISSING", 
+                                "CUDA execution provider not available or provider DLLs missing",
+                                "Install CUDA EP runtime or switch to CPU in Settings.");
+                            Console.WriteLine($"[Onnx] {error.GetDisplayString()}");
                         }
                     }
-                    catch (EntryPointNotFoundException) 
+                    catch (EntryPointNotFoundException epex) 
                     {
                         Telemetry.Counter("onnx.cuda_ep_entry_point_not_found");
+                        var error = AppError.GPU("GPU_ENTRY_POINT_NOT_FOUND", 
+                            "CUDA entry point not found in runtime",
+                            "Install compatible CUDA EP runtime or switch to CPU in Settings.", epex);
+                        Console.WriteLine($"[Onnx] {error.GetDisplayString()}");
                     }
                     catch (OnnxRuntimeException orex)
                     {
                         Telemetry.Counter("onnx.cuda_ep_runtime_error");
-                        Console.WriteLine($"[Onnx] CUDA EP load failed: {orex.Message}");
+                        var error = AppError.GPU("GPU_RUNTIME_ERROR", 
+                            $"CUDA EP load failed: {orex.Message}",
+                            "Check GPU drivers, CUDA installation, or switch to CPU in Settings.", orex);
+                        Console.WriteLine($"[Onnx] {error.GetDisplayString()}");
                     }
                     catch (Exception ex)
                     {
                         Telemetry.Counter("onnx.cuda_ep_unexpected_error");
-                        Console.WriteLine($"[Onnx] CUDA EP unexpected error: {ex.Message}");
+                        var error = AppError.GPU("GPU_UNEXPECTED_ERROR", 
+                            $"CUDA EP unexpected error: {ex.Message}",
+                            "Check GPU configuration or switch to CPU in Settings.", ex);
+                        Console.WriteLine($"[Onnx] {error.GetDisplayString()}");
                     }
                 }
 

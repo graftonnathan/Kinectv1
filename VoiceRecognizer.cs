@@ -130,7 +130,10 @@ namespace Kinectv1
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"VoiceRecognizer.Start failed: {ex.Message}");
+                var error = AppError.ASR("ASR_START_FAILED", 
+                    $"Voice recognizer start failed: {ex.Message}",
+                    "Check microphone permissions and audio device configuration.", ex);
+                Console.WriteLine($"VoiceRecognizer: {error.GetDisplayString()}");
             }
         }
 
@@ -151,13 +154,19 @@ namespace Kinectv1
                     }
                     else
                     {
-                        Console.WriteLine($"SpeakerEmbedder model not found at: {fullPath}");
+                        var error = AppError.ASR("ASR_MODEL_NOT_FOUND", 
+                            $"Speaker embedder model not found at: {fullPath}",
+                            "Verify speaker embedding model path on Diagnostics page.");
+                        Console.WriteLine(error.GetDisplayString());
                     }
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"SpeakerEmbedder load error: {ex.Message}");
+                var error = AppError.ASR("ASR_SPEAKER_EMBEDDER_ERROR", 
+                    $"Speaker embedder load error: {ex.Message}",
+                    "Check speaker embedding model file and path configuration.", ex);
+                Console.WriteLine(error.GetDisplayString());
             }
         }
 
