@@ -1,4 +1,4 @@
-name: Copilot Throttle (PR assigned → ready, approve & automerge; no labels)
+name: Copilot Throttle (PR assigned → ready, approve & automerge; no env in if)
 
 on:
   pull_request_target:
@@ -31,12 +31,13 @@ jobs:
           echo "pr=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
           echo "assignee=${{ github.event.assignee.login }}" >> "$GITHUB_OUTPUT"
 
+      # --- guard: only act when the assignee is Copilot ---
       - name: Exit if assignee is not Copilot
-        if: steps.ctx.outputs.assignee != 'Copilot'
+        if: ${{ steps.ctx.outputs.assignee != 'Copilot' }}
         run: echo "Not Copilot; skipping."
 
       - name: Check if Copilot is already assigned elsewhere
-        if: steps.ctx.outputs.assignee == 'Copilot'
+        if: ${{ steps.ctx.outputs.assignee == 'Copilot' }}
         id: busy
         run: |
           set -euo pipefail
@@ -50,7 +51,7 @@ jobs:
           echo "busy=$BUSY" >> "$GITHUB_OUTPUT"
 
       - name: De-assign (Copilot is busy elsewhere)
-        if: steps.ctx.outputs.assignee == 'Copilot' && steps.busy.outputs.busy != '0'
+        if: ${{ steps.busy.outputs.busy != '0' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -58,9 +59,9 @@ jobs:
           gh pr edit -R "$REPO" "$PR" --remove-assignee "Copilot" || true
           gh pr comment -R "$REPO" "$PR" --body "⏸️ Copilot is already working on another PR. It will be picked up automatically when free."
 
-      # NEW: make ready + strip WIP/Draft from title (before approval/auto-merge)
-      - name: Mark ready for review & clean title
-        if: steps.ctx.outputs.assignee == 'Copilot' && steps.busy.outputs.busy == '0'
+      # --- ready + title cleanup happens only if Copilot is free ---
+      - name: Mark ready for review & clean WIP/Draft title
+        if: ${{ steps.busy.outputs.busy == '0' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
@@ -68,8 +69,7 @@ jobs:
           PR="${{ steps.ctx.outputs.pr }}"
           # 1) Mark ready (no-op if already ready)
           gh pr ready -R "$REPO" "$PR" || true
-
-          # 2) Remove leading [WIP]/WIP/Draft (case-insensitive) from the title
+          # 2) Remove leading [WIP]/WIP/Draft from the title
           TITLE=$(gh pr view -R "$REPO" "$PR" --json title -q .title)
           CLEAN=$(printf "%s" "$TITLE" \
             | sed -E 's/^[[:space:]]*\[?[Ww][Ii][Pp]\]?[[:space:]]*[:\-]*[[:space:]]*//' \
@@ -79,7 +79,7 @@ jobs:
           fi
 
       - name: Auto-approve (Copilot is free)
-        if: steps.ctx.outputs.assignee == 'Copilot' && steps.busy.outputs.busy == '0'
+        if: ${{ steps.busy.outputs.busy == '0' }}
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
         run: |
@@ -87,14 +87,11 @@ jobs:
           gh pr review -R "$REPO" "$PR" --approve -b "Auto-approved for Copilot automerge"
 
       - name: Enable Auto-Merge (squash + delete branch)
-        if: steps.ctx.outputs.assignee == 'Copilot' && steps.busy.outputs.busy == '0'
+        if: ${{ steps.busy.outputs.busy == '0' }}
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
         run: |
           PR="${{ steps.ctx.outputs.pr }}"
           gh pr merge -R "$REPO" "$PR" --auto --squash --delete-branch || true
 
-
-          PR="${{ steps.guard.outputs.pr }}"
-          gh pr merge -R "$REPO" "$PR" --auto --squash --delete-branch || true
 
