@@ -1,129 +1,128 @@
-name: Copilot Task Runner
+name: Copilot Dispatcher
 
 on:
-  repository_dispatch:
-    types: [copilot-task]
-  workflow_dispatch:
-    inputs:
-      task_path:
-        description: Path to a task file (e.g., .guidance/tasks/0012.yml)
-        required: true
+  pull_request:
+    branches: [dev]
+    types: [opened, reopened, ready_for_review, synchronize, labeled, unlabeled, closed]
+  workflow_dispatch: {}
 
 permissions:
-  contents: write
+  contents: read
   pull-requests: write
-  issues: write
-  actions: read
-
-# <- This is the single-file switch that enforces ONE active task at a time
-concurrency:
-  group: copilot-tasks
-  cancel-in-progress: false
 
 jobs:
-  run-one-task:
+  gatekeeper:
+    name: Gatekeeper (one Copilot PR at a time)
     runs-on: ubuntu-latest
-    env:
-      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-      TASK_PATH: ${{ github.event.client_payload.task_path || inputs.task_path }}
-
+    outputs:
+      proceed: ${{ steps.gate.outputs.proceed }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Parse task file (title/summary)
-        run: |
-          python - <<'PY'
-          import os, yaml, pathlib
-          p = os.environ["TASK_PATH"]
-          d = yaml.safe_load(open(p, 'r', encoding='utf-8')) or {}
-          title = d.get('title') or d.get('name') or pathlib.Path(p).stem
-          summary = d.get('summary') or d.get('goal') or ''
-          tid = pathlib.Path(p).stem
-          with open(os.environ['GITHUB_ENV'],'a') as f:
-              f.write(f"TASK_ID={tid}\n")
-              f.write(f"TASK_TITLE={title}\n")
-              f.write(f"TASK_SUMMARY={summary.replace('\n',' ')}\n")
-          PY
-        shell: bash
-
-      - name: Create branch + marker commit
-        run: |
-          BR="copilot/${TASK_ID}"
-          git switch -c "$BR"
-          mkdir -p .guidance/state
-          echo "$(date -u) • $TASK_TITLE" > ".guidance/state/${TASK_ID}.lock"
-          git add ".guidance/state/${TASK_ID}.lock"
-          git -c user.name="github-actions[bot]" -c user.email="github-actions[bot]@users.noreply.github.com" commit -m "Start task ${TASK_ID}: ${TASK_TITLE}"
-          git push -u origin "$BR"
-
-      - name: Create or find tracking issue
-        id: issue
+      - name: Decide queue status
+        id: gate
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const {owner, repo} = context.repo;
-            const title = `[Task ${process.env.TASK_ID}] ${process.env.TASK_TITLE}`;
-            const q = await github.rest.search.issuesAndPullRequests({
-              q: `repo:${owner}/${repo} is:issue in:title "${title}"`
-            });
-            let issue;
-            if (q.data.items.length) {
-              issue = q.data.items[0];
-            } else {
-              const res = await github.rest.issues.create({
-                owner, repo, title,
-                body: `Automated queue entry for **${process.env.TASK_TITLE}**\n\nTask file: \`${process.env.TASK_PATH}\`\n\n${process.env.TASK_SUMMARY}`,
-                labels: ['copilot','queued']
-              });
-              issue = res.data;
+            const core = require('@actions/core');
+            const pr = context.payload.pull_request;
+            if (!pr) {
+              core.setOutput('proceed','false');
+              return;
             }
-            core.setOutput('number', issue.number);
+            const owner = context.repo.owner;
+            const repo  = context.repo.repo;
+            const prNumber = pr.number;
 
-      - name: Open draft PR to dev
-        id: cpr
-        uses: peter-evans/create-pull-request@v6
+            const IN_PROGRESS = 'copilot:in-progress';
+            const QUEUED      = 'copilot:queued';
+
+            // helper: ensure a label exists on repo
+            async function ensureLabel(name, color, description) {
+              try {
+                await github.rest.issues.getLabel({ owner, repo, name });
+              } catch {
+                await github.rest.issues.createLabel({ owner, repo, name, color, description });
+              }
+            }
+
+            await ensureLabel(IN_PROGRESS, '0e8a16', 'Currently being processed by Copilot automation');
+            await ensureLabel(QUEUED,      'c2e0c6', 'Waiting turn for Copilot automation');
+
+            // List open PRs labeled "in-progress"
+            const { data: inProg } = await github.rest.search.issuesAndPullRequests({
+              q: `repo:${owner}/${repo} is:open is:pr label:"${IN_PROGRESS}"`
+            });
+
+            const someoneElseInProgress = inProg.items.some(i => i.number !== prNumber);
+
+            if (someoneElseInProgress) {
+              // Mark this PR as queued and skip
+              await github.rest.issues.addLabels({ owner, repo, issue_number: prNumber, labels: [QUEUED] });
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: prNumber,
+                body: `⏳ Another PR is marked **${IN_PROGRESS}**. This PR is **queued** and will run when the current one finishes.`
+              });
+              core.setOutput('proceed','false');
+              return;
+            }
+
+            // We can proceed. Make this PR "in-progress".
+            // Remove "queued" if present, add "in-progress" if missing.
+            const { data: labels } = await github.rest.issues.listLabelsOnIssue({ owner, repo, issue_number: prNumber });
+            const names = labels.map(l => l.name);
+            if (names.includes(QUEUED)) {
+              await github.rest.issues.removeLabel({ owner, repo, issue_number: prNumber, name: QUEUED }).catch(() => {});
+            }
+            if (!names.includes(IN_PROGRESS)) {
+              await github.rest.issues.addLabels({ owner, repo, issue_number: prNumber, labels: [IN_PROGRESS] });
+            }
+
+            core.setOutput('proceed','true');
+
+  run-copilot:
+    name: Run Copilot worker
+    needs: [gatekeeper]
+    if: ${{ needs.gatekeeper.outputs.proceed == 'true' }}
+    # Double-guard: never run more than one across the repo at a time.
+    concurrency:
+      group: copilot-queue
+      cancel-in-progress: false
+    uses: ./.github/workflows/copilot-task-runner.yml
+    with:
+      task: "auto"
+    secrets: inherit
+
+  tidy-labels:
+    name: Tidy labels on close/merge
+    if: ${{ github.event.action == 'closed' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
         with:
-          title: "[Task ${{ env.TASK_ID }}] ${{ env.TASK_TITLE }}"
-          body: |
-            Tracking PR for **${{ env.TASK_TITLE }}**
-            Task file: `${{ env.TASK_PATH }}`
-
-            This PR gives Copilot a branch/PR to work in. Please keep one task per PR.
-          branch: "copilot/${{ env.TASK_ID }}"
-          base: dev
-          draft: true
-          labels: copilot, task
-
-      - name: Mark issue in-progress
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const {owner, repo} = context.repo;
-            const issue_number = Number("${{ steps.issue.outputs.number }}");
-            await github.rest.issues.removeAllLabels({ owner, repo, issue_number }).catch(()=>{});
-            await github.rest.issues.addLabels({
-              owner, repo, issue_number,
-              labels: ['copilot','in-progress']
-            });
-            await github.rest.issues.createComment({
-              owner, repo, issue_number,
-              body: [
-                `Starting **${process.env.TASK_TITLE}**`,
-                ``,
-                `Branch: \`copilot/${process.env.TASK_ID}\``,
-                `PR: ${{ steps.cpr.outputs.pull-request-url }}`
-              ].join('\n')
-            });
+            const owner = context.repo.owner;
+            const repo  = context.repo.repo;
+            const pr = context.payload.pull_request;
+            if (!pr) return;
 
-      - name: Discord notify (start)
-        if: env.DISCORD_WEBHOOK_URL != ''
-        run: |
-          MSG="▶️ Starting Task ${TASK_ID}: ${TASK_TITLE}\nPR: ${{ steps.cpr.outputs.pull-request-url }}"
-          python - <<'PY' > payload.json
-          import json, os; print(json.dumps({"content": os.environ["MSG"]}))
-          PY
-          curl -sS -X POST -H "Content-Type: application/json" --data-binary @payload.json "$DISCORD_WEBHOOK_URL" || true
+            const IN_PROGRESS = 'copilot:in-progress';
+            const QUEUED      = 'copilot:queued';
+
+            // Remove labels from the closed PR
+            for (const name of [IN_PROGRESS, QUEUED]) {
+              try {
+                await github.rest.issues.removeLabel({ owner, repo, issue_number: pr.number, name });
+              } catch {}
+            }
+
+            // Optional: nudge queued PRs with a comment so maintainers see what's next.
+            const { data: queued } = await github.rest.search.issuesAndPullRequests({
+              q: `repo:${owner}/${repo} is:open is:pr label:"${QUEUED}" sort:created-asc`
+            });
+            if (queued.items.length) {
+              const next = queued.items[0];
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: next.number,
+                body: `✅ A previously active PR just closed. You are next in queue for Copilot automation. Push a new commit or reopen to trigger the dispatcher.`
+              });
+            }
+
