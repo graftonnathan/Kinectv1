@@ -1,4 +1,4 @@
-name: Copilot Throttle (no relabel + auto-approve/automerge)
+name: Copilot Throttle (no labels, auto-approve & automerge)
 
 on:
   issues:
@@ -9,60 +9,80 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: write
+  contents: read
   pull-requests: write
-  checks: read
-  statuses: read
   issues: write
 
 jobs:
   throttle:
-    # Only when an assignee exists, it's a PR (not a plain issue), and it's Copilot
-    if: ${{ github.event.issue.pull_request && github.event.assignee && github.event.assignee.login == env.COPILOT_HANDLE }}
     runs-on: ubuntu-latest
-    env:
-      COPILOT_HANDLE: Copilot           # change if your Copilot login differs
-      MERGE_METHOD: squash              # merge | squash | rebase
-      DELETE_BRANCH: "true"
-      REVIEW_TOKEN: ${{ secrets.GH_PAT || github.token }}
     steps:
       - name: Auth gh
-        run: echo "GH_TOKEN=${{ env.REVIEW_TOKEN }}" >> "$GITHUB_ENV"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "GH_TOKEN=${GH_TOKEN}" >> "$GITHUB_ENV"
+          gh --version
 
-      - name: Determine PR number
-        id: prnum
-        run: echo "pr=${{ github.event.issue.number }}" >> "$GITHUB_OUTPUT"
+      # Guard: only act for PRs and only when assignee is *Copilot*
+      - name: Guard & capture PR number
+        id: guard
+        run: |
+          # Is this an issue that is actually a PR?
+          if [ -z "${{ github.event.issue.pull_request }}" ]; then
+            echo "is_pr=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          echo "is_pr=true" >> $GITHUB_OUTPUT
+          echo "pr=${{ github.event.issue.number }}" >> $GITHUB_OUTPUT
+
+          # Is the assignee Copilot (exact login)?
+          if [ "${{ github.event.assignee.login }}" = "Copilot" ]; then
+            echo "is_copilot=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_copilot=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Exit if not a PR or not Copilot
+        if: steps.guard.outputs.is_pr != 'true' || steps.guard.outputs.is_copilot != 'true'
+        run: echo "Throttle skipping (not a PR or assignee is not Copilot)."
 
       - name: Check if Copilot already assigned elsewhere
+        if: steps.guard.outputs.is_pr == 'true' && steps.guard.outputs.is_copilot == 'true'
         id: busy
         run: |
           set -euo pipefail
-          CURRENT="${{ steps.prnum.outputs.pr }}"
+          CURRENT="${{ steps.guard.outputs.pr }}"
           JSON=$(gh pr list --state open --json number,assignees)
-          BUSY=$(jq --arg u "${{ env.COPILOT_HANDLE }}" --arg cur "$CURRENT" '
+          BUSY=$(jq --arg cur "$CURRENT" '
             [ .[]
               | select(.number != ($cur|tonumber))
-              | select([.assignees[].login?] | index($u))
+              | select([.assignees[].login?] | index("Copilot"))
             ] | length ' <<< "$JSON")
           echo "busy=$BUSY" >> "$GITHUB_OUTPUT"
 
-      - name: If busy, just remove Copilot assignment (no relabel)
-        if: ${{ steps.busy.outputs.busy != '0' }}
+      - name: De-assign (Copilot is busy elsewhere)
+        if: steps.busy.outputs.busy != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -euo pipefail
-          PR="${{ steps.prnum.outputs.pr }}"
-          gh pr edit "$PR" --remove-assignee "${{ env.COPILOT_HANDLE }}" || true
-          gh pr comment "$PR" --body "⏳ Copilot is already working on another PR. Unassigning for now; it will be assigned automatically when free."
-      
-      - name: If not busy, auto-approve and enable automerge
-        if: ${{ steps.busy.outputs.busy == '0' }}
+          PR="${{ steps.guard.outputs.pr }}"
+          gh pr edit "$PR" --remove-assignee "Copilot" || true
+          gh pr comment "$PR" --body "⏸️ Copilot is already working on another PR. This one will be picked up automatically when free."
+
+      - name: Auto-approve (Copilot is free)
+        if: steps.busy.outputs.busy == '0'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
         run: |
-          set -euo pipefail
-          PR="${{ steps.prnum.outputs.pr }}"
-          # Best-effort approval
+          PR="${{ steps.guard.outputs.pr }}"
+          # Approve (PAT recommended so the review counts under branch protection)
           gh pr review "$PR" --approve -b "Auto-approved for Copilot automerge"
-          # Enable auto-merge
-          args=( --auto "--${{ env.MERGE_METHOD }}" )
-          [[ "${{ env.DELETE_BRANCH }}" == "true" ]] && args+=( "--delete-branch" )
-          gh pr merge "$PR" "${args[@]}"
-          gh pr comment "$PR" --body "✅ Auto-approval added and auto-merge enabled. Will merge when required checks pass."
+
+      - name: Enable Auto-Merge (squash + delete branch)
+        if: steps.busy.outputs.busy == '0'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          PR="${{ steps.guard.outputs.pr }}"
+          gh pr merge "$PR" --auto --squash --delete-branch || true
