@@ -782,8 +782,13 @@
                     <!-- Full Diagnostics Report -->
                     <Border Grid.Row="2" BorderBrush="{DynamicResource AccentPurple}" BorderThickness="2" CornerRadius="6" 
                             Background="{DynamicResource SurfaceBackground}">
-                        <StackPanel Margin="15">
-                            <Grid Margin="0,0,0,10">
+                        <Grid Margin="15">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+
+                            <Grid Grid.Row="0" Margin="0,0,0,10">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="Auto"/>
                                     <ColumnDefinition Width="*"/>
@@ -808,7 +813,7 @@
                                         ToolTip="Copy diagnostics report to clipboard"/>
                             </Grid>
 
-                            <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="4"
+                            <Border Grid.Row="1" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="4"
                                     Background="{DynamicResource WindowBackground}">
                                 <TextBox Name="DiagnosticsReportTextBox" TextWrapping="Wrap" IsReadOnly="True" 
                                          VerticalScrollBarVisibility="Auto" Background="Transparent" BorderThickness="0" 
@@ -816,7 +821,7 @@
                                          Foreground="{DynamicResource TextSecondary}"
                                          Style="{StaticResource ThemedTextBoxStyle}"/>
                             </Border>
-                        </StackPanel>
+                        </Grid>
                     </Border>
 
                     <!-- Status Bar -->
