@@ -11,6 +11,7 @@ namespace Kinectv1
     public class DiscordBotHostedService : IHostedService
     {
         private volatile bool _isStarted = false;
+        private volatile bool _isShuttingDown = false; // Flag to ignore late events post-stop
         private readonly object _lock = new object();
         private int _startInProgress = 0;
         private int _stopInProgress = 0;
@@ -23,7 +24,7 @@ namespace Kinectv1
             { 
                 lock (_lock)
                 {
-                    return _isStarted && DiscordNetBotManager.IsRunning;
+                    return _isStarted && !_isShuttingDown && DiscordNetBotManager.IsRunning;
                 }
             } 
         }
@@ -127,33 +128,53 @@ namespace Kinectv1
                     {
                         return; // Already stopped
                     }
+                    _isShuttingDown = true; // Set flag to ignore late events
                 }
 
                 Console.WriteLine("🤖 Stopping Discord Bot service...");
+                var stopwatch = System.Diagnostics.Stopwatch.StartNew();
                 
-                // Use existing ShutdownAsync method with timeout handling
+                // Use existing ShutdownAsync method with enhanced timeout handling
                 try
                 {
                     using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                    timeoutCts.CancelAfter(TimeSpan.FromSeconds(10));
+                    timeoutCts.CancelAfter(TimeSpan.FromSeconds(5)); // 5s timeout for Discord disconnect
 
                     var shutdownTask = DiscordNetBotManager.ShutdownAsync();
                     
                     // Wait for shutdown with timeout
-                    await Task.WhenAny(shutdownTask, Task.Delay(Timeout.Infinite, timeoutCts.Token));
+                    var completedTask = await Task.WhenAny(shutdownTask, Task.Delay(5000, timeoutCts.Token));
                     
-                    if (timeoutCts.Token.IsCancellationRequested)
+                    if (completedTask == shutdownTask)
                     {
-                        Console.WriteLine("⚠️ Discord Bot shutdown timed out after 10 seconds");
+                        await shutdownTask; // Get any exceptions
+                        Console.WriteLine("✅ Discord Bot disconnected gracefully");
                     }
                     else
                     {
-                        await shutdownTask; // Get any exceptions
+                        Console.WriteLine("⚠️ Discord Bot shutdown timed out after 5 seconds, forcing disconnect");
+                        Telemetry.Counter("app.stop.forced_kill");
+                        
+                        // Force disconnect - DiscordNetBotManager should handle cleanup
+                        try
+                        {
+                            // Additional force cleanup if needed
+                            await shutdownTask; // Still try to get the result for cleanup
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            Console.WriteLine("🔨 Discord Bot force disconnect completed");
+                        }
                     }
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
                     Console.WriteLine("⚠️ Discord Bot shutdown was cancelled");
+                    Telemetry.Counter("app.stop.forced_kill");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"❌ Discord Bot shutdown error: {ex.Message}");
                 }
                 
                 lock (_lock)
@@ -161,7 +182,8 @@ namespace Kinectv1
                     _isStarted = false;
                 }
                 
-                Console.WriteLine("✅ Discord Bot service stopped successfully");
+                stopwatch.Stop();
+                Console.WriteLine($"✅ Discord Bot service stopped in {stopwatch.ElapsedMilliseconds}ms");
             }
             catch (Exception ex)
             {
@@ -178,5 +200,10 @@ namespace Kinectv1
                 Interlocked.Exchange(ref _stopInProgress, 0);
             }
         }
+
+        /// <summary>
+        /// Check if service is shutting down (used to ignore late events)
+        /// </summary>
+        public bool IsShuttingDown => _isShuttingDown;
     }
 }

@@ -135,6 +135,37 @@ namespace Kinectv1
         }
         
         /// <summary>
+        /// Test AudioUtils.ConvertToFloatPcm ArrayPool optimization
+        /// </summary>
+        public static void TestAudioUtilsPerformance()
+        {
+            const int iterations = 5000;
+            const int bufferSize = 4096; // Typical audio buffer size
+            
+            Console.WriteLine("=== AudioUtils Performance Test ===");
+            
+            // Create test audio buffer
+            var audioBuffer = new byte[bufferSize];
+            for (int i = 0; i < bufferSize; i++)
+            {
+                audioBuffer[i] = (byte)(i % 256);
+            }
+            
+            // Test optimized version (should be faster)
+            var sw = Stopwatch.StartNew();
+            for (int i = 0; i < iterations; i++)
+            {
+                var result = AudioUtils.ConvertToFloatPcm(audioBuffer, bufferSize);
+                // Simulate some work
+                if (result.Length > 0) { /* use result */ }
+            }
+            sw.Stop();
+            
+            Console.WriteLine($"AudioUtils.ConvertToFloatPcm (ArrayPool): {sw.ElapsedMilliseconds}ms");
+            Console.WriteLine($"Average per conversion: {(double)sw.ElapsedMilliseconds / iterations:F3}ms");
+        }
+        
+        /// <summary>
         /// Run all performance tests
         /// </summary>
         public static void RunAllTests()
@@ -144,6 +175,7 @@ namespace Kinectv1
                 TestArrayPoolPerformance();
                 TestListReusePerformance();
                 TestCachedArraysPerformance();
+                TestAudioUtilsPerformance();
                 
                 Console.WriteLine("\n=== Performance Tests Completed ===");
                 Console.WriteLine("ArrayPool optimizations are working correctly.");

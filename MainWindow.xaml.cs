@@ -80,6 +80,21 @@ namespace Kinectv1
                             Console.WriteLine($"Error testing hosted services: {ex.Message}");
                         }
                     }
+                    else if (e.Key == Key.S && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
+                    {
+                        try
+                        {
+                            Console.WriteLine("🧪 Testing Shutdown Lifecycle (Ctrl+S pressed)");
+                            Task.Run(async () =>
+                            {
+                                await ShutdownLifecycleTest.RunAllTests();
+                            });
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"Error testing shutdown lifecycle: {ex.Message}");
+                        }
+                    }
                 };
 
                 // Hook GUI events
@@ -458,8 +473,8 @@ namespace Kinectv1
             }
         }
 
-        private float _smoothedRms;
-        private float _smoothedDiscordRms;
+        private float _smoothedRms = 0f; // Initialize baseline RMS immediately
+        private float _smoothedDiscordRms = 0f; // Initialize baseline Discord RMS immediately
         private bool _isMicrophoneInputEnabled = true;
         private bool _isDiscordInputEnabled = true;
 
@@ -483,6 +498,7 @@ namespace Kinectv1
                     {
                         try
                         {
+
                             if (_isClosing) return; // Double check inside dispatcher
 
                             // Get the latest value (may have been updated since dispatch was scheduled)
@@ -521,6 +537,7 @@ namespace Kinectv1
                         {
                             // Reset the pending flag to allow future updates
                             Interlocked.Exchange(ref _rmsUpdatePending, 0);
+
                         }
                     }), DispatcherPriority.Background);
                 }
@@ -1813,10 +1830,52 @@ namespace Kinectv1
                 // Update status displays
                 UpdateMicrophoneStatus();
                 UpdateDiscordStatus();
+
+                // Initialize RMS meters with baseline 0 for immediate display
+                InitializeRmsBaseline();
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Failed to initialize audio input controls: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Initialize RMS meters with baseline 0 for immediate display
+        /// </summary>
+        private void InitializeRmsBaseline()
+        {
+            try
+            {
+                // Initialize baseline RMS immediately to render the meter
+                if (RmsBar != null && RmsText != null)
+                {
+                    RmsBar.Value = 0;
+                    RmsText.Text = "RMS: 0.0 (0%)";
+                    
+                    // Set initial color to green (quiet/good)
+                    var greenBrush = this.TryFindResource("AccentGreen") as SolidColorBrush ?? Brushes.Green;
+                    RmsBar.Foreground = greenBrush;
+                }
+
+                if (DiscordRmsBar != null && DiscordRmsText != null)
+                {
+                    DiscordRmsBar.Value = 0;
+                    DiscordRmsText.Text = "RMS: 0.0 (0%)";
+                    
+                    // Set initial color to green (quiet/good)
+                    var greenBrush = this.TryFindResource("AccentGreen") as SolidColorBrush ?? Brushes.Green;
+                    DiscordRmsBar.Foreground = greenBrush;
+                }
+
+                // Emit initial telemetry gauge
+                Telemetry.Gauge("gauge.audio.mic.rms", 0);
+
+                Console.WriteLine("🎵 RMS baseline initialized to 0 for immediate meter display");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to initialize RMS baseline: {ex.Message}");
             }
         }
 
@@ -2148,18 +2207,38 @@ namespace Kinectv1
         }
 
         /// <summary>
-        /// Enhanced clean shutdown handler - Uses centralized HostedServicesManager for coordinated shutdown
+        /// Enhanced clean shutdown handler with UI spinner and reliable shutdown lifecycle
         /// Implements the 3-step clean exit pattern:
-        /// 1. Cancel background tasks
-        /// 2. Stop all hosted services through centralized manager
-        /// 3. Save essential settings and cleanup
+        /// 1. Show UI spinner and cancel background tasks
+        /// 2. Stop all hosted services through centralized manager with timeout
+        /// 3. Environment.Exit as last resort fallback
         /// </summary>
-        private void MainWindow_Closing(object sender, System.ComponentModel.CancelEventArgs e) 
+        private async void MainWindow_Closing(object sender, System.ComponentModel.CancelEventArgs e) 
         {
+            // Prevent the window from closing immediately
+            e.Cancel = true;
             _isClosing = true; // Set flag to prevent new operations
             
             Console.WriteLine("🔴 === APPLICATION SHUTDOWN INITIATED ===");
-            Console.WriteLine("🔴 Using centralized hosted services manager for clean shutdown...");
+            Console.WriteLine("🔴 Using enhanced shutdown with UI spinner and timeout fallback...");
+
+            // Show shutdown overlay immediately
+            try
+            {
+                ShutdownOverlay.Visibility = Visibility.Visible;
+                ShutdownStatusText.Text = "Shutting down services...";
+                ShutdownDetailText.Text = "Please wait while all services are stopped safely...";
+                
+                // Force UI update
+                Dispatcher.Invoke(() => { }, DispatcherPriority.Render);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"⚠️ Failed to show shutdown UI: {ex.Message}");
+            }
+
+            // Start telemetry timer for overall shutdown
+            var overallStopwatch = System.Diagnostics.Stopwatch.StartNew();
 
             try
             {
@@ -2167,6 +2246,7 @@ namespace Kinectv1
                 try
                 {
                     Console.WriteLine("🔴 STEP 1: Canceling background tasks...");
+                    ShutdownDetailText.Text = "Canceling background tasks...";
                     _cancellationTokenSource?.Cancel();
                     Console.WriteLine("✅ Background tasks canceled");
                 }
@@ -2180,24 +2260,24 @@ namespace Kinectv1
                 {
                     if (App.ServicesManager != null && App.ServicesManager.IsStarted)
                     {
-                        Console.WriteLine("🔴 STEP 2: Stopping all hosted services through centralized manager...");
-                        Console.WriteLine("🔴 Performing blocking shutdown (exit handlers require synchronous completion)");
+                        Console.WriteLine("🔴 STEP 2: Stopping all hosted services...");
+                        ShutdownDetailText.Text = "Stopping hosted services (max 3s)...";
                         
-                        // Use blocking Wait() pattern as recommended for exit handlers
-                        var stopTask = App.ServicesManager.StopAllAsync(TimeSpan.FromSeconds(30));
+                        // Use async shutdown with UI updates
+                        using var shutdownCts = new CancellationTokenSource();
+                        shutdownCts.CancelAfter(TimeSpan.FromSeconds(3)); // 3s total limit as specified
                         
-                        // Block until shutdown completes (with timeout for safety)
-                        Console.WriteLine("🔴 Blocking on hosted services shutdown task...");
-                        bool completedInTime = stopTask.Wait(35000); // 35 second timeout
-                        
-                        if (completedInTime)
+                        try
                         {
-                            Console.WriteLine("✅ All hosted services shut down successfully within timeout");
+                            await App.ServicesManager.StopAllAsync(TimeSpan.FromSeconds(3));
+                            Console.WriteLine("✅ All hosted services shut down successfully");
+                            ShutdownDetailText.Text = "All services stopped successfully";
                         }
-                        else
+                        catch (OperationCanceledException)
                         {
-                            Console.WriteLine("⚠️ Hosted services shutdown timed out after 35 seconds");
-                            // Continue with shutdown anyway - don't block application exit indefinitely
+                            Console.WriteLine("⚠️ Hosted services shutdown timed out after 3 seconds");
+                            ShutdownDetailText.Text = "Shutdown timed out, forcing termination...";
+                            Telemetry.Counter("app.stop.forced_kill");
                         }
                     }
                     else
@@ -2208,6 +2288,7 @@ namespace Kinectv1
                 catch (Exception ex)
                 {
                     Console.WriteLine($"❌ Error during hosted services shutdown: {ex.Message}");
+                    ShutdownDetailText.Text = "Error during shutdown, forcing termination...";
                     // Don't let service shutdown errors prevent application exit
                 }
 
@@ -2227,6 +2308,7 @@ namespace Kinectv1
                 try
                 {
                     Console.WriteLine("🔴 STEP 4: Saving essential settings...");
+                    ShutdownDetailText.Text = "Saving settings...";
                     var windowState = this.WindowState == WindowState.Maximized ? "Maximized" : "Normal";
                     AppSettings.SaveWindowSettings(this.Width, this.Height, this.Left, this.Top, windowState);
                     AppSettings.SaveVoiceThreshold(_currentThreshold);
@@ -2238,14 +2320,45 @@ namespace Kinectv1
                     Console.WriteLine($"⚠️ Error saving essential settings: {saveEx.Message}");
                 }
 
+                overallStopwatch.Stop();
+                
+                // Record telemetry
+                Telemetry.Timer("app.stop", overallStopwatch.ElapsedMilliseconds);
+                Console.WriteLine($"📊 Clean shutdown completed in {overallStopwatch.ElapsedMilliseconds}ms");
+
                 Console.WriteLine("🔴 === CLEAN SHUTDOWN COMPLETED ===");
-                Console.WriteLine("🔴 All services stopped cleanly through centralized management");
+                Console.WriteLine("🔴 All services stopped cleanly, exiting gracefully");
+                
+                // Hide overlay and allow normal window close
+                ShutdownOverlay.Visibility = Visibility.Collapsed;
+                e.Cancel = false;
+                
+                // Actually close the window
+                this.Close();
             }
             catch (Exception ex)
             {
+                overallStopwatch.Stop();
+                
                 Console.WriteLine($"❌ Critical error during application shutdown: {ex.Message}");
                 Console.WriteLine($"📍 Stack trace: {ex.StackTrace}");
-                // Don't prevent application exit even if there are errors
+                
+                // Record telemetry for failed shutdown
+                Telemetry.Timer("app.stop", overallStopwatch.ElapsedMilliseconds);
+                Telemetry.Counter("app.stop.forced_kill");
+                
+                // FALLBACK: Environment.Exit as last resort
+                Console.WriteLine("🚨 FALLBACK: Using Environment.Exit(0) as last resort");
+                ShutdownDetailText.Text = "Forcing application termination...";
+                
+                try
+                {
+                    // Give UI a moment to update
+                    await Task.Delay(500);
+                }
+                catch { }
+                
+                Environment.Exit(0);
             }
             finally
             {
@@ -2262,7 +2375,6 @@ namespace Kinectv1
                 }
 
                 Console.WriteLine("🔴 === APPLICATION EXIT READY ===");
-                Console.WriteLine("🔴 Centralized shutdown pattern completed - application can now exit safely");
             }
         }
 

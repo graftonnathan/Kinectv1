@@ -824,9 +824,39 @@ namespace Kinectv1.Discord
                 {
                     byte[] buf = new byte[8192];
                     int n;
+                    bool hasWrittenFirstChunk = false;
+                    
                     while ((n = resampler.Read(buf, 0, buf.Length)) > 0)
                     {
                         ct.ThrowIfCancellationRequested();
+                        
+                        // Fix: Only write to stream after we have non-empty PCM data
+                        // This prevents silent headers from being sent before actual audio
+                        if (!hasWrittenFirstChunk)
+                        {
+                            // Check if buffer contains non-zero audio data
+                            bool hasAudioData = false;
+                            for (int i = 0; i < n; i++)
+                            {
+                                if (buf[i] != 0)
+                                {
+                                    hasAudioData = true;
+                                    break;
+                                }
+                            }
+                            
+                            if (hasAudioData)
+                            {
+                                hasWrittenFirstChunk = true;
+                                Console.WriteLine($"[TTS] Starting Discord stream with first non-empty PCM chunk ({n} bytes)");
+                            }
+                            else
+                            {
+                                // Skip empty/silent chunks at the beginning
+                                continue;
+                            }
+                        }
+                        
                         await discordStream.WriteAsync(buf, 0, n, ct).ConfigureAwait(false);
                         totalWritten += n;
                     }

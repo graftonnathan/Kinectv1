@@ -30,6 +30,11 @@ namespace Kinectv1
         private int _pcmBufferPosition = 0;
         private int _pcmBufferCount = 0;
         
+        // NEW: Rolling window for speaker embedding with 0.5s hop
+        private readonly RingBuffer _speakerBuffer = new RingBuffer(16000); // 1 second at 16kHz
+        private DateTime _lastSpeakerInference = DateTime.MinValue;
+        private readonly TimeSpan _speakerInferenceHop = TimeSpan.FromMilliseconds(500); // 0.5s hop
+        
         private string _lastTranscription = string.Empty;
         private string _pendingTranscription = string.Empty; // Store transcription for Ollama
         private DateTime _lastTranscriptionTime = DateTime.MinValue;
@@ -116,29 +121,20 @@ namespace Kinectv1
             const int oneSecondSamples = 16000; // 1 second at 16kHz
             if (_pcmBufferCount < oneSecondSamples) return null;
             
-            var result = ArrayPool<float>.Shared.Rent(oneSecondSamples);
-            try
+            // Directly create final array - no need for pooled intermediate
+            var result = new float[oneSecondSamples];
+            int startPos = _pcmBufferPosition - _pcmBufferCount;
+            if (startPos < 0) startPos += PCM_BUFFER_SIZE;
+            
+            for (int i = 0; i < oneSecondSamples; i++)
             {
-                int startPos = _pcmBufferPosition - _pcmBufferCount;
-                if (startPos < 0) startPos += PCM_BUFFER_SIZE;
-                
-                for (int i = 0; i < oneSecondSamples; i++)
-                {
-                    result[i] = _pcmBuffer[(startPos + i) % PCM_BUFFER_SIZE];
-                }
-                
-                // Remove extracted samples
-                _pcmBufferCount -= oneSecondSamples;
-                
-                // Copy result to final array
-                var finalResult = new float[oneSecondSamples];
-                Array.Copy(result, finalResult, oneSecondSamples);
-                return finalResult;
+                result[i] = _pcmBuffer[(startPos + i) % PCM_BUFFER_SIZE];
             }
-            finally
-            {
-                ArrayPool<float>.Shared.Return(result);
-            }
+            
+            // Remove extracted samples
+            _pcmBufferCount -= oneSecondSamples;
+            
+            return result;
         }
 
         /// <summary>
@@ -311,57 +307,15 @@ namespace Kinectv1
                 // Only add to buffer when voice is active
                 float[] floatPcm = AudioUtils.ConvertToFloatPcm(buffer, bytesRecorded);
                 AddToPcmBuffer(floatPcm);
+                
+                // NEW: Add to speaker ring buffer for rolling window inference
+                _speakerBuffer.Add(floatPcm);
 
                 // FIXED: Only process recognition when voice is active (respects VAD settings)
                 ProcessRecognitionWithConfidence(buffer, bytesRecorded);
 
-                // Process voice embeddings when we have enough audio (1 second)
-                var oneSecond = ExtractOneSecondFromBuffer();
-                if (oneSecond != null)
-                {
-                    // Generate speaker embedding
-                    var emb = SpeakerEmbedder.Embed(oneSecond);
-
-                    // Pass embedding to debugging callback
-                    _onVoiceEmbedding?.Invoke(emb);
-
-                    // Handle voice enrollment if active
-                    if (VoiceEnrollmentManager.IsEnrolling)
-                    {
-                        VoiceEnrollmentManager.ProcessVoiceSample(emb);
-                    }
-                    else
-                    {
-                        // Normal speaker identification
-                        var match = SpeakerIdentifier.Identify(emb);
-                        string voiceSpeakerName = "Unknown";
-                        float voiceSpeakerScore = 0f;
-                        
-                        if (match != null)
-                        {
-                            voiceSpeakerName = match.Value.name;
-                            voiceSpeakerScore = match.Value.score;
-                            _onSpeakerMatch?.Invoke(voiceSpeakerName, voiceSpeakerScore);
-                        }
-                        else
-                        {
-                            _onSpeakerMatch?.Invoke("Unknown", 0f);
-                        }
-
-                        // NEW: Use centralized speaker identification
-                        var (finalSpeakerName, finalConfidence, identificationMethod) = IdentifyCurrentSpeaker(voiceSpeakerName, voiceSpeakerScore);
-                        
-                        // NEW: Update current speaker state
-                        UpdateCurrentSpeaker(finalSpeakerName, finalConfidence, identificationMethod);
-
-                        // NOTE: Ollama dispatch is now handled centrally by the confidence processing methods
-                        // No duplicate Ollama logic needed here anymore
-                        if (_confidenceLoggingEnabled)
-                        {
-                            Console.WriteLine($"?? Speaker updated: {finalSpeakerName} (confidence: {finalConfidence:F3}, method: {identificationMethod})");
-                        }
-                    }
-                }
+                // NEW: Process speaker embeddings with rolling window and 0.5s hop
+                ProcessSpeakerEmbeddingWithRollingWindow();
             }
             catch (Exception ex)
             {
@@ -696,14 +650,19 @@ namespace Kinectv1
             
             if (_lowConfidenceBuffer.Count < 2) return;
             
-            // Try to find patterns or combine results
-            var allResults = _lowConfidenceBuffer.ToList();
-            var combinedText = TryCombineResults(allResults);
+            // Try to find patterns or combine results - avoid ToList() allocation
+            var combinedText = TryCombineResults(_lowConfidenceBuffer);
             
             if (!string.IsNullOrWhiteSpace(combinedText))
             {
-                // Calculate combined confidence
-                var avgConfidence = allResults.Average(r => r.Confidence);
+                // Calculate combined confidence without LINQ
+                float totalConfidence = 0f;
+                foreach (var result in _lowConfidenceBuffer)
+                {
+                    totalConfidence += result.Confidence;
+                }
+                var avgConfidence = totalConfidence / _lowConfidenceBuffer.Count;
+                
                 var combinedResult = new VoskResult
                 {
                     Text = combinedText,
@@ -736,34 +695,82 @@ namespace Kinectv1
 
         private string TryCombineResults(List<VoskResult> results)
         {
-            if (!results.Any()) return string.Empty;
+            if (results.Count == 0) return string.Empty;
             
-            // Strategy 1: Look for the longest common substring
-            var texts = results.Select(r => r.Text.Trim()).Where(t => !string.IsNullOrEmpty(t)).ToList();
-            if (!texts.Any()) return string.Empty;
-            
-            // If we only have one valid text, use it
-            if (texts.Count == 1) return texts[0];
-            
-            // Strategy 2: Find the most frequent text
-            var textFrequency = texts.GroupBy(t => t.ToLower())
-                                    .OrderByDescending(g => g.Count())
-                                    .ThenByDescending(g => g.Key.Length)
-                                    .FirstOrDefault();
-            
-            if (textFrequency != null && textFrequency.Count() > 1)
+            // Strategy 1: Collect non-empty texts without LINQ
+            var texts = new List<string>();
+            foreach (var result in results)
             {
-                return textFrequency.First(); // Return the most frequent text
+                var trimmed = result.Text.Trim();
+                if (!string.IsNullOrEmpty(trimmed))
+                {
+                    texts.Add(trimmed);
+                }
             }
             
-            // Strategy 3: Use the longest text if confidences are similar
-            var maxConfidence = results.Max(r => r.Confidence);
-            var highConfidenceResults = results.Where(r => r.Confidence >= maxConfidence - 0.1f).ToList();
+            if (texts.Count == 0) return string.Empty;
+            if (texts.Count == 1) return texts[0];
             
-            if (highConfidenceResults.Any())
+            // Strategy 2: Find most frequent text using Dictionary instead of LINQ GroupBy
+            var textFrequency = new Dictionary<string, int>();
+            foreach (var text in texts)
             {
-                var longestText = highConfidenceResults.OrderByDescending(r => r.Text.Length).First().Text;
-                if (longestText.Length >= 3) return longestText;
+                var lowerText = text.ToLower();
+                textFrequency[lowerText] = textFrequency.ContainsKey(lowerText) ? textFrequency[lowerText] + 1 : 1;
+            }
+            
+            string mostFrequentText = null;
+            int maxCount = 0;
+            int maxLength = 0;
+            
+            foreach (var kvp in textFrequency)
+            {
+                if (kvp.Value > maxCount || (kvp.Value == maxCount && kvp.Key.Length > maxLength))
+                {
+                    // Find original case version
+                    foreach (var text in texts)
+                    {
+                        if (text.ToLower() == kvp.Key)
+                        {
+                            mostFrequentText = text;
+                            maxCount = kvp.Value;
+                            maxLength = kvp.Key.Length;
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            if (maxCount > 1 && mostFrequentText != null)
+            {
+                return mostFrequentText;
+            }
+            
+            // Strategy 3: Find highest confidence and longest text without LINQ
+            float maxConfidence = 0f;
+            foreach (var result in results)
+            {
+                if (result.Confidence > maxConfidence)
+                {
+                    maxConfidence = result.Confidence;
+                }
+            }
+            
+            string longestText = null;
+            int longestLength = 0;
+            
+            foreach (var result in results)
+            {
+                if (result.Confidence >= maxConfidence - 0.1f && result.Text.Length > longestLength)
+                {
+                    longestText = result.Text;
+                    longestLength = result.Text.Length;
+                }
+            }
+            
+            if (longestText != null && longestLength >= 3)
+            {
+                return longestText;
             }
             
             return string.Empty;
@@ -866,6 +873,36 @@ namespace Kinectv1
                     return;
                 }
 
+                // NEW: Check if TTS is currently speaking (ASR suppression during TTS playback)
+                // Only suppress ASR if barge-in is disabled (per requirements)
+                if (TtsPlaybackController.Instance.IsSpeaking && !AppSettings.LoadBargeInEnabled())
+                {
+                    Console.WriteLine($"?? DISPATCH BLOCKED: '{transcription}' from {source} (TTS currently speaking - ASR suppressed, barge-in disabled)");
+                    Telemetry.Counter("asr.dispatch_blocked_due_to_tts");
+                    return;
+                }
+
+                // NEW: Enhanced gating for Local scenario - require wake word or higher confidence
+                var currentScenario = AppSettings.LoadAppScenario();
+                if (currentScenario == AppScenario.Local)
+                {
+                    // For Local scenario, we want to be more conservative about LLM dispatch
+                    // Check if this was triggered by wake word detection
+                    var hasTriggerWord = !string.IsNullOrWhiteSpace(_triggerName) && 
+                                        transcription.IndexOf(_triggerName, StringComparison.OrdinalIgnoreCase) >= 0;
+                    
+                    if (!hasTriggerWord)
+                    {
+                        Console.WriteLine($"?? DISPATCH BLOCKED: '{transcription}' from {source} (Local scenario - no wake word detected)");
+                        Telemetry.Counter("asr.dispatch_blocked_no_wake_word");
+                        return;
+                    }
+                    else
+                    {
+                        Console.WriteLine($"?? WAKE WORD DETECTED: '{_triggerName}' in '{transcription}' - proceeding with dispatch");
+                    }
+                }
+
                 // Mark as processed and set dispatch flag
                 _processedTranscriptions.Add(transcription);
                 _ollamaDispatchInProgress = true;
@@ -875,10 +912,19 @@ namespace Kinectv1
                 // Clear old processed transcriptions to prevent memory leaks (keep only recent 10)
                 if (_processedTranscriptions.Count > 10)
                 {
-                    var oldestTranscriptions = _processedTranscriptions.Take(_processedTranscriptions.Count - 10).ToList();
-                    foreach (var oldTranscription in oldestTranscriptions)
+                    // Optimize: avoid LINQ and directly remove excess items
+                    var excessCount = _processedTranscriptions.Count - 10;
+                    var itemsToRemove = new List<string>();
+                    var count = 0;
+                    foreach (var transcription in _processedTranscriptions)
                     {
-                        _processedTranscriptions.Remove(oldTranscription);
+                        itemsToRemove.Add(transcription);
+                        if (++count >= excessCount) break;
+                    }
+                    
+                    foreach (var item in itemsToRemove)
+                    {
+                        _processedTranscriptions.Remove(item);
                     }
                 }
                 
@@ -1041,6 +1087,125 @@ namespace Kinectv1
             Console.WriteLine($"   Allowed through: {callCount - blockedCount}");
             Console.WriteLine($"   Debounce timeout: {_vadDebounceTimeout.TotalMilliseconds:F0}ms");
             Console.WriteLine($"   Result: {(blockedCount > 0 ? "✅ DEBOUNCE WORKING" : "⚠️ NO DEBOUNCE DETECTED")}");
+        }
+
+        /// <summary>
+        /// NEW: Process speaker embeddings with rolling window and silence gating
+        /// </summary>
+        private void ProcessSpeakerEmbeddingWithRollingWindow()
+        {
+            try
+            {
+                // Check if enough time has passed for next inference (0.5s hop)
+                var timeSinceLastInference = DateTime.UtcNow - _lastSpeakerInference;
+                if (timeSinceLastInference < _speakerInferenceHop)
+                {
+                    return;
+                }
+
+                // Check if we have a full window of audio
+                if (!_speakerBuffer.HasFullWindow)
+                {
+                    return;
+                }
+
+                // Extract the current window
+                var window = _speakerBuffer.ExtractWindow();
+                if (window == null) return;
+
+                // Silence gating: Check RMS level (-45 dBFS threshold and minimum voiced duration)
+                float rms = _speakerBuffer.CalculateRms();
+                float rmsDb = 20f * (float)Math.Log10(Math.Max(rms, 1e-10f)); // Convert to dB, avoid log(0)
+                
+                // Skip inference if RMS < -45 dBFS or < 0.2s voiced in window
+                const float minRmsDb = -45f;
+                const float minVoicedRatio = 0.2f; // 20% of window should be voiced
+                
+                float voicedSamples = CountVoicedSamples(window);
+                float voicedRatio = voicedSamples / window.Length;
+                
+                if (rmsDb < minRmsDb || voicedRatio < minVoicedRatio)
+                {
+                    if (_confidenceLoggingEnabled)
+                    {
+                        Console.WriteLine($"🔇 Skipping speaker inference - RMS: {rmsDb:F1}dB, voiced: {voicedRatio:F2}");
+                    }
+                    _lastSpeakerInference = DateTime.UtcNow;
+                    return;
+                }
+
+                // Generate speaker embedding
+                var emb = SpeakerEmbedder.Embed(window);
+                _lastSpeakerInference = DateTime.UtcNow;
+
+                // Pass embedding to debugging callback
+                _onVoiceEmbedding?.Invoke(emb);
+
+                // Handle voice enrollment if active
+                if (VoiceEnrollmentManager.IsEnrolling)
+                {
+                    VoiceEnrollmentManager.ProcessVoiceSample(emb);
+                }
+                else
+                {
+                    // Normal speaker identification
+                    var match = SpeakerIdentifier.Identify(emb);
+                    string voiceSpeakerName = "Unknown";
+                    float voiceSpeakerScore = 0f;
+                    
+                    if (match != null)
+                    {
+                        voiceSpeakerName = match.Value.name;
+                        voiceSpeakerScore = match.Value.score;
+                        
+                        // Add telemetry for speaker score
+                        Kinectv1.Telemetry.Gauge("speaker.score", voiceSpeakerScore);
+                        
+                        _onSpeakerMatch?.Invoke(voiceSpeakerName, voiceSpeakerScore);
+                    }
+                    else
+                    {
+                        Kinectv1.Telemetry.Gauge("speaker.score", 0f);
+                        _onSpeakerMatch?.Invoke("Unknown", 0f);
+                    }
+
+                    // NEW: Use centralized speaker identification
+                    var (finalSpeakerName, finalConfidence, identificationMethod) = IdentifyCurrentSpeaker(voiceSpeakerName, voiceSpeakerScore);
+                    
+                    // NEW: Update current speaker state
+                    UpdateCurrentSpeaker(finalSpeakerName, finalConfidence, identificationMethod);
+
+                    if (_confidenceLoggingEnabled)
+                    {
+                        Console.WriteLine($"🔊 Speaker: {finalSpeakerName} (score: {voiceSpeakerScore:F3}, method: {identificationMethod})");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error in ProcessSpeakerEmbeddingWithRollingWindow: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Count samples that are considered "voiced" (above a threshold)
+        /// </summary>
+        private float CountVoicedSamples(float[] window)
+        {
+            if (window == null || window.Length == 0) return 0f;
+
+            const float voiceThreshold = 0.01f; // Threshold for considering a sample "voiced"
+            int voicedCount = 0;
+
+            for (int i = 0; i < window.Length; i++)
+            {
+                if (Math.Abs(window[i]) > voiceThreshold)
+                {
+                    voicedCount++;
+                }
+            }
+
+            return voicedCount;
         }
     }
 

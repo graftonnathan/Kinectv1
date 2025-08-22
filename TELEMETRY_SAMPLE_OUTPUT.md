@@ -62,6 +62,7 @@ Health snapshots provide aggregated metrics for monitoring system performance an
    File path: logs\telemetry.ndjson
    Sampling: 100%
    Format: NDJSON (Newline Delimited JSON)
+   Console: Warnings+ and summaries only
    Rotation: ~5MB file size limit
 ```
 

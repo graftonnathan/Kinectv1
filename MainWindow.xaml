@@ -782,8 +782,13 @@
                     <!-- Full Diagnostics Report -->
                     <Border Grid.Row="2" BorderBrush="{DynamicResource AccentPurple}" BorderThickness="2" CornerRadius="6" 
                             Background="{DynamicResource SurfaceBackground}">
-                        <StackPanel Margin="15">
-                            <Grid Margin="0,0,0,10">
+                        <Grid Margin="15">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+
+                            <Grid Grid.Row="0" Margin="0,0,0,10">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="Auto"/>
                                     <ColumnDefinition Width="*"/>
@@ -808,7 +813,7 @@
                                         ToolTip="Copy diagnostics report to clipboard"/>
                             </Grid>
 
-                            <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="4"
+                            <Border Grid.Row="1" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="4"
                                     Background="{DynamicResource WindowBackground}">
                                 <TextBox Name="DiagnosticsReportTextBox" TextWrapping="Wrap" IsReadOnly="True" 
                                          VerticalScrollBarVisibility="Auto" Background="Transparent" BorderThickness="0" 
@@ -816,7 +821,7 @@
                                          Foreground="{DynamicResource TextSecondary}"
                                          Style="{StaticResource ThemedTextBoxStyle}"/>
                             </Border>
-                        </StackPanel>
+                        </Grid>
                     </Border>
 
                     <!-- Status Bar -->
@@ -828,5 +833,58 @@
                 </Grid>
             </TabItem>
         </TabControl>
+
+        <!-- Shutdown overlay (initially hidden) -->
+        <Grid Name="ShutdownOverlay" Background="#AA000000" Visibility="Collapsed" Panel.ZIndex="999">
+            <Border Background="{DynamicResource SurfaceBackground}" 
+                    BorderBrush="{DynamicResource AccentBlue}" 
+                    BorderThickness="2" 
+                    CornerRadius="8" 
+                    HorizontalAlignment="Center" 
+                    VerticalAlignment="Center"
+                    Padding="40">
+                <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
+                    <!-- Animated spinner -->
+                    <Border Width="48" Height="48" Margin="0,0,0,20">
+                        <Ellipse Width="48" Height="48" 
+                                 Stroke="{DynamicResource AccentBlue}" 
+                                 StrokeThickness="4" 
+                                 StrokeDashArray="25,25" 
+                                 StrokeDashOffset="0"
+                                 RenderTransformOrigin="0.5,0.5">
+                            <Ellipse.RenderTransform>
+                                <RotateTransform x:Name="SpinnerRotation"/>
+                            </Ellipse.RenderTransform>
+                            <Ellipse.Triggers>
+                                <EventTrigger RoutedEvent="Loaded">
+                                    <BeginStoryboard>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="SpinnerRotation"
+                                                           Storyboard.TargetProperty="Angle"
+                                                           From="0" To="360" Duration="0:0:1"
+                                                           RepeatBehavior="Forever"/>
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </EventTrigger>
+                            </Ellipse.Triggers>
+                        </Ellipse>
+                    </Border>
+                    
+                    <TextBlock Name="ShutdownStatusText" 
+                               Text="Shutting down services..." 
+                               FontSize="16" 
+                               FontWeight="SemiBold"
+                               Foreground="{DynamicResource TextPrimary}" 
+                               HorizontalAlignment="Center" 
+                               Margin="0,0,0,10"/>
+                    
+                    <TextBlock Name="ShutdownDetailText" 
+                               Text="Please wait while all services are stopped safely..."
+                               FontSize="12" 
+                               Foreground="{DynamicResource TextSecondary}" 
+                               HorizontalAlignment="Center"/>
+                </StackPanel>
+            </Border>
+        </Grid>
     </Grid>
 </Window>

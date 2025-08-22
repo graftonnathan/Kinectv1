@@ -1,47 +1,80 @@
-name: Copilot Assign Next (promote from queue)
+name: Copilot Assign Next (no labels)
 
 on:
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:
-  pull_request:
-    types: [closed]
+
+concurrency:
+  group: copilot-assign-next
+  cancel-in-progress: true
 
 permissions:
   contents: read
   pull-requests: write
   issues: write
 
-env:
-  QUEUE_LABEL: "copilot:todo"
-  COPILOT_HANDLE: "Copilot"
-
 jobs:
-  promote-from-queue:
+  assign-next:
     runs-on: ubuntu-latest
+    env:
+      COPILOT_HANDLE: Copilot
     steps:
-      - name: Setup gh
-        run: echo "GH_TOKEN=${{ github.token }}" >> "$GITHUB_ENV"
+      - name: Auth gh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "GH_TOKEN=${GH_TOKEN}" >> "$GITHUB_ENV"
+          echo "REPO=${{ github.repository }}" >> "$GITHUB_ENV"
+          gh --version
 
-      - name: Skip if Copilot already has an assigned PR
-        id: check_busy
+      - name: Exit if Copilot is already assigned to any open PR
+        id: busy
         run: |
           set -euo pipefail
-          BUSY=$(gh pr list --state open --json number,assignees \
-                 | jq --arg u "${COPILOT_HANDLE}" '[.[] | select(.assignees[].login? == $u)] | length')
-          echo "busy_count=$BUSY" >> "$GITHUB_OUTPUT"
+          BUSY=$(gh pr list -R "$REPO" --state open --json number,assignees \
+                 | jq --arg u "${{ env.COPILOT_HANDLE }}" \
+                      '[.[] | select([.assignees[].login?] | index($u))] | length')
+          echo "busy=$BUSY" >> "$GITHUB_OUTPUT"
 
-      - name: Assign next queued PR to Copilot
-        if: steps.check_busy.outputs.busy_count == '0'
+      - name: Find oldest eligible PR (authored by Copilot)
+        if: steps.busy.outputs.busy == '0'
+        id: by_author
         run: |
           set -euo pipefail
-          # Oldest PR with QUEUE_LABEL
-          PR=$(gh pr list --state open --label "$QUEUE_LABEL" --json number,updatedAt \
-               | jq -r 'sort_by(.updatedAt) | .[0].number // empty')
-          if [[ -z "$PR" ]]; then
-            echo "No queued PRs."
-            exit 0
-          fi
-          gh pr edit "$PR" --add-assignee "${COPILOT_HANDLE}" || true
-          gh pr edit "$PR" --remove-label "$QUEUE_LABEL" || true
-          gh pr comment "$PR" --body "🤖 Assigning to **${COPILOT_HANDLE}** from queue. Work starting now."
+          PR=$(gh pr list -R "$REPO" --state open --json number,author,isDraft,assignees,updatedAt \
+               | jq -r --arg u "${{ env.COPILOT_HANDLE }}" '
+                    map(select(.isDraft | not))
+                    | map(select([.assignees[].login?] | index($u) | not))
+                    | map(select(.author.login == $u))
+                    | sort_by(.updatedAt)
+                    | .[0].number // empty')
+          echo "pr=$PR" >> "$GITHUB_OUTPUT"
+
+      - name: If none by Copilot, find oldest unassigned PR
+        if: steps.busy.outputs.busy == '0' && steps.by_author.outputs.pr == ''
+        id: unassigned
+        run: |
+          set -euo pipefail
+          PR=$(gh pr list -R "$REPO" --state open --json number,isDraft,assignees,updatedAt \
+               | jq -r '
+                    map(select(.isDraft | not))
+                    | map(select(.assignees | length == 0))
+                    | sort_by(.updatedAt)
+                    | .[0].number // empty')
+          echo "pr=$PR" >> "$GITHUB_OUTPUT"
+
+      - name: Assign Copilot to chosen PR
+        if: steps.busy.outputs.busy == '0' && (steps.by_author.outputs.pr != '' || steps.unassigned.outputs.pr != '')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          CHOSEN="${{ steps.by_author.outputs.pr }}"
+          if [ -z "$CHOSEN" ]; then CHOSEN="${{ steps.unassigned.outputs.pr }}"; fi
+          echo "Assigning Copilot to PR #$CHOSEN"
+          gh pr edit -R "$REPO" "$CHOSEN" --add-assignee "${{ env.COPILOT_HANDLE }}" || true
+          gh pr comment -R "$REPO" "$CHOSEN" --body "🤖 Assigning to **${{ env.COPILOT_HANDLE }}** (auto)."
+
+      - name: Nothing to assign
+        if: steps.busy.outputs.busy == '0' && (steps.by_author.outputs.pr == '' && steps.unassigned.outputs.pr == '')
+        run: echo "No eligible PRs to assign."
