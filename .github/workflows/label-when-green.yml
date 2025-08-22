@@ -1,0 +1,59 @@
+name: Label Copilot PR when CI is green
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review, labeled]
+    branches: [dev]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  mark-ready:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Decide and label
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const { owner, repo } = context.repo;
+
+            // Only PRs authored by your bot(s) or you (adjust as needed)
+            const allowed = ["github-actions[bot]","github-copilot","notamouse7260","graftonnathan"];
+            if (!allowed.includes(pr.user.login)) {
+              core.info(`Skip: author ${pr.user.login} not allowed`);
+              return;
+            }
+
+            // Already labeled?
+            if (pr.labels.some(l => l.name === "copilot:ready")) {
+              core.info("Already labeled copilot:ready");
+              return;
+            }
+
+            // Check combined status of latest commit (GraphQL rollup)
+            const q = `query($owner:String!, $repo:String!, $number:Int!) {
+              repository(owner:$owner, name:$repo) {
+                pullRequest(number:$number) {
+                  commits(last: 1) {
+                    nodes { commit { statusCheckRollup { state } } }
+                  }
+                  isDraft
+                }
+              }
+            }`;
+            const r = await github.graphql(q, { owner, repo, number: pr.number });
+            const rollup = r.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup;
+            const state = rollup?.state || "NO_CHECKS";
+            const isDraft = r.repository.pullRequest.isDraft;
+
+            core.info(`statusCheckRollup: ${state}, draft: ${isDraft}`);
+            if (isDraft) return;               // don’t label drafts
+            if (state !== "SUCCESS" && state !== "NO_CHECKS") return; // only when green
+
+            await github.rest.issues.addLabels({
+              owner, repo, issue_number: pr.number, labels: ["copilot:ready"]
+            });
+            core.notice("Applied label copilot:ready");
