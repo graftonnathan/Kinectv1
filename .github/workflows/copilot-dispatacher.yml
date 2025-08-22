@@ -1,127 +1,101 @@
-name: Copilot Dispatcher
+name: Copilot – gate + runner
 
 on:
+  workflow_dispatch:
   pull_request:
     branches: [dev]
-    types: [opened, reopened, ready_for_review, synchronize, labeled, unlabeled, closed]
-  workflow_dispatch: {}
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
 
 permissions:
   contents: read
   pull-requests: write
 
+# Ensure only one Copilot worker runs at a time
+concurrency:
+  group: copilot/worker
+  cancel-in-progress: false
+
 jobs:
   gatekeeper:
-    name: Gatekeeper (one Copilot PR at a time)
+    name: Gatekeeper – choose exactly one PR
     runs-on: ubuntu-latest
     outputs:
-      proceed: ${{ steps.gate.outputs.proceed }}
+      in_progress_pr: ${{ steps.pick.outputs.in_progress_pr }}
     steps:
-      - name: Decide queue status
-        id: gate
+      - name: Pick PR targeting dev
+        id: pick
         uses: actions/github-script@v7
         with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const core = require('@actions/core');
-            const pr = context.payload.pull_request;
-            if (!pr) {
-              core.setOutput('proceed','false');
-              return;
-            }
-            const owner = context.repo.owner;
-            const repo  = context.repo.repo;
-            const prNumber = pr.number;
+            // core, github, context are injected; don't require() them
+            const INPROG = 'copilot:in-progress';
+            const QUEUED = 'copilot:queued';
+            const BASE = 'dev';
+            const { owner, repo } = context.repo;
 
-            const IN_PROGRESS = 'copilot:in-progress';
-            const QUEUED      = 'copilot:queued';
+            const prs = await github.paginate(
+              github.rest.pulls.list, { owner, repo, state: 'open', base: BASE, per_page: 100 }
+            );
 
-            // helper: ensure a label exists on repo
-            async function ensureLabel(name, color, description) {
-              try {
-                await github.rest.issues.getLabel({ owner, repo, name });
-              } catch {
-                await github.rest.issues.createLabel({ owner, repo, name, color, description });
-              }
-            }
+            const getLabels = (pr) => pr.labels.map(l => typeof l === 'string' ? l : l.name);
+            let inProg = prs.find(pr => getLabels(pr).includes(INPROG));
 
-            await ensureLabel(IN_PROGRESS, '0e8a16', 'Currently being processed by Copilot automation');
-            await ensureLabel(QUEUED,      'c2e0c6', 'Waiting turn for Copilot automation');
-
-            // List open PRs labeled "in-progress"
-            const { data: inProg } = await github.rest.search.issuesAndPullRequests({
-              q: `repo:${owner}/${repo} is:open is:pr label:"${IN_PROGRESS}"`
-            });
-
-            const someoneElseInProgress = inProg.items.some(i => i.number !== prNumber);
-
-            if (someoneElseInProgress) {
-              // Mark this PR as queued and skip
-              await github.rest.issues.addLabels({ owner, repo, issue_number: prNumber, labels: [QUEUED] });
-              await github.rest.issues.createComment({
-                owner, repo, issue_number: prNumber,
-                body: `⏳ Another PR is marked **${IN_PROGRESS}**. This PR is **queued** and will run when the current one finishes.`
+            if (!inProg && prs.length) {
+              inProg = prs[0]; // most recently updated (default ordering)
+              core.info(`Setting PR #${inProg.number} as ${INPROG}`);
+              await github.rest.issues.addLabels({
+                owner, repo, issue_number: inProg.number, labels: [INPROG]
               });
-              core.setOutput('proceed','false');
-              return;
-            }
-
-            // We can proceed. Make this PR "in-progress".
-            // Remove "queued" if present, add "in-progress" if missing.
-            const { data: labels } = await github.rest.issues.listLabelsOnIssue({ owner, repo, issue_number: prNumber });
-            const names = labels.map(l => l.name);
-            if (names.includes(QUEUED)) {
-              await github.rest.issues.removeLabel({ owner, repo, issue_number: prNumber, name: QUEUED }).catch(() => {});
-            }
-            if (!names.includes(IN_PROGRESS)) {
-              await github.rest.issues.addLabels({ owner, repo, issue_number: prNumber, labels: [IN_PROGRESS] });
-            }
-
-            core.setOutput('proceed','true');
-
-  run-copilot:
-    name: Run Copilot worker
-    needs: [gatekeeper]
-    if: ${{ needs.gatekeeper.outputs.proceed == 'true' }}
-    # Double-guard: never run more than one across the repo at a time.
-    concurrency:
-      group: copilot-queue
-      cancel-in-progress: false
-    uses: ./.github/workflows/copilot-task-runner.yml
-    with:
-      task: "auto"
-    secrets: inherit
-
-  tidy-labels:
-    name: Tidy labels on close/merge
-    if: ${{ github.event.action == 'closed' }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/github-script@v7
-        with:
-          script: |
-            const owner = context.repo.owner;
-            const repo  = context.repo.repo;
-            const pr = context.payload.pull_request;
-            if (!pr) return;
-
-            const IN_PROGRESS = 'copilot:in-progress';
-            const QUEUED      = 'copilot:queued';
-
-            // Remove labels from the closed PR
-            for (const name of [IN_PROGRESS, QUEUED]) {
               try {
-                await github.rest.issues.removeLabel({ owner, repo, issue_number: pr.number, name });
+                await github.rest.issues.removeLabel({
+                  owner, repo, issue_number: inProg.number, name: QUEUED
+                });
               } catch {}
             }
 
-            // Optional: nudge queued PRs with a comment so maintainers see what's next.
-            const { data: queued } = await github.rest.search.issuesAndPullRequests({
-              q: `repo:${owner}/${repo} is:open is:pr label:"${QUEUED}" sort:created-asc`
-            });
-            if (queued.items.length) {
-              const next = queued.items[0];
-              await github.rest.issues.createComment({
-                owner, repo, issue_number: next.number,
-                body: `✅ A previously active PR just closed. You are next in queue for Copilot automation. Push a new commit or reopen to trigger the dispatcher.`
-              });
+            for (const pr of prs) {
+              if (inProg && pr.number === inProg.number) continue;
+              const labels = getLabels(pr);
+              if (!labels.includes(QUEUED)) {
+                core.info(`Queuing PR #${pr.number}`);
+                await github.rest.issues.addLabels({
+                  owner, repo, issue_number: pr.number, labels: [QUEUED]
+                });
+              }
+              if (labels.includes(INPROG)) {
+                try {
+                  await github.rest.issues.removeLabel({
+                    owner, repo, issue_number: pr.number, name: INPROG
+                  });
+                } catch {}
+              }
             }
+
+            core.setOutput('in_progress_pr', inProg ? String(inProg.number) : '');
+            core.info(`Gatekeeper selected: ${inProg ? '#' + inProg.number : 'none'}`);
+
+  worker:
+    name: Copilot worker
+    needs: gatekeeper
+    if: needs.gatekeeper.outputs.in_progress_pr != ''
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Show chosen PR
+        run: echo "Working on PR #${{ needs.gatekeeper.outputs.in_progress_pr }}"
+
+      - uses: actions/checkout@v4
+        with:
+          # Check out the PR's merge ref so you can build/test
+          ref: refs/pull/${{ needs.gatekeeper.outputs.in_progress_pr }}/merge
+          fetch-depth: 0
+
+      # --- Your Copilot/automation steps go here ---
+      # Example: call your existing scripts, tools, etc.
+      - name: Run Copilot dispatcher
+        run: |
+          echo "Dispatching Copilot against PR #${{ needs.gatekeeper.outputs.in_progress_pr }}"
+          # ./scripts/copilot-dispatch.sh ${{ needs.gatekeeper.outputs.in_progress_pr }}
+
+      # (Optional) mark queued → in-progress artifacts, notify Discord, etc.
