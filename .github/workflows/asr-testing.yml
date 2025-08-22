@@ -1,0 +1,64 @@
+name: ASR Testing Harness
+
+on:
+  push:
+    branches: [ main, dev ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  asr-regression-tests:
+    runs-on: windows-latest  # Required for .NET Framework 4.8.1 and Vosk
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Setup .NET Framework
+      uses: microsoft/setup-msbuild@v1.1
+
+    - name: Restore NuGet packages
+      run: nuget restore Kinectv1.sln
+
+    - name: Build ASR testing tool
+      run: dotnet build tools/AsrOffline.csproj --configuration Release
+
+    - name: Download Vosk model (optional - only if running full ASR tests)
+      run: |
+        # Example: Download a small Vosk model for testing
+        # mkdir -p models
+        # curl -L "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip" -o vosk-model.zip
+        # unzip vosk-model.zip -d models/
+        echo "Skipping model download for lightweight tests"
+
+    - name: Run ASR testing harness
+      run: tools/run-asr-tests.bat
+
+    - name: Test debounce logic
+      run: tools/AsrOffline.exe --test-debounce
+
+    - name: Test synthetic Discord frames
+      run: tools/AsrOffline.exe --test-discord
+
+    - name: Run comprehensive test suite
+      run: tools/AsrOffline.exe --test-all
+
+    # Optional: Test with actual audio files if available
+    - name: Test with sample audio (if available)
+      run: |
+        if (Test-Path "testdata/audio/sample1.wav") {
+          tools/AsrOffline.exe testdata/audio/sample1.wav --golden testdata/golden/asr/sample1.json --verbose
+        } else {
+          echo "No sample audio files found - skipping full ASR tests"
+        }
+      shell: pwsh
+      continue-on-error: true
+
+    - name: Upload test results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: asr-test-results
+        path: |
+          tools/test-results.log
+          tools/AsrOffline.exe
+        retention-days: 30
