@@ -441,9 +441,9 @@ namespace Kinectv1
                     waveOut.Init(rss);
                     waveOut.Play();
 
-                    // Wait with cancellation support - poll in smaller intervals
+                    // Wait with cancellation support - poll in smaller intervals and stop immediately on cancellation
                     var totalWaitMs = Math.Min(msDur, 30000);
-                    var pollIntervalMs = 100;
+                    var pollIntervalMs = 50; // Reduced interval for more responsive cancellation
                     var elapsed = 0;
                     
                     while (elapsed < totalWaitMs && !cancellationToken.IsCancellationRequested)
@@ -451,6 +451,12 @@ namespace Kinectv1
                         var waitMs = Math.Min(pollIntervalMs, totalWaitMs - elapsed);
                         Task.Delay(waitMs).GetAwaiter().GetResult();
                         elapsed += waitMs;
+                    }
+
+                    // Immediately stop audio playback on cancellation to flush buffers and release device
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        waveOut.Stop();
                     }
 
                     cancellationToken.ThrowIfCancellationRequested();
