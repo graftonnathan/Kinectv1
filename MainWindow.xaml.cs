@@ -169,6 +169,9 @@ namespace Kinectv1
 
                 // Initialize identity fusion cleanup timer
                 InitializeIdentityFusionCleanup();
+
+                // Initialize diagnostics tab
+                LoadDiagnosticsTab();
             }
             catch (Exception ex)
             {
@@ -2635,5 +2638,230 @@ namespace Kinectv1
                 Console.WriteLine($"Error initializing identity fusion cleanup: {ex.Message}");
             }
         }
+
+        #region Diagnostics Tab Event Handlers
+
+        /// <summary>
+        /// Load diagnostics tab with current scenario and validation
+        /// </summary>
+        public void LoadDiagnosticsTab()
+        {
+            try
+            {
+                // Load current scenario into combo box
+                var currentScenario = AppSettings.LoadAppScenario();
+                
+                // Find and select the matching combo box item
+                foreach (ComboBoxItem item in ScenarioComboBox.Items)
+                {
+                    if (item.Tag.ToString() == currentScenario.ToString())
+                    {
+                        ScenarioComboBox.SelectedItem = item;
+                        break;
+                    }
+                }
+
+                // Update scenario description
+                UpdateScenarioDescription(currentScenario);
+
+                // Load validation results
+                RefreshValidationResults();
+
+                // Load full diagnostics report
+                RefreshDiagnosticsReport();
+
+                DiagnosticsStatusText.Text = $"Diagnostics loaded - Current scenario: {currentScenario}";
+            }
+            catch (Exception ex)
+            {
+                DiagnosticsStatusText.Text = $"Error loading diagnostics: {ex.Message}";
+                Console.WriteLine($"Error loading diagnostics tab: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Handle scenario combo box selection change
+        /// </summary>
+        private void ScenarioComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            try
+            {
+                if (ScenarioComboBox.SelectedItem is ComboBoxItem selectedItem)
+                {
+                    var scenarioStr = selectedItem.Tag.ToString();
+                    if (Enum.TryParse<AppScenario>(scenarioStr, out var scenario))
+                    {
+                        // Save the selected scenario
+                        AppSettings.SaveAppScenario(scenario);
+
+                        // Update description
+                        UpdateScenarioDescription(scenario);
+
+                        // Refresh validation since scenario changed
+                        RefreshValidationResults();
+                        RefreshDiagnosticsReport();
+
+                        DiagnosticsStatusText.Text = $"Scenario changed to: {scenario}";
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                DiagnosticsStatusText.Text = $"Error changing scenario: {ex.Message}";
+                Console.WriteLine($"Error in scenario selection: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Apply scenario defaults button click
+        /// </summary>
+        private void ApplyScenarioButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                if (ScenarioComboBox.SelectedItem is ComboBoxItem selectedItem)
+                {
+                    var scenarioStr = selectedItem.Tag.ToString();
+                    if (Enum.TryParse<AppScenario>(scenarioStr, out var scenario))
+                    {
+                        // Apply scenario defaults
+                        AppSettings.ApplyScenarioDefaults(scenario);
+
+                        // Refresh validation and diagnostics to reflect changes
+                        RefreshValidationResults();
+                        RefreshDiagnosticsReport();
+
+                        DiagnosticsStatusText.Text = $"Applied {scenario} scenario defaults successfully";
+                        
+                        // Show confirmation message
+                        MessageBox.Show($"Applied {scenario} scenario defaults successfully!\n\nPlease check the validation results for any remaining issues.", 
+                                      "Scenario Defaults Applied", MessageBoxButton.OK, MessageBoxImage.Information);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                DiagnosticsStatusText.Text = $"Error applying scenario defaults: {ex.Message}";
+                MessageBox.Show($"Error applying scenario defaults: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                Console.WriteLine($"Error applying scenario defaults: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Refresh validation results button click
+        /// </summary>
+        private void RefreshValidationButton_Click(object sender, RoutedEventArgs e)
+        {
+            RefreshValidationResults();
+        }
+
+        /// <summary>
+        /// Refresh diagnostics report button click
+        /// </summary>
+        private void RefreshDiagnosticsButton_Click(object sender, RoutedEventArgs e)
+        {
+            RefreshDiagnosticsReport();
+        }
+
+        /// <summary>
+        /// Copy diagnostics report to clipboard
+        /// </summary>
+        private void CopyDiagnosticsButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                if (!string.IsNullOrEmpty(DiagnosticsReportTextBox.Text))
+                {
+                    Clipboard.SetText(DiagnosticsReportTextBox.Text);
+                    DiagnosticsStatusText.Text = "Diagnostics report copied to clipboard";
+                }
+                else
+                {
+                    DiagnosticsStatusText.Text = "No diagnostics report to copy";
+                }
+            }
+            catch (Exception ex)
+            {
+                DiagnosticsStatusText.Text = $"Error copying to clipboard: {ex.Message}";
+                Console.WriteLine($"Error copying diagnostics to clipboard: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Update scenario description text
+        /// </summary>
+        private void UpdateScenarioDescription(AppScenario scenario)
+        {
+            try
+            {
+                switch (scenario)
+                {
+                    case AppScenario.Local:
+                        ScenarioDescriptionText.Text = "Local scenario: Optimized for local TTS and voice processing. Discord bot disabled, moderate confidence thresholds, CPU processing for stability.";
+                        break;
+                    case AppScenario.Discord:
+                        ScenarioDescriptionText.Text = "Discord scenario: Full bot integration enabled with voice commands. Higher confidence thresholds, optimized for Discord voice activity detection.";
+                        break;
+                    case AppScenario.Kiosk:
+                        ScenarioDescriptionText.Text = "Kiosk scenario: Public-facing mode with AI disabled for privacy. High accuracy thresholds, stable CPU processing, telemetry disabled.";
+                        break;
+                    default:
+                        ScenarioDescriptionText.Text = "Select a scenario to see its description.";
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                ScenarioDescriptionText.Text = $"Error updating description: {ex.Message}";
+            }
+        }
+
+        /// <summary>
+        /// Refresh validation results
+        /// </summary>
+        private void RefreshValidationResults()
+        {
+            try
+            {
+                var validationIssues = AppSettings.Validate();
+                ValidationResultsList.ItemsSource = validationIssues;
+                
+                var issueCount = validationIssues.Count(issue => issue.StartsWith("❌") || issue.StartsWith("⚠️"));
+                if (issueCount == 0)
+                {
+                    DiagnosticsStatusText.Text = "✅ All validation checks passed";
+                }
+                else
+                {
+                    DiagnosticsStatusText.Text = $"Found {issueCount} configuration issues";
+                }
+            }
+            catch (Exception ex)
+            {
+                ValidationResultsList.ItemsSource = new[] { $"❌ Validation failed: {ex.Message}" };
+                DiagnosticsStatusText.Text = $"Error during validation: {ex.Message}";
+                Console.WriteLine($"Error refreshing validation results: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Refresh full diagnostics report
+        /// </summary>
+        private void RefreshDiagnosticsReport()
+        {
+            try
+            {
+                var report = AppSettings.GetDiagnosticsReport();
+                DiagnosticsReportTextBox.Text = report;
+            }
+            catch (Exception ex)
+            {
+                DiagnosticsReportTextBox.Text = $"❌ ERROR: Could not generate diagnostics report: {ex.Message}";
+                Console.WriteLine($"Error refreshing diagnostics report: {ex.Message}");
+            }
+        }
+
+        #endregion
+
     }
 }
