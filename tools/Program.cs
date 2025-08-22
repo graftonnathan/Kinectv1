@@ -353,10 +353,14 @@ namespace Kinectv1.Tools
                 sourceProvider = sourceProvider.ToMono();
             }
 
-            // Resample if needed
+            // Resample if needed (simple approach for testing)
             if (sourceProvider.WaveFormat.SampleRate != targetFormat.SampleRate)
             {
-                sourceProvider = new WdlResamplingSampleProvider(sourceProvider, targetFormat.SampleRate);
+                // For testing purposes, we'll use a basic resampling approach
+                // In production, consider using a more sophisticated resampler
+                var resampledFormat = new WaveFormat(targetFormat.SampleRate, sourceProvider.WaveFormat.Channels);
+                var resampler = new MediaFoundationResampler(sourceProvider.ToWaveProvider(), resampledFormat);
+                sourceProvider = resampler.ToSampleProvider();
             }
 
             // Convert to bytes
