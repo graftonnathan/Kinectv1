@@ -118,6 +118,7 @@ public static class AudioUtils
         try
         {
             // Step 1: Apply anti-aliasing LPF before decimation (cutoff ~7kHz for 16kHz output)
+            // Create fresh filter for each call to avoid state contamination
             var lpFilter = BiQuadFilter.LowPassFilter(48000, 7000, 0.707f);
             for (int i = 0; i < inputLength; i++)
             {
@@ -126,6 +127,8 @@ public static class AudioUtils
 
             // Step 2: High-quality resampling using linear interpolation (3:1 ratio)
             int outputLength = inputLength / 3;
+            if (outputLength <= 0) return new float[0];
+            
             var output = new float[outputLength];
             
             for (int n = 0; n < outputLength; n++)
@@ -135,8 +138,12 @@ public static class AudioUtils
                 int i1 = Math.Min(i0 + 1, inputLength - 1);
                 double frac = sourceIndex - i0;
                 
-                // Linear interpolation for better quality than simple decimation
-                output[n] = (float)((1.0 - frac) * lpfBuffer[i0] + frac * lpfBuffer[i1]);
+                // Bounds check for safety
+                if (i0 < inputLength && i1 < inputLength)
+                {
+                    // Linear interpolation for better quality than simple decimation
+                    output[n] = (float)((1.0 - frac) * lpfBuffer[i0] + frac * lpfBuffer[i1]);
+                }
             }
 
             return output;
@@ -187,6 +194,10 @@ public static class AudioUtils
     public static float[] Resample48kTo16kMono(byte[] input, int inputLength)
     {
         if (input == null || inputLength <= 0) return new float[0];
+        
+        // Ensure we have even number of bytes for 16-bit samples
+        if (inputLength % 2 != 0) inputLength--;
+        if (inputLength <= 0) return new float[0];
 
         // Convert s16 bytes to float samples first
         int sampleCount = inputLength / 2;
@@ -195,8 +206,13 @@ public static class AudioUtils
         {
             for (int i = 0; i < sampleCount; i++)
             {
-                short sample = (short)((input[i * 2 + 1] << 8) | input[i * 2]);
-                floatInput[i] = sample / 32768.0f;
+                int byteIndex = i * 2;
+                if (byteIndex + 1 < inputLength)
+                {
+                    // Little-endian s16 conversion
+                    short sample = (short)((input[byteIndex + 1] << 8) | input[byteIndex]);
+                    floatInput[i] = sample / 32768.0f;
+                }
             }
 
             return Resample48kTo16kMono(floatInput, sampleCount);
@@ -210,12 +226,14 @@ public static class AudioUtils
     /// <summary>
     /// Frame builder to accumulate samples into consistent 320-sample (20ms at 16kHz) frames
     /// Prevents "chunk too large" issues by ensuring proper frame sizes
+    /// Thread-safe implementation for multi-threaded audio processing
     /// </summary>
     public static class FrameBuilder
     {
-        private static readonly float[] _frameBuffer = new float[1024]; // Accumulation buffer
+        private static readonly float[] _frameBuffer = new float[1024]; // Accumulation buffer (allows for 3+ frames buffering)
         private static int _frameBufferLength = 0;
         private static readonly object _frameLock = new object();
+        private const int TARGET_FRAME_SIZE = 320; // 20ms at 16kHz
         
         /// <summary>
         /// Add samples to frame buffer and return complete 320-sample frames
@@ -234,8 +252,15 @@ public static class AudioUtils
                 while (inputOffset < samples.Length)
                 {
                     // How much space is left in the current frame?
-                    int spaceLeft = 320 - _frameBufferLength;
+                    int spaceLeft = TARGET_FRAME_SIZE - _frameBufferLength;
                     int samplesToCopy = Math.Min(spaceLeft, samples.Length - inputOffset);
+
+                    // Bounds check to prevent buffer overflow
+                    if (_frameBufferLength + samplesToCopy > _frameBuffer.Length)
+                    {
+                        Console.WriteLine($"⚠️ FrameBuilder buffer overflow prevented: {_frameBufferLength} + {samplesToCopy} > {_frameBuffer.Length}");
+                        break;
+                    }
 
                     // Copy samples into frame buffer
                     Array.Copy(samples, inputOffset, _frameBuffer, _frameBufferLength, samplesToCopy);
@@ -243,10 +268,10 @@ public static class AudioUtils
                     inputOffset += samplesToCopy;
 
                     // If frame is complete (320 samples), extract it
-                    if (_frameBufferLength == 320)
+                    if (_frameBufferLength == TARGET_FRAME_SIZE)
                     {
-                        var frame = new float[320];
-                        Array.Copy(_frameBuffer, 0, frame, 0, 320);
+                        var frame = new float[TARGET_FRAME_SIZE];
+                        Array.Copy(_frameBuffer, 0, frame, 0, TARGET_FRAME_SIZE);
                         completeFrames.Add(frame);
                         _frameBufferLength = 0; // Reset for next frame
                     }
@@ -257,7 +282,7 @@ public static class AudioUtils
         }
 
         /// <summary>
-        /// Reset frame builder state (call when switching audio sources)
+        /// Reset frame builder state (call when switching audio sources or on error)
         /// </summary>
         public static void Reset()
         {
@@ -276,6 +301,18 @@ public static class AudioUtils
             lock (_frameLock)
             {
                 return _frameBufferLength;
+            }
+        }
+
+        /// <summary>
+        /// Get frame builder status for debugging
+        /// </summary>
+        public static string GetStatus()
+        {
+            lock (_frameLock)
+            {
+                return $"FrameBuilder: {_frameBufferLength}/{TARGET_FRAME_SIZE} samples buffered " +
+                       $"({(float)_frameBufferLength / TARGET_FRAME_SIZE * 100:F1}% of next frame)";
             }
         }
     }
