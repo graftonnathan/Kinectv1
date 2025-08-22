@@ -48,6 +48,7 @@ namespace Kinectv1
         private static bool _microphoneInputEnabled = true;
         private static bool _discordInputEnabled = true;
         private static bool _microphoneRecording = false;
+        private static AudioInMode _cachedAudioMode = AudioInMode.LocalMic; // Cache for performance
 
         // Ensure SpeakerEmbedder loads only once
         private static volatile bool _speakerEmbedderLoaded = false;
@@ -66,6 +67,9 @@ namespace Kinectv1
             try
             {
                 _shutdownRequested = false;
+                
+                // Initialize cached audio mode for performance
+                RefreshAudioMode();
 
                 if (!Directory.Exists(modelPath))
                 {
@@ -184,6 +188,12 @@ namespace Kinectv1
             {
                 if (_shutdownRequested) return;
                 if (!_microphoneInputEnabled) return;
+
+                // Additional guard: Only process microphone input in LocalMic mode
+                if (_cachedAudioMode != AudioInMode.LocalMic)
+                {
+                    return; // Silently skip microphone processing when not in LocalMic mode
+                }
 
                 // If STT pipeline isn't ready, still publish RMS so UI meters work
                 if (_voiceProcessor == null)
@@ -573,6 +583,24 @@ namespace Kinectv1
         {
             _discordInputEnabled = enabled;
             Console.WriteLine($"🤖 Discord input {(enabled ? "enabled" : "disabled")}");
+            
+            // Refresh cached audio mode when input settings change
+            RefreshAudioMode();
+        }
+
+        /// <summary>
+        /// Refresh the cached audio mode for performance in audio processing loops
+        /// </summary>
+        public static void RefreshAudioMode()
+        {
+            try
+            {
+                _cachedAudioMode = AppSettings.LoadAudioInMode();
+            }
+            catch
+            {
+                _cachedAudioMode = AudioInMode.LocalMic; // Fallback
+            }
         }
 
         public static bool IsMicrophoneInputEnabled()

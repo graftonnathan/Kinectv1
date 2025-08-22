@@ -2104,6 +2104,17 @@ namespace Kinectv1
             {
                 Console.WriteLine("🎧 Initializing audio devices...");
 
+                // Log audio input mode selection
+                var audioMode = LoadAudioInMode();
+                var modeDescription = audioMode switch
+                {
+                    AudioInMode.LocalMic => "Local Microphone",
+                    AudioInMode.DiscordVoice => "Discord Voice (Opus→PCM)",
+                    AudioInMode.SystemLoopback => "System Loopback Capture",
+                    _ => "Unknown"
+                };
+                Console.WriteLine($"🎛️ Audio Input Mode: {modeDescription}");
+
                 // Suppress verbose enumeration
                 // AudioDeviceManager.LogAllDevices();
 
