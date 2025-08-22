@@ -30,6 +30,11 @@ namespace Kinectv1
         private int _pcmBufferPosition = 0;
         private int _pcmBufferCount = 0;
         
+        // NEW: Rolling window for speaker embedding with 0.5s hop
+        private readonly RingBuffer _speakerBuffer = new RingBuffer(16000); // 1 second at 16kHz
+        private DateTime _lastSpeakerInference = DateTime.MinValue;
+        private readonly TimeSpan _speakerInferenceHop = TimeSpan.FromMilliseconds(500); // 0.5s hop
+        
         private string _lastTranscription = string.Empty;
         private string _pendingTranscription = string.Empty; // Store transcription for Ollama
         private DateTime _lastTranscriptionTime = DateTime.MinValue;
@@ -311,57 +316,15 @@ namespace Kinectv1
                 // Only add to buffer when voice is active
                 float[] floatPcm = AudioUtils.ConvertToFloatPcm(buffer, bytesRecorded);
                 AddToPcmBuffer(floatPcm);
+                
+                // NEW: Add to speaker ring buffer for rolling window inference
+                _speakerBuffer.Add(floatPcm);
 
                 // FIXED: Only process recognition when voice is active (respects VAD settings)
                 ProcessRecognitionWithConfidence(buffer, bytesRecorded);
 
-                // Process voice embeddings when we have enough audio (1 second)
-                var oneSecond = ExtractOneSecondFromBuffer();
-                if (oneSecond != null)
-                {
-                    // Generate speaker embedding
-                    var emb = SpeakerEmbedder.Embed(oneSecond);
-
-                    // Pass embedding to debugging callback
-                    _onVoiceEmbedding?.Invoke(emb);
-
-                    // Handle voice enrollment if active
-                    if (VoiceEnrollmentManager.IsEnrolling)
-                    {
-                        VoiceEnrollmentManager.ProcessVoiceSample(emb);
-                    }
-                    else
-                    {
-                        // Normal speaker identification
-                        var match = SpeakerIdentifier.Identify(emb);
-                        string voiceSpeakerName = "Unknown";
-                        float voiceSpeakerScore = 0f;
-                        
-                        if (match != null)
-                        {
-                            voiceSpeakerName = match.Value.name;
-                            voiceSpeakerScore = match.Value.score;
-                            _onSpeakerMatch?.Invoke(voiceSpeakerName, voiceSpeakerScore);
-                        }
-                        else
-                        {
-                            _onSpeakerMatch?.Invoke("Unknown", 0f);
-                        }
-
-                        // NEW: Use centralized speaker identification
-                        var (finalSpeakerName, finalConfidence, identificationMethod) = IdentifyCurrentSpeaker(voiceSpeakerName, voiceSpeakerScore);
-                        
-                        // NEW: Update current speaker state
-                        UpdateCurrentSpeaker(finalSpeakerName, finalConfidence, identificationMethod);
-
-                        // NOTE: Ollama dispatch is now handled centrally by the confidence processing methods
-                        // No duplicate Ollama logic needed here anymore
-                        if (_confidenceLoggingEnabled)
-                        {
-                            Console.WriteLine($"?? Speaker updated: {finalSpeakerName} (confidence: {finalConfidence:F3}, method: {identificationMethod})");
-                        }
-                    }
-                }
+                // NEW: Process speaker embeddings with rolling window and 0.5s hop
+                ProcessSpeakerEmbeddingWithRollingWindow();
             }
             catch (Exception ex)
             {
@@ -1041,6 +1004,125 @@ namespace Kinectv1
             Console.WriteLine($"   Allowed through: {callCount - blockedCount}");
             Console.WriteLine($"   Debounce timeout: {_vadDebounceTimeout.TotalMilliseconds:F0}ms");
             Console.WriteLine($"   Result: {(blockedCount > 0 ? "✅ DEBOUNCE WORKING" : "⚠️ NO DEBOUNCE DETECTED")}");
+        }
+
+        /// <summary>
+        /// NEW: Process speaker embeddings with rolling window and silence gating
+        /// </summary>
+        private void ProcessSpeakerEmbeddingWithRollingWindow()
+        {
+            try
+            {
+                // Check if enough time has passed for next inference (0.5s hop)
+                var timeSinceLastInference = DateTime.UtcNow - _lastSpeakerInference;
+                if (timeSinceLastInference < _speakerInferenceHop)
+                {
+                    return;
+                }
+
+                // Check if we have a full window of audio
+                if (!_speakerBuffer.HasFullWindow)
+                {
+                    return;
+                }
+
+                // Extract the current window
+                var window = _speakerBuffer.ExtractWindow();
+                if (window == null) return;
+
+                // Silence gating: Check RMS level (-45 dBFS threshold and minimum voiced duration)
+                float rms = _speakerBuffer.CalculateRms();
+                float rmsDb = 20f * (float)Math.Log10(Math.Max(rms, 1e-10f)); // Convert to dB, avoid log(0)
+                
+                // Skip inference if RMS < -45 dBFS or < 0.2s voiced in window
+                const float minRmsDb = -45f;
+                const float minVoicedRatio = 0.2f; // 20% of window should be voiced
+                
+                float voicedSamples = CountVoicedSamples(window);
+                float voicedRatio = voicedSamples / window.Length;
+                
+                if (rmsDb < minRmsDb || voicedRatio < minVoicedRatio)
+                {
+                    if (_confidenceLoggingEnabled)
+                    {
+                        Console.WriteLine($"🔇 Skipping speaker inference - RMS: {rmsDb:F1}dB, voiced: {voicedRatio:F2}");
+                    }
+                    _lastSpeakerInference = DateTime.UtcNow;
+                    return;
+                }
+
+                // Generate speaker embedding
+                var emb = SpeakerEmbedder.Embed(window);
+                _lastSpeakerInference = DateTime.UtcNow;
+
+                // Pass embedding to debugging callback
+                _onVoiceEmbedding?.Invoke(emb);
+
+                // Handle voice enrollment if active
+                if (VoiceEnrollmentManager.IsEnrolling)
+                {
+                    VoiceEnrollmentManager.ProcessVoiceSample(emb);
+                }
+                else
+                {
+                    // Normal speaker identification
+                    var match = SpeakerIdentifier.Identify(emb);
+                    string voiceSpeakerName = "Unknown";
+                    float voiceSpeakerScore = 0f;
+                    
+                    if (match != null)
+                    {
+                        voiceSpeakerName = match.Value.name;
+                        voiceSpeakerScore = match.Value.score;
+                        
+                        // Add telemetry for speaker score
+                        Kinectv1.Telemetry.Gauge("speaker.score", voiceSpeakerScore);
+                        
+                        _onSpeakerMatch?.Invoke(voiceSpeakerName, voiceSpeakerScore);
+                    }
+                    else
+                    {
+                        Kinectv1.Telemetry.Gauge("speaker.score", 0f);
+                        _onSpeakerMatch?.Invoke("Unknown", 0f);
+                    }
+
+                    // NEW: Use centralized speaker identification
+                    var (finalSpeakerName, finalConfidence, identificationMethod) = IdentifyCurrentSpeaker(voiceSpeakerName, voiceSpeakerScore);
+                    
+                    // NEW: Update current speaker state
+                    UpdateCurrentSpeaker(finalSpeakerName, finalConfidence, identificationMethod);
+
+                    if (_confidenceLoggingEnabled)
+                    {
+                        Console.WriteLine($"🔊 Speaker: {finalSpeakerName} (score: {voiceSpeakerScore:F3}, method: {identificationMethod})");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error in ProcessSpeakerEmbeddingWithRollingWindow: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Count samples that are considered "voiced" (above a threshold)
+        /// </summary>
+        private float CountVoicedSamples(float[] window)
+        {
+            if (window == null || window.Length == 0) return 0f;
+
+            const float voiceThreshold = 0.01f; // Threshold for considering a sample "voiced"
+            int voicedCount = 0;
+
+            for (int i = 0; i < window.Length; i++)
+            {
+                if (Math.Abs(window[i]) > voiceThreshold)
+                {
+                    voicedCount++;
+                }
+            }
+
+            return voicedCount;
         }
     }
 

@@ -2048,6 +2048,45 @@ namespace Kinectv1
         }
 
         /// <summary>
+        /// Load speaker match minimum score threshold (default: 0.6)
+        /// </summary>
+        public static float LoadSpeakerMatchMinScore()
+        {
+            try
+            {
+                var value = GetFloat("SpeakerMatchMinScore", 0.6f);
+                if (value < 0.0f || value > 1.0f)
+                {
+                    LogSettingError("SpeakerMatchMinScore", $"OUT OF RANGE (expected 0.0-1.0, got {value})");
+                    return 0.6f; // Default threshold
+                }
+                return value;
+            }
+            catch (Exception ex)
+            {
+                LogSettingError("SpeakerMatchMinScore", $"read FAILED: {ex.Message}");
+                return 0.6f; // Default threshold
+            }
+        }
+
+        /// <summary>
+        /// Save speaker match minimum score threshold
+        /// </summary>
+        public static void SaveSpeakerMatchMinScore(float threshold)
+        {
+            try
+            {
+                var clampedThreshold = Math.Max(0.0f, Math.Min(1.0f, threshold));
+                SetFloat("SpeakerMatchMinScore", clampedThreshold);
+                Console.WriteLine($"Speaker: Match threshold set to {clampedThreshold:F2}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"ERROR: Error saving speaker match threshold: {ex.Message}");
+            }
+        }
+
+        /// <summary>
         /// Grouped summary of TTS pipeline settings
         /// </summary>
         public static string GetTtsSettingsSummary()
@@ -2084,6 +2123,7 @@ namespace Kinectv1
                        $"   Input Device: {LoadSttInputDevice()}\n" +
                        $"   Vosk Model: {LoadSttModelPath()}\n" +
                        $"   Speaker Embedding: {LoadSpeakerEmbeddingModelPath()}\n" +
+                       $"   Speaker Match Threshold: {LoadSpeakerMatchMinScore():F2}\n" +
                        $"   Mic VAD Threshold: {LoadVoiceActivityThreshold():F0}\n" +
                        $"   Discord VAD Threshold: {LoadDiscordVoiceActivityThreshold():F0}\n" +
                        $"   VAD Silence Timeout: {LoadVadSilenceTimeoutMs()}ms\n" +
