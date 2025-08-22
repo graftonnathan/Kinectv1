@@ -224,6 +224,21 @@ namespace Kinectv1
             }
         }
 
+        // Method to flush speaker data by speaker ID (backward compatibility method)
+        public static int FlushSpeakerData(string speakerId)
+        {
+            try
+            {
+                // For now, assume speakerId is the same as name and delegate to FlushVoiceEmbeddings
+                return FlushVoiceEmbeddings(speakerId);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to flush speaker data for speaker ID '{speakerId}': {ex.Message}");
+                return 0;
+            }
+        }
+
         public static (string name, float score)? MatchBestFace(float[] queryEmb, float thresholdCos = 0.45f)
         {
             string best = null;

@@ -218,5 +218,25 @@ namespace Kinectv1
                 Console.WriteLine($"   Discord fallback: {_discordSpeakerHint} (hint-based identification)");
             }
         }
+
+        /// <summary>
+        /// Get speaker ID from speaker name (backward compatibility method)
+        /// </summary>
+        /// <param name="name">The speaker name</param>
+        /// <returns>The speaker ID (same as name for now)</returns>
+        public static string GetSpeakerId(string name)
+        {
+            try
+            {
+                // For now, return the name as the speaker ID
+                // This could be enhanced to return a more specific ID in the future
+                return name ?? string.Empty;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ SpeakerIdentifier.GetSpeakerId failed: {ex.Message}");
+                return string.Empty;
+            }
+        }
     }
 }
