@@ -1535,7 +1535,7 @@ namespace Kinectv1
 
                             OllamaModelComboBox.Items.Clear();
 
-                            if (models != null && models.Length > 0)
+                            if (models != null && models.Count > 0)
                             {
                                 foreach (var model in models)
                                 {
@@ -1585,7 +1585,7 @@ namespace Kinectv1
                                 }
 
 
-                                OllamaStatusText.Text = $"🤖 Ollama: Ready ({models.Length} models)";
+                                OllamaStatusText.Text = $"🤖 Ollama: Ready ({models.Count} models)";
                                 Console.WriteLine($"🤖 Refreshed Ollama models: {string.Join(", ", models)}");
                             }
                             else

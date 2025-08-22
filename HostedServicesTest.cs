@@ -53,10 +53,7 @@ namespace Kinectv1
                 var testService2 = new TestHostedService("TestService2");
                 testManager.RegisterService(testService2);
                 
-                // Register Ollama service (doesn't require external resources to initialize)
-                var ollamaService = new OllamaHostedService();
-                testManager.RegisterService(ollamaService);
-
+                
                 Console.WriteLine("   ✅ Test services registered successfully");
 
                 // Test 3: Start all services

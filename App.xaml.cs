@@ -127,9 +127,7 @@ namespace Kinectv1
                         }
                     }
 
-                    // Register Ollama service
-                    var ollamaService = new OllamaHostedService();
-                    ServicesManager.RegisterService(ollamaService);
+                    
 
                     Console.WriteLine("🚀 Starting all hosted services...");
                     
