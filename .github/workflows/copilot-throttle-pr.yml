@@ -1,4 +1,4 @@
-name: Copilot Throttle (PR assigned → ready, approve & automerge; no env in if)
+name: Copilot Throttle (PR assigned → ready + approve; merge only when green)
 
 on:
   pull_request_target:
@@ -9,8 +9,8 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: write        # enable auto-merge, delete branch
-  pull-requests: write   # edit assignees, mark ready, submit reviews
+  contents: write
+  pull-requests: write
   issues: write
 
 jobs:
@@ -23,7 +23,6 @@ jobs:
         run: |
           echo "GH_TOKEN=${GH_TOKEN}" >> "$GITHUB_ENV"
           echo "REPO=${{ github.repository }}" >> "$GITHUB_ENV"
-          gh --version
 
       - name: Capture PR context
         id: ctx
@@ -31,12 +30,11 @@ jobs:
           echo "pr=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
           echo "assignee=${{ github.event.assignee.login }}" >> "$GITHUB_OUTPUT"
 
-      # --- guard: only act when the assignee is Copilot ---
       - name: Exit if assignee is not Copilot
         if: ${{ steps.ctx.outputs.assignee != 'Copilot' }}
         run: echo "Not Copilot; skipping."
 
-      - name: Check if Copilot is already assigned elsewhere
+      - name: Check if Copilot already assigned elsewhere
         if: ${{ steps.ctx.outputs.assignee == 'Copilot' }}
         id: busy
         run: |
@@ -44,32 +42,25 @@ jobs:
           CURRENT="${{ steps.ctx.outputs.pr }}"
           JSON=$(gh pr list -R "$REPO" --state open --json number,assignees)
           BUSY=$(jq --arg cur "$CURRENT" '
-            [ .[]
-              | select(.number != ($cur|tonumber))
-              | select([.assignees[].login?] | index("Copilot"))
-            ] | length ' <<< "$JSON")
+            [ .[] | select(.number != ($cur|tonumber))
+                  | select([.assignees[].login?] | index("Copilot")) ] | length
+          ' <<< "$JSON")
           echo "busy=$BUSY" >> "$GITHUB_OUTPUT"
 
       - name: De-assign (Copilot is busy elsewhere)
         if: ${{ steps.busy.outputs.busy != '0' }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           PR="${{ steps.ctx.outputs.pr }}"
           gh pr edit -R "$REPO" "$PR" --remove-assignee "Copilot" || true
           gh pr comment -R "$REPO" "$PR" --body "⏸️ Copilot is already working on another PR. It will be picked up automatically when free."
 
-      # --- ready + title cleanup happens only if Copilot is free ---
-      - name: Mark ready for review & clean WIP/Draft title
+      - name: Ready for review + clean title + approve
         if: ${{ steps.busy.outputs.busy == '0' }}
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
         run: |
           PR="${{ steps.ctx.outputs.pr }}"
-          # 1) Mark ready (no-op if already ready)
           gh pr ready -R "$REPO" "$PR" || true
-          # 2) Remove leading [WIP]/WIP/Draft from the title
           TITLE=$(gh pr view -R "$REPO" "$PR" --json title -q .title)
           CLEAN=$(printf "%s" "$TITLE" \
             | sed -E 's/^[[:space:]]*\[?[Ww][Ii][Pp]\]?[[:space:]]*[:\-]*[[:space:]]*//' \
@@ -77,21 +68,52 @@ jobs:
           if [ "$CLEAN" != "$TITLE" ] && [ -n "$CLEAN" ]; then
             gh pr edit -R "$REPO" "$PR" --title "$CLEAN"
           fi
+          gh pr review -R "$REPO" "$PR" --approve -b "Auto-approved by throttle"
 
-      - name: Auto-approve (Copilot is free)
+      # Only merge when mergeable AND CI is SUCCESS
+      - name: Merge only when green
         if: ${{ steps.busy.outputs.busy == '0' }}
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           PR="${{ steps.ctx.outputs.pr }}"
-          gh pr review -R "$REPO" "$PR" --approve -b "Auto-approved for Copilot automerge"
+          OWNER="${GITHUB_REPOSITORY%/*}"
+          NAME="${GITHUB_REPOSITORY#*/}"
 
-      - name: Enable Auto-Merge (squash + delete branch)
-        if: ${{ steps.busy.outputs.busy == '0' }}
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
-        run: |
-          PR="${{ steps.ctx.outputs.pr }}"
-          gh pr merge -R "$REPO" "$PR" --auto --squash --delete-branch || true
+          # Query PR merge state + head SHA
+          pr_json=$(gh api graphql -f owner="$OWNER" -f name="$NAME" -F pr="$PR" -f query='
+            query($owner:String!,$name:String!,$pr:Int!){
+              repository(owner:$owner,name:$name){
+                pullRequest(number:$pr){
+                  isDraft
+                  mergeStateStatus
+                  headRefOid
+                }
+              }
+            }')
+          isDraft=$(jq -r '.data.repository.pullRequest.isDraft' <<<"$pr_json")
+          mergeState=$(jq -r '.data.repository.pullRequest.mergeStateStatus' <<<"$pr_json")
+          sha=$(jq -r '.data.repository.pullRequest.headRefOid' <<<"$pr_json")
+
+          # Query CI rollup on that commit
+          rollup=$(gh api graphql -f owner="$OWNER" -f name="$NAME" -F sha="$sha" -f query='
+            query($owner:String!,$name:String!,$sha:GitObjectID!){
+              repository(owner:$owner,name:$name){
+                object(oid:$sha){
+                  ... on Commit { statusCheckRollup { state } }
+                }
+              }
+            }')
+          state=$(jq -r '.data.repository.object.statusCheckRollup.state // "PENDING"' <<<"$rollup")
+
+          echo "draft=$isDraft mergeState=$mergeState checks=$state"
+          if [[ "$isDraft" == "false" && "$state" == "SUCCESS" && "$mergeState" != "BLOCKED" ]]; then
+            gh pr merge -R "$REPO" "$PR" --squash --delete-branch
+          else
+            echo "Not green/mergeable yet → leaving unmerged (no auto-merge toggle)."
+          fi
+
 
 
