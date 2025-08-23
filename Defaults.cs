@@ -115,6 +115,7 @@ namespace Kinectv1
         public static class Telemetry
         {
             public const bool TelemetryEnabled = false;
+            public const int SamplingPctDefault = 100;
         }
 
         /// <summary>
@@ -127,6 +128,49 @@ namespace Kinectv1
             public const double Left = 100;
             public const double Top = 100;
             public const string WindowState = "Normal";
+            public static readonly string[] AllowedStates = new[] { "Normal", "Maximized", "Minimized" };
+        }
+
+        /// <summary>
+        /// Validation ranges (min/max) used by AppSettings.ValidateAll()
+        /// </summary>
+        public static class Ranges
+        {
+            public const float VoiceThreshold_Min = 0.0f;
+            public const float VoiceThreshold_Max = 1.0f;
+            public const float VoiceHighThreshold_Min = 0.0f;
+            public const float VoiceHighThreshold_Max = 1.0f;
+            public const int VoiceConfidenceBuffer_Min = 1;
+            public const int VoiceConfidenceBuffer_Max = 10;
+
+            public const float MicVad_Min = 50f;
+            public const float MicVad_Max = 5000f;
+            public const float DiscordVad_Min = 10f;
+            public const float DiscordVad_Max = 2000f;
+            public const int VadSilence_Min = 100;
+            public const int VadSilence_Max = 5000;
+            public const int VadDebounce_Min = 50;
+            public const int VadDebounce_Max = 1000;
+
+            public const double Volume_Min = 0.0;
+            public const double Volume_Max = 1.0;
+
+            public const float FusionFace_Min = 0.0f;
+            public const float FusionFace_Max = 1.0f;
+            public const float FusionVoice_Min = 0.0f;
+            public const float FusionVoice_Max = 1.0f;
+            public const int FusionHalfLife_Min = 500;
+            public const int FusionHalfLife_Max = 10000;
+            public const float FusionUnknown_Min = 0.0f;
+            public const float FusionUnknown_Max = 1.0f;
+
+            public const int TelemetrySampling_Min = 0;
+            public const int TelemetrySampling_Max = 100;
+
+            public const double WindowWidth_Min = 300;
+            public const double WindowHeight_Min = 200;
+            public const double WindowLeft_Min = 0;
+            public const double WindowTop_Min = 0;
         }
 
         /// <summary>

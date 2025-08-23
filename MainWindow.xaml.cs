@@ -918,17 +918,27 @@ namespace Kinectv1
                     TtsTestTextBox.Text = testText;
                 }
 
-                // Get the REF ID from the selected speaker (what the model expects)
                 string currentSpeakerRefId = GetCurrentTtsSpeakerRefId();
-
-                // Get speaker info for logging
                 var selectedItem = TtsSpeakerComboBox.SelectedItem as ComboBoxItem;
                 string speakerDisplayText = selectedItem?.Content?.ToString() ?? "Unknown Speaker";
 
                 Console.WriteLine($"🎤 Testing TTS with speaker '{speakerDisplayText}' (REF ID: {currentSpeakerRefId})");
                 Console.WriteLine($"🎤 Text: '{testText}'");
 
-                var success = await CoquiTtsService.SpeakAsync(testText, currentSpeakerRefId);
+                bool success = false;
+                if (ShouldPlayLocalTts())
+                {
+                    success = await CoquiTtsService.SpeakAsync(testText, currentSpeakerRefId);
+                }
+                else if (ShouldSendDiscordTts())
+                {
+                    success = await DiscordNetBotManager.SendTtsToDiscordAsync(testText, currentSpeakerRefId);
+                }
+                else
+                {
+                    Console.WriteLine("🔇 TTS suppressed due to ingest routing (prevent echo)");
+                    success = true; // Treat as successful routing decision
+                }
 
                 if (_isClosing) return; // Check again after async operation
 
@@ -939,11 +949,10 @@ namespace Kinectv1
                 }
                 else
                 {
-                    Console.WriteLine($"✅ TTS test successful with: {speakerDisplayText} (REF ID: {currentSpeakerRefId})");
+                    Console.WriteLine($"✅ TTS test routed successfully ({speakerDisplayText})");
 
-                    // Show quick confirmation in status
                     var originalText = TtsStatusText.Text;
-                    TtsStatusText.Text = $"🎤 TTS: Test successful ({currentSpeakerRefId})";
+                    TtsStatusText.Text = $"🎤 TTS: Test routed ({(ShouldPlayLocalTts() ? "Local" : ShouldSendDiscordTts() ? "Discord" : "Suppressed")})";
 
                     // Reset status after 3 seconds WITHOUT using cancellation token
                     // Use a background task that checks for shutdown instead
@@ -962,7 +971,7 @@ namespace Kinectv1
                             {
                                 Dispatcher.Invoke(() =>
                                 {
-                                    if (!_isClosing && TtsStatusText.Text.Contains("Test successful"))
+                                    if (!_isClosing && TtsStatusText.Text.StartsWith("🎤 TTS: Test routed"))
                                     {
                                         TtsStatusText.Text = originalText;
                                     }
@@ -971,18 +980,13 @@ namespace Kinectv1
                         }
                         catch (Exception ex)
                         {
-                            // Ignore exceptions in background status reset
-                            if (!_isClosing)
-                            {
-                                Console.WriteLine($"Background status reset error: {ex.Message}");
-                            }
+                            if (!_isClosing) { Console.WriteLine($"Background status reset error: {ex.Message}"); }
                         }
                     });
                 }
             }
             catch (OperationCanceledException)
             {
-                // Cancellation is expected during shutdown
                 Console.WriteLine("🎤 TTS test canceled due to application shutdown");
             }
             catch (Exception ex)
@@ -1349,10 +1353,10 @@ namespace Kinectv1
 
         // XAML event handler stubs
         private void MainWindow_Closing(object sender, System.ComponentModel.CancelEventArgs e) { _isClosing = true; }
-        private void MicInputEnabledCheckBox_Checked(object sender, RoutedEventArgs e) { _isMicrophoneInputEnabled = true; }
-        private void MicInputEnabledCheckBox_Unchecked(object sender, RoutedEventArgs e) { _isMicrophoneInputEnabled = false; }
-        private void DiscordInputEnabledCheckBox_Checked(object sender, RoutedEventArgs e) { _isDiscordInputEnabled = true; }
-        private void DiscordInputEnabledCheckBox_Unchecked(object sender, RoutedEventArgs e) { _isDiscordInputEnabled = false; }
+        private void MicInputEnabledCheckBox_Checked(object sender, RoutedEventArgs e) { _isMicrophoneInputEnabled = true; VoiceRecognizer.SetMicrophoneInputEnabled(true); }
+        private void MicInputEnabledCheckBox_Unchecked(object sender, RoutedEventArgs e) { _isMicrophoneInputEnabled = false; VoiceRecognizer.SetMicrophoneInputEnabled(false); }
+        private void DiscordInputEnabledCheckBox_Checked(object sender, RoutedEventArgs e) { _isDiscordInputEnabled = true; VoiceRecognizer.SetDiscordInputEnabled(true); }
+        private void DiscordInputEnabledCheckBox_Unchecked(object sender, RoutedEventArgs e) { _isDiscordInputEnabled = false; VoiceRecognizer.SetDiscordInputEnabled(false); }
         private void TtsModelComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e) { }
         private void TtsSpeakerComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e) { }
         private void TtsGpuToggleButton_Click(object sender, RoutedEventArgs e) { }
@@ -1435,6 +1439,29 @@ namespace Kinectv1
         {
             try
             {
+                // Route TTS per rules to avoid echo/feedback
+                if (ShouldPlayLocalTts())
+                {
+                    var currentSpeaker = GetCurrentTtsSpeakerRefId();
+                    _ = Task.Run(async () =>
+                    {
+                        try { await CoquiTtsService.SpeakWithPreemptionAsync(response, currentSpeaker); }
+                        catch (Exception ex) { Console.WriteLine($"TTS speak failed: {ex.Message}"); }
+                    });
+                }
+                else if (ShouldSendDiscordTts())
+                {
+                    _ = Task.Run(async () =>
+                    {
+                        try { await DiscordNetBotManager.SendTtsToDiscordAsync(response, GetCurrentTtsSpeakerRefId()); }
+                        catch (Exception ex) { Console.WriteLine($"Discord TTS failed: {ex.Message}"); }
+                    });
+                }
+                else
+                {
+                    Console.WriteLine("🔇 TTS suppressed due to ingest routing (prevent echo)");
+                }
+
                 Dispatcher.Invoke(() =>
                 {
                     if (OllamaResponseBox != null) OllamaResponseBox.Text = response;
@@ -1507,6 +1534,40 @@ namespace Kinectv1
         private void OnDiscordBotError(string error)
         {
             Console.WriteLine($"❌ Discord Bot Error: {error}");
+        }
+
+        private bool ShouldPlayLocalTts()
+        {
+            try
+            {
+                var mode = AppSettings.LoadAudioInMode();
+                var micEnabled = VoiceRecognizer.IsMicrophoneInputEnabled();
+                var discordEnabled = VoiceRecognizer.IsDiscordInputEnabled();
+
+                // Only play locally when microphone input is enabled and we're in LocalMic mode.
+                // Suppress local playback when Discord ingest or system loopback is active to avoid echo.
+                if (mode == AudioInMode.LocalMic && micEnabled && !discordEnabled)
+                    return true;
+
+                // In DiscordVoice or SystemLoopback modes, always suppress local playback
+                return false;
+            }
+            catch
+            {
+                // Safe fallback: allow local playback only in LocalMic mode
+                return AppSettings.LoadAudioInMode() == AudioInMode.LocalMic;
+            }
+        }
+
+        private bool ShouldSendDiscordTts()
+        {
+            // Optional routing: only if bot is enabled and running and audio mode is DiscordVoice
+            try
+            {
+                var mode = AppSettings.LoadAudioInMode();
+                return mode == AudioInMode.DiscordVoice && AppSettings.LoadDiscordBotEnabled() && DiscordNetBotManager.IsRunning && VoiceRecognizer.IsDiscordInputEnabled();
+            }
+            catch { return false; }
         }
     }
 }

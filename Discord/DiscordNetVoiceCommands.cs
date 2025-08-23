@@ -34,7 +34,7 @@ namespace Kinectv1.Discord
         private static readonly ConcurrentDictionary<ulong, Task> _activeJoinAttempts = new();
         
         // CRITICAL 4006 PREVENTION: Global lock for Discord voice operations
-        private static readonly SemaphoreSlim _discordVoiceOperationLock = new SemaphoreSlim(1, 1);
+        private static readonly SemaphoreSlim _discordVoiceOperationLock = Kinectv1.Discord.DiscordNetBotManager.VoiceOpLock;
         
         #region Native Library Verification
 

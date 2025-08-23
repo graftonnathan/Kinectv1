@@ -19,6 +19,10 @@ namespace Kinectv1.Discord
 {
     public static class DiscordNetBotManager
     {
+        // Global voice operation lock to prevent overlapping join/leave/record ops
+        private static readonly SemaphoreSlim _voiceOpLock = new SemaphoreSlim(1, 1);
+        public static SemaphoreSlim VoiceOpLock => _voiceOpLock;
+
         // Events
         public static event Action<string> OnBotStatusChanged;
         public static event Action<string, string> OnVoiceMessageReceived;
@@ -129,6 +133,126 @@ namespace Kinectv1.Discord
                     CancellationToken?.Dispose();
                 }
                 catch { /* ignore */ }
+            }
+        }
+
+        /// <summary>
+        /// Enhanced Discord.Net bot shutdown with proper blocking pattern for application exit
+        /// Adds watchdog timeouts to force close stuck sessions.
+        /// </summary>
+        public static async Task ShutdownAsync()
+        {
+            // ATOMIC CHECK: Prevent multiple shutdown attempts
+            if (Interlocked.CompareExchange(ref _shutdownInProgress, 1, 0) != 0)
+                return;
+
+            try
+            {
+                if (!_isRunning && _client == null && _currentAudioClient == null)
+                {
+                    return;
+                }
+                _isRunning = false;
+
+                // Ensure no overlapping voice operations
+                await _voiceOpLock.WaitAsync().ConfigureAwait(false);
+                try
+                {
+                    if (_currentAudioClient != null)
+                    {
+                        try
+                        {
+                            var stopTask = _currentAudioClient.StopAsync();
+                            await Task.WhenAny(stopTask, Task.Delay(2000)).ConfigureAwait(false); // 2s watchdog
+                        }
+                        catch { }
+                        try { _currentAudioClient.Dispose(); } catch { }
+                        _currentAudioClient = null;
+                        _currentChannelId = null;
+                        _currentChannelName = null;
+                    }
+                }
+                finally
+                {
+                    _voiceOpLock.Release();
+                }
+
+                if (_client != null)
+                {
+                    try
+                    {
+                        var stopTask = _client.StopAsync();
+                        var completed = await Task.WhenAny(stopTask, Task.Delay(2000)).ConfigureAwait(false);
+                        if (completed != stopTask)
+                        {
+                            Console.WriteLine("[Discord] Watchdog: Client.StopAsync timed out, forcing dispose");
+                        }
+                    }
+                    catch { }
+                    try { await _client.LogoutAsync().ConfigureAwait(false); } catch { }
+                    try { _client.Dispose(); } catch { }
+                    _client = null;
+                }
+
+                _commands = null;
+                Interlocked.Exchange(ref _messageHandlerHooked, 0);
+                Interlocked.Exchange(ref _modulesRegistered, 0);
+                Interlocked.Exchange(ref _clientCreated, 0);
+                Interlocked.Exchange(ref _commandServiceCreated, 0);
+                
+                // Clean up TTS channel with proper disposal and cancellation
+                try 
+                { 
+                    _ttsWriter?.Complete();
+                    while (_ttsReader.TryRead(out var job))
+                    {
+                        try { job.Cts?.Cancel(); job.Tcs?.SetCanceled(); } catch { }
+                    }
+                } 
+                catch { }
+                
+                OnBotStatusChanged?.Invoke("Disconnected");
+            }
+            finally
+            {
+                try { _cancellationTokenSource?.Dispose(); } catch { }
+                _cancellationTokenSource = null;
+                Interlocked.Exchange(ref _shutdownInProgress, 0);
+            }
+        }
+
+        /// <summary>
+        /// Synchronously leave all voice channels and dispose the current audio client.
+        /// Safe to call during App exit.
+        /// </summary>
+        public static void LeaveAllVoice()
+        {
+            try
+            {
+                var client = _currentAudioClient;
+                if (client != null)
+                {
+                    try { client.StopAsync().Wait(1000); } catch { }
+                    try { client.Dispose(); } catch { }
+                }
+            }
+            catch { }
+            finally
+            {
+                _currentAudioClient = null;
+                _currentChannelId = null;
+                _currentChannelName = null;
+
+                // Cancel and clear any pending voice handshakes
+                try
+                {
+                    foreach (var kv in _voiceHandshakes)
+                    {
+                        try { kv.Value.Cancel(); kv.Value.Dispose(); } catch { }
+                    }
+                    _voiceHandshakes.Clear();
+                }
+                catch { }
             }
         }
 
@@ -266,69 +390,6 @@ namespace Kinectv1.Discord
             finally
             {
                 Interlocked.Exchange(ref _startupInProgress, 0);
-            }
-        }
-
-        /// <summary>
-        /// Enhanced Discord.Net bot shutdown with proper blocking pattern for application exit
-        /// </summary>
-        public static async Task ShutdownAsync()
-        {
-            // ATOMIC CHECK: Prevent multiple shutdown attempts
-            if (Interlocked.CompareExchange(ref _shutdownInProgress, 1, 0) != 0)
-                return;
-
-            try
-            {
-                if (!_isRunning) return;
-                _isRunning = false;
-
-                if (_currentAudioClient != null)
-                {
-                    try { await _currentAudioClient.StopAsync(); } catch { }
-                    try { _currentAudioClient.Dispose(); } catch { }
-                    _currentAudioClient = null;
-                }
-
-                if (_client != null)
-                {
-                    try { await _client.StopAsync(); } catch { }
-                    try { await _client.LogoutAsync(); } catch { }
-                    try { _client.Dispose(); } catch { }
-                    _client = null;
-                }
-
-                _commands = null;
-                Interlocked.Exchange(ref _messageHandlerHooked, 0);
-                Interlocked.Exchange(ref _modulesRegistered, 0);
-                Interlocked.Exchange(ref _clientCreated, 0);
-                Interlocked.Exchange(ref _commandServiceCreated, 0);
-                
-                // Clean up TTS channel with proper disposal and cancellation
-                try 
-                { 
-                    _ttsWriter?.Complete();
-                    
-                    // Cancel any remaining TTS jobs
-                    while (_ttsReader.TryRead(out var job))
-                    {
-                        try 
-                        { 
-                            job.Cts?.Cancel(); 
-                            job.Tcs?.SetCanceled(); 
-                        } 
-                        catch { }
-                    }
-                } 
-                catch { }
-                
-                OnBotStatusChanged?.Invoke("Disconnected");
-            }
-            finally
-            {
-                try { _cancellationTokenSource?.Dispose(); } catch { }
-                _cancellationTokenSource = null;
-                Interlocked.Exchange(ref _shutdownInProgress, 0);
             }
         }
 
@@ -508,7 +569,7 @@ namespace Kinectv1.Discord
             if (voiceChannel == null) throw new ArgumentNullException(nameof(voiceChannel));
             
             var guild = voiceChannel.Guild;
-            var guildId = guild.Id;
+            var guildId = voiceChannel.Guild.Id;
             var channelId = voiceChannel.Id;
             var channelName = voiceChannel.Name;
             

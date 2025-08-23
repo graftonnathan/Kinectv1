@@ -354,6 +354,24 @@
                                     Style="{StaticResource ThemedButtonStyle}"
                                     Background="{DynamicResource AccentBlue}"/>
                         </Grid>
+
+                        <!-- ArcFace Model Path -->
+                        <Grid Margin="0,0,0,15">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="150"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="ArcFace Model:" VerticalAlignment="Center" 
+                                       Foreground="{DynamicResource TextPrimary}" FontWeight="SemiBold"/>
+                            <TextBox Grid.Column="1" Name="ArcFaceModelPathTextBox" Margin="10,0,10,0" 
+                                     Style="{StaticResource ThemedTextBoxStyle}" Height="35"
+                                     VerticalContentAlignment="Center"/>
+                            <Button Grid.Column="2" Name="BrowseArcFaceModelButton" Content="📁 Browse" 
+                                    Width="100" Height="35" Click="BrowseArcFaceModelButton_Click"
+                                    Style="{StaticResource ThemedButtonStyle}"
+                                    Background="{DynamicResource AccentBlue}"/>
+                        </Grid>
                     </StackPanel>
                 </Border>
 

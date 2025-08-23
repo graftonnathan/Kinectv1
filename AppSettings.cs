@@ -205,6 +205,153 @@ namespace Kinectv1
         private static void SetDouble(string name, double value) => WriteSettingRaw(name, value.ToString(CultureInfo.InvariantCulture));
         private static void SetFloat(string name, float value) => WriteSettingRaw(name, value.ToString(CultureInfo.InvariantCulture));
 
+        // Validation clamp helpers and full validation pass
+        private static float ClampAndPersist(string key, float value, float min, float max, Action<float> saver)
+        {
+            var clamped = Math.Max(min, Math.Min(max, value));
+            if (Math.Abs(clamped - value) > 0.0001f)
+            {
+                saver(clamped);
+                LogSettingError(key, $"OUT OF RANGE -> clamped to {clamped}");
+            }
+            return clamped;
+        }
+
+        private static int ClampAndPersist(string key, int value, int min, int max, Action<int> saver)
+        {
+            var clamped = Math.Max(min, Math.Min(max, value));
+            if (clamped != value)
+            {
+                saver(clamped);
+                LogSettingError(key, $"OUT OF RANGE -> clamped to {clamped}");
+            }
+            return clamped;
+        }
+
+        private static double ClampAndPersist(string key, double value, double min, double max, Action<double> saver)
+        {
+            var clamped = Math.Max(min, Math.Min(max, value));
+            if (Math.Abs(clamped - value) > 0.0000001)
+            {
+                saver(clamped);
+                LogSettingError(key, $"OUT OF RANGE -> clamped to {clamped:F3}");
+            }
+            return clamped;
+        }
+
+        /// <summary>
+        /// Validate and normalize all persisted settings at startup. Logs once when corrections are applied.
+        /// </summary>
+        public static void ValidateAll()
+        {
+            try
+            {
+                // Voice thresholds
+                var vThresh = LoadVoiceThreshold();
+                ClampAndPersist("VoiceThreshold", vThresh, Defaults.Ranges.VoiceThreshold_Min, Defaults.Ranges.VoiceThreshold_Max, SaveVoiceThreshold);
+
+                var vHiThresh = LoadVoiceHighConfidenceThreshold();
+                vHiThresh = ClampAndPersist("VoiceHighConfidenceThreshold", vHiThresh, Defaults.Ranges.VoiceHighThreshold_Min, Defaults.Ranges.VoiceHighThreshold_Max, SaveVoiceHighConfidenceThreshold);
+                var vLow = LoadVoiceConfidenceThreshold();
+                if (vHiThresh < vLow)
+                {
+                    SaveVoiceHighConfidenceThreshold(vLow);
+                    LogSettingError("VoiceHighConfidenceThreshold", $"LESS THAN VoiceConfidenceThreshold -> raised to {vLow:F2}");
+                }
+
+                var vBuf = LoadVoiceConfidenceBufferSize();
+                ClampAndPersist("VoiceConfidenceBufferSize", vBuf, Defaults.Ranges.VoiceConfidenceBuffer_Min, Defaults.Ranges.VoiceConfidenceBuffer_Max, SaveVoiceConfidenceBufferSize);
+
+                // VAD
+                var micVad = LoadVoiceActivityThreshold();
+                ClampAndPersist("VoiceActivityThreshold", micVad, Defaults.Ranges.MicVad_Min, Defaults.Ranges.MicVad_Max, x => SaveVoiceActivityThreshold(x));
+
+                var discVad = LoadDiscordVoiceActivityThreshold();
+                ClampAndPersist("DiscordVoiceActivityThreshold", discVad, Defaults.Ranges.DiscordVad_Min, Defaults.Ranges.DiscordVad_Max, x => SaveDiscordVoiceActivityThreshold(x));
+
+                var silenceMs = LoadVadSilenceTimeoutMs();
+                ClampAndPersist("VadSilenceTimeoutMs", silenceMs, Defaults.Ranges.VadSilence_Min, Defaults.Ranges.VadSilence_Max, SaveVadSilenceTimeoutMs);
+
+                var debounceMs = LoadVadDebounceTimeoutMs();
+                ClampAndPersist("VadDebounceTimeoutMs", debounceMs, Defaults.Ranges.VadDebounce_Min, Defaults.Ranges.VadDebounce_Max, SaveVadDebounceTimeoutMs);
+
+                // Ensure cached VAD threshold reflects any clamped/updated values
+                try { AudioUtils.RefreshVadThreshold(); } catch { }
+
+                // Volumes
+                var localVol = LoadLocalTtsVolume();
+                ClampAndPersist("LocalTtsVolume", localVol, Defaults.Ranges.Volume_Min, Defaults.Ranges.Volume_Max, SaveLocalTtsVolume);
+                var discVol = LoadDiscordTtsVolume();
+                ClampAndPersist("DiscordTtsVolume", discVol, Defaults.Ranges.Volume_Min, Defaults.Ranges.Volume_Max, SaveDiscordTtsVolume);
+
+                // Fusion
+                var fFace = LoadFusionFaceWeight();
+                ClampAndPersist("FusionFaceWeight", fFace, Defaults.Ranges.FusionFace_Min, Defaults.Ranges.FusionFace_Max, SaveFusionFaceWeight);
+                var fVoice = LoadFusionVoiceWeight();
+                ClampAndPersist("FusionVoiceWeight", fVoice, Defaults.Ranges.FusionVoice_Min, Defaults.Ranges.FusionVoice_Max, SaveFusionVoiceWeight);
+                var fHalf = LoadFusionDecayHalfLifeMs();
+                ClampAndPersist("FusionDecayHalfLifeMs", fHalf, Defaults.Ranges.FusionHalfLife_Min, Defaults.Ranges.FusionHalfLife_Max, SaveFusionDecayHalfLifeMs);
+                var fUnknown = LoadFusionUnknownThreshold();
+                ClampAndPersist("FusionUnknownThreshold", fUnknown, Defaults.Ranges.FusionUnknown_Min, Defaults.Ranges.FusionUnknown_Max, SaveFusionUnknownThreshold);
+
+                // Telemetry
+                var sampling = LoadTelemetrySamplingPct();
+                ClampAndPersist("TelemetrySamplingPct", sampling, Defaults.Ranges.TelemetrySampling_Min, Defaults.Ranges.TelemetrySampling_Max, SaveTelemetrySamplingPct);
+
+                // Window
+                var (w, h, l, t, state) = LoadWindowSettings();
+                if (w < Defaults.Ranges.WindowWidth_Min) { SaveWindowSettings(Defaults.Ranges.WindowWidth_Min, h, l, t, state); LogSettingError("WindowWidth", $"OUT OF RANGE -> set to {Defaults.Ranges.WindowWidth_Min:F0}"); }
+                if (h < Defaults.Ranges.WindowHeight_Min) { SaveWindowSettings(w, Defaults.Ranges.WindowHeight_Min, l, t, state); LogSettingError("WindowHeight", $"OUT OF RANGE -> set to {Defaults.Ranges.WindowHeight_Min:F0}"); }
+                if (l < Defaults.Ranges.WindowLeft_Min) { SaveWindowSettings(w, h, Defaults.Ranges.WindowLeft_Min, t, state); LogSettingError("WindowLeft", $"OUT OF RANGE -> set to {Defaults.Ranges.WindowLeft_Min:F0}"); }
+                if (t < Defaults.Ranges.WindowTop_Min) { SaveWindowSettings(w, h, l, Defaults.Ranges.WindowTop_Min, state); LogSettingError("WindowTop", $"OUT OF RANGE -> set to {Defaults.Ranges.WindowTop_Min:F0}"); }
+                if (string.IsNullOrWhiteSpace(state) || !Defaults.Window.AllowedStates.Contains(state))
+                {
+                    SaveWindowSettings(w, h, l, t, Defaults.Window.WindowState);
+                    LogSettingError("WindowState", $"INVALID -> set to {Defaults.Window.WindowState}");
+                }
+
+                // Enums
+                var scen = LoadAppScenario();
+                if (!Enum.IsDefined(typeof(AppScenario), scen))
+                {
+                    SaveAppScenario(Defaults.Ui.AppScenario);
+                    LogSettingError("AppScenario", $"INVALID -> set to {Defaults.Ui.AppScenario}");
+                }
+                var audioMode = LoadAudioInMode();
+                if (!Enum.IsDefined(typeof(AudioInMode), audioMode))
+                {
+                    SaveAudioInMode(Defaults.Audio.AudioInMode);
+                    LogSettingError("AudioInMode", $"INVALID -> set to {Defaults.Audio.AudioInMode}");
+                }
+
+                // Strings with reasonable defaults
+                var lang = LoadLanguage();
+                if (string.IsNullOrWhiteSpace(lang)) { SaveLanguage("en-US"); }
+
+                var conv = LoadConversationHistoryPath();
+                if (string.IsNullOrWhiteSpace(conv)) { SaveConversationHistoryPath(Defaults.Ollama.ConversationHistoryPath); }
+
+                var speaker = LoadTtsSpeaker();
+                if (string.IsNullOrWhiteSpace(speaker)) { SaveTtsSpeaker("em_alex"); }
+
+                var ttsFolder = LoadTtsModelFolder();
+                if (string.IsNullOrWhiteSpace(ttsFolder)) { SaveTtsModelFolder(Defaults.Tts.TtsModelFolder); }
+
+                var ttsModel = LoadTtsModelPath();
+                if (string.IsNullOrWhiteSpace(ttsModel)) { SaveTtsModelPath(Defaults.Tts.TtsModelPath); }
+
+                var vocModel = LoadTtsVocoderModelPath();
+                if (string.IsNullOrWhiteSpace(vocModel)) { SaveTtsVocoderModelPath(Defaults.Tts.TtsModelPath); }
+
+                var arcModel = LoadArcFaceModelPath();
+                if (string.IsNullOrWhiteSpace(arcModel)) { SaveArcFaceModelPath(Defaults.Tts.TtsModelPath); }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ ERROR: ValidateAll failed: {ex.Message}");
+            }
+        }
+
         // Scenario Configuration Methods
 
         /// <summary>
@@ -328,6 +475,13 @@ namespace Kinectv1
                 if (string.IsNullOrEmpty(sttModelPath) || !Directory.Exists(sttModelPath))
                 {
                     issues.Add("❌ STT: Vosk model directory not found");
+                }
+
+                // Face (ArcFace) Validation
+                var arc = LoadArcFaceModelPath();
+                if (string.IsNullOrWhiteSpace(arc) || !File.Exists(arc))
+                {
+                    issues.Add("⚠️ Face: ArcFace ONNX not configured or missing — face recognition will be limited. Configure in Settings → Models.");
                 }
 
                 // Discord Validation
@@ -491,6 +645,13 @@ namespace Kinectv1
 
                 // Initialize and log audio devices
                 InitializeAudioDevices();
+
+                // Preflight validation with friendly hints
+                var issues = Validate();
+                foreach (var msg in issues)
+                {
+                    Console.WriteLine($"[Config] {msg}");
+                }
 
                 Console.WriteLine("✅ Settings initialization complete!");
             }
@@ -2004,10 +2165,12 @@ namespace Kinectv1
             {
                 var sttInputDevice = LoadSttInputDevice();
                 var ttsOutputDevice = LoadTtsOutputDevice();
+                var audioMode = LoadAudioInMode();
 
                 return $"🎧 Audio Device Settings:\n" +
                        $"   STT Input Device: {sttInputDevice}\n" +
-                       $"   TTS Output Device: {ttsOutputDevice}";
+                       $"   TTS Output Device: {ttsOutputDevice}\n" +
+                       $"   Audio Input Mode: {audioMode}";
             }
             catch (Exception ex)
             {
@@ -2158,6 +2321,234 @@ namespace Kinectv1
             catch (Exception ex) { Console.WriteLine($"ERROR: Error saving speaker embedding model path: {ex.Message}"); }
         }
 
+        // Face model (ArcFace) settings
+        public static string LoadArcFaceModelPath()
+        {
+            try
+            {
+                var path = GetString("ArcFaceModelPath");
+                if (string.IsNullOrWhiteSpace(path)) LogSettingError("ArcFaceModelPath", "EMPTY");
+                else if (!File.Exists(path)) LogSettingError("ArcFaceModelPath", "NOT FOUND");
+                return path;
+            }
+            catch (Exception ex)
+            {
+                LogSettingError("ArcFaceModelPath", $"READ FAILED: {ex.Message}");
+                return null;
+            }
+        }
+
+        public static void SaveArcFaceModelPath(string path)
+        {
+            try { SetString("ArcFaceModelPath", path); Console.WriteLine($"Saved ArcFace model path: {path}"); }
+            catch (Exception ex) { Console.WriteLine($"ERROR: Error saving ArcFace model path: {ex.Message}"); }
+        }
+
+        // Telemetry Settings
+        public static bool LoadTelemetryEnabled()
+        {
+            try { return GetBool("TelemetryEnabled"); }
+            catch (Exception ex) { LogSettingError("TelemetryEnabled", $"READ FAILED: {ex.Message}"); return false; }
+        }
+        public static void SaveTelemetryEnabled(bool enabled)
+        {
+            try { SetBool("TelemetryEnabled", enabled); Console.WriteLine($"Telemetry: Enabled: {enabled}"); }
+            catch (Exception ex) { Console.WriteLine($"ERROR: Error saving telemetry enabled: {ex.Message}"); }
+        }
+        public static string LoadTelemetryFile()
+        {
+            try { var path = GetString("TelemetryFile"); return string.IsNullOrWhiteSpace(path) ? "logs/telemetry.ndjson" : path; }
+            catch (Exception ex) { LogSettingError("TelemetryFile", $"READ FAILED: {ex.Message}"); return "logs/telemetry.ndjson"; }
+        }
+        public static void SaveTelemetryFile(string filePath)
+        {
+            try { SetString("TelemetryFile", filePath); Console.WriteLine($"Telemetry: File path: {filePath}"); }
+            catch (Exception ex) { Console.WriteLine($"ERROR: Error saving telemetry file path: {ex.Message}"); }
+        }
+        public static int LoadTelemetrySamplingPct()
+        {
+            try { var pct = GetInt("TelemetrySamplingPct"); return Math.Max(0, Math.Min(100, pct)); }
+            catch (Exception ex) { LogSettingError("TelemetrySamplingPct", $"READ FAILED: {ex.Message}"); return 100; }
+        }
+        public static void SaveTelemetrySamplingPct(int samplingPct)
+        {
+            try { var clamped = Math.Max(0, Math.Min(100, samplingPct)); SetInt("TelemetrySamplingPct", clamped); Console.WriteLine($"Telemetry: Sampling percentage: {clamped}%"); }
+            catch (Exception ex) { Console.WriteLine($"ERROR: Error saving telemetry sampling percentage: {ex.Message}"); }
+        }
+        public static void ConfigureTelemetrySettings(bool enabled = true, string filePath = "logs/telemetry.ndjson", int samplingPct = 100)
+        {
+            try { SaveTelemetryEnabled(enabled); SaveTelemetryFile(filePath); SaveTelemetrySamplingPct(samplingPct); }
+            catch (Exception ex) { Console.WriteLine($"ERROR: Error configuring telemetry settings: {ex.Message}"); }
+        }
+        public static string GetTelemetrySettingsSummary()
+        {
+            try
+            {
+                var enabled = LoadTelemetryEnabled(); var filePath = LoadTelemetryFile(); var samplingPct = LoadTelemetrySamplingPct();
+                return $"📊 Telemetry Settings:\n" +
+                       $"   Enabled: {enabled}\n" +
+                       $"   File path: {filePath}\n" +
+                       $"   Sampling: {samplingPct}%\n" +
+                       $"   Format: NDJSON (Newline Delimited JSON)\n" +
+                       $"   Console: Warnings+ and summaries only\n" +
+                       $"   Rotation: ~5MB file size limit";
+            }
+            catch (Exception ex) { return $"ERROR: Could not load telemetry settings: {ex.Message}"; }
+        }
+
+        // ====== IDENTITY FUSION SETTINGS ======
+        public static float LoadFusionFaceWeight()
+        {
+            try { var v = GetFloat("FusionFaceWeight", 0.6f); if (v <= 0.0f || v > 1.0f) { LogSettingError("FusionFaceWeight", $"OUT OF RANGE (expected 0.0-1.0, got {v})"); return 0.6f; } return v; }
+            catch (Exception ex) { LogSettingError("FusionFaceWeight", $"read FAILED: {ex.Message}"); return 0.6f; }
+        }
+        public static void SaveFusionFaceWeight(float weight)
+        {
+            try { var c = Math.Max(0.0f, Math.Min(1.0f, weight)); SetFloat("FusionFaceWeight", c); Console.WriteLine($"Fusion: Face weight set to {c:F2}"); }
+            catch (Exception ex) { Console.WriteLine($"ERROR: Error saving fusion face weight: {ex.Message}"); }
+        }
+        public static float LoadFusionVoiceWeight()
+        {
+            try { var v = GetFloat("FusionVoiceWeight", 0.4f); if (v <= 0.0f || v > 1.0f) { LogSettingError("FusionVoiceWeight", $"OUT OF RANGE (expected 0.0-1.0, got {v})"); return 0.4f; } return v; }
+            catch (Exception ex) { LogSettingError("FusionVoiceWeight", $"read FAILED: {ex.Message}"); return 0.4f; }
+        }
+        public static void SaveFusionVoiceWeight(float weight)
+        {
+            try { var c = Math.Max(0.0f, Math.Min(1.0f, weight)); SetFloat("FusionVoiceWeight", c); Console.WriteLine($"Fusion: Voice weight set to {c:F2}"); }
+            catch (Exception ex) { Console.WriteLine($"ERROR: Error saving fusion voice weight: {ex.Message}"); }
+        }
+        public static int LoadFusionDecayHalfLifeMs()
+        {
+            try { var v = GetInt("FusionDecayHalfLifeMs", 2000); if (v < 500 || v > 10000) { LogSettingError("FusionDecayHalfLifeMs", $"OUT OF RANGE (expected 500-10000ms, got {v})"); return 2000; } return v; }
+            catch (Exception ex) { LogSettingError("FusionDecayHalfLifeMs", $"read FAILED: {ex.Message}"); return 2000; }
+        }
+        public static void SaveFusionDecayHalfLifeMs(int halfLifeMs)
+        {
+            try { var c = Math.Max(500, Math.Min(10000, halfLifeMs)); SetInt("FusionDecayHalfLifeMs", c); Console.WriteLine($"Fusion: Decay half-life set to {c}ms"); }
+            catch (Exception ex) { Console.WriteLine($"ERROR: Error saving fusion decay half-life: {ex.Message}"); }
+        }
+        public static float LoadFusionUnknownThreshold()
+        {
+            try { var v = GetFloat("FusionUnknownThreshold", 0.3f); if (v < 0.0f || v > 1.0f) { LogSettingError("FusionUnknownThreshold", $"OUT OF RANGE (expected 0.0-1.0, got {v})"); return 0.3f; } return v; }
+            catch (Exception ex) { LogSettingError("FusionUnknownThreshold", $"read FAILED: {ex.Message}"); return 0.3f; }
+        }
+        public static void SaveFusionUnknownThreshold(float threshold)
+        {
+            try { var c = Math.Max(0.0f, Math.Min(1.0f, threshold)); SetFloat("FusionUnknownThreshold", c); Console.WriteLine($"Fusion: Unknown threshold set to {c:F2}"); }
+            catch (Exception ex) { Console.WriteLine($"ERROR: Error saving fusion unknown threshold: {ex.Message}"); }
+        }
+        public static void ConfigureFusionSettings(float faceWeight = 0.6f, float voiceWeight = 0.4f, int halfLifeMs = 2000, float unknownThreshold = 0.3f)
+        {
+            try { SaveFusionFaceWeight(faceWeight); SaveFusionVoiceWeight(voiceWeight); SaveFusionDecayHalfLifeMs(halfLifeMs); SaveFusionUnknownThreshold(unknownThreshold); }
+            catch (Exception ex) { Console.WriteLine($"ERROR: Error configuring fusion settings: {ex.Message}"); }
+        }
+        public static string GetFusionSettingsSummary()
+        {
+            try
+            {
+                var faceWeight = LoadFusionFaceWeight(); var voiceWeight = LoadFusionVoiceWeight(); var halfLifeMs = LoadFusionDecayHalfLifeMs(); var unknownThreshold = LoadFusionUnknownThreshold();
+                return $"🔀 Identity Fusion Settings:\n" +
+                       $"   Face weight: {faceWeight:F2}\n" +
+                       $"   Voice weight: {voiceWeight:F2}\n" +
+                       $"   Decay half-life: {halfLifeMs}ms\n" +
+                       $"   Unknown threshold: {unknownThreshold:F2}\n" +
+                       $"   Fusion formula: (face*{faceWeight:F1} + voice*{voiceWeight:F1}) / {faceWeight + voiceWeight:F1}\n" +
+                       $"   Time decay: score *= exp(-dt/{halfLifeMs}ms)";
+            }
+            catch (Exception ex) { return $"ERROR: Could not load fusion settings: {ex.Message}"; }
+        }
+
+        // Audio input mode
+        public static AudioInMode LoadAudioInMode()
+        {
+            try
+            {
+                var modeStr = GetString("AudioInMode", "LocalMic");
+                if (Enum.TryParse<AudioInMode>(modeStr, true, out var mode))
+                {
+                    string telemetryMode = mode switch { AudioInMode.LocalMic => "local_mic", AudioInMode.DiscordVoice => "discord_voice", AudioInMode.SystemLoopback => "system_loopback", _ => "unknown" };
+                    Telemetry.Counter($"audio.ingest.mode.{telemetryMode}");
+                    return mode;
+                }
+                else
+                {
+                    LogSettingError("AudioInMode", $"INVALID VALUE (expected LocalMic|DiscordVoice|SystemLoopback, got '{modeStr}')");
+                    Telemetry.Counter("audio.ingest.mode.local_mic");
+                    return AudioInMode.LocalMic;
+                }
+            }
+            catch (Exception ex)
+            {
+                LogSettingError("AudioInMode", $"READ FAILED: {ex.Message}");
+                Telemetry.Counter("audio.ingest.mode.local_mic");
+                return AudioInMode.LocalMic;
+            }
+        }
+        public static void SaveAudioInMode(AudioInMode mode)
+        {
+            try
+            {
+                WriteSettingRaw("AudioInMode", mode.ToString());
+                Console.WriteLine($"🎧 Audio input mode saved: {mode}");
+                string telemetryMode = mode switch { AudioInMode.LocalMic => "local_mic", AudioInMode.DiscordVoice => "discord_voice", AudioInMode.SystemLoopback => "system_loopback", _ => "unknown" };
+                Telemetry.Counter($"audio.ingest.mode.{telemetryMode}");
+            }
+            catch (Exception ex) { LogSettingError("AudioInMode", $"SAVE FAILED: {ex.Message}"); }
+        }
+
+        // Summaries
+        public static string GetTtsSettingsSummary()
+        {
+            try
+            {
+                return "🔊 TTS Pipeline Settings:\n" +
+                       $"   Enabled: {LoadTtsEnabled()}\n" +
+                       $"   Speaker: {LoadTtsSpeaker()}\n" +
+                       $"   Execution: {(LoadTtsUseGpu() ? "GPU" : "CPU")}\n" +
+                       $"   Model Folder: {LoadTtsModelFolder()}\n" +
+                       $"   Model: {LoadTtsModelPath()}\n" +
+                       $"   Vocoder: {LoadTtsVocoderModelPath()}\n" +
+                       $"   CMU Dict: {LoadTtsCmudictPath()}\n" +
+                       $"   Symbols: {LoadTtsSymbolsPath()}\n" +
+                       $"   Output Device: {LoadTtsOutputDevice()}\n" +
+                       $"   Local Volume: {LoadLocalTtsVolume() * 100:F0}%\n" +
+                       $"   Discord Volume: {LoadDiscordTtsVolume() * 100:F0}%";
+            }
+            catch (Exception ex) { return $"ERROR: Could not load TTS settings: {ex.Message}"; }
+        }
+        public static string GetSttSettingsSummary()
+        {
+            try
+            {
+                return "🎙️ STT Pipeline Settings:\n" +
+                       $"   Input Device: {LoadSttInputDevice()}\n" +
+                       $"   Vosk Model: {LoadSttModelPath()}\n" +
+                       $"   Speaker Embedding: {LoadSpeakerEmbeddingModelPath()}\n" +
+                       $"   Speaker Match Threshold: {LoadSpeakerMatchMinScore():F2}\n" +
+                       $"   Mic VAD Threshold: {LoadVoiceActivityThreshold():F0}\n" +
+                       $"   Discord VAD Threshold: {LoadDiscordVoiceActivityThreshold():F0}\n" +
+                       $"   VAD Silence Timeout: {LoadVadSilenceTimeoutMs()}ms\n" +
+                       $"   VAD Debounce Timeout: {LoadVadDebounceTimeoutMs()}ms";
+            }
+            catch (Exception ex) { return $"ERROR: Could not load STT settings: {ex.Message}"; }
+        }
+        public static void InitializeAudioDevices()
+        {
+            try
+            {
+                Console.WriteLine("🎧 Initializing audio devices...");
+                var audioMode = LoadAudioInMode();
+                var modeDescription = audioMode switch { AudioInMode.LocalMic => "Local Microphone", AudioInMode.DiscordVoice => "Discord Voice (Opus→PCM)", AudioInMode.SystemLoopback => "System Loopback Capture", _ => "Unknown" };
+                Console.WriteLine($"🎛️ Audio Input Mode: {modeDescription}");
+                var input = AudioDeviceManager.GetConfiguredInputDevice();
+                Console.WriteLine(input != null ? $"🎤 Using STT input device: {input.DeviceName} (Device #{input.DeviceNumber})" : "🎤 STT input device: Default");
+                var outputDevice = AudioDeviceManager.GetConfiguredOutputDevice();
+                Console.WriteLine(outputDevice != null ? $"🔊 Using TTS output device: {outputDevice.DeviceName} (Device #{outputDevice.DeviceNumber})" : "🔊 TTS output device: Default");
+                Console.WriteLine("🎧 Audio device initialization complete!");
+            }
+            catch (Exception ex) { Console.WriteLine($"❌ ERROR: Audio device initialization failed: {ex.Message}"); }
+        }
+
         /// <summary>
         /// Load speaker match minimum score threshold (default: 0.6)
         /// </summary>
@@ -2196,667 +2587,5 @@ namespace Kinectv1
                 Console.WriteLine($"ERROR: Error saving speaker match threshold: {ex.Message}");
             }
         }
-
-        /// <summary>
-        /// Grouped summary of TTS pipeline settings
-        /// </summary>
-        public static string GetTtsSettingsSummary()
-        {
-            try
-            {
-                return "🔊 TTS Pipeline Settings:\n" +
-                       $"   Enabled: {LoadTtsEnabled()}\n" +
-                       $"   Speaker: {LoadTtsSpeaker()}\n" +
-                       $"   Execution: {(LoadTtsUseGpu() ? "GPU" : "CPU")}\n" +
-                       $"   Model Folder: {LoadTtsModelFolder()}\n" +
-                       $"   Model: {LoadTtsModelPath()}\n" +
-                       $"   Vocoder: {LoadTtsVocoderModelPath()}\n" +
-                       $"   CMU Dict: {LoadTtsCmudictPath()}\n" +
-                       $"   Symbols: {LoadTtsSymbolsPath()}\n" +
-                       $"   Output Device: {LoadTtsOutputDevice()}\n" +
-                       $"   Local Volume: {LoadLocalTtsVolume() * 100:F0}%\n" +
-                       $"   Discord Volume: {LoadDiscordTtsVolume() * 100:F0}%";
-            }
-            catch (Exception ex)
-            {
-                return $"ERROR: Could not load TTS settings: {ex.Message}";
-            }
-        }
-
-        /// <summary>
-        /// Grouped summary of STT pipeline settings
-        /// </summary>
-        public static string GetSttSettingsSummary()
-        {
-            try
-            {
-                return "🎙️ STT Pipeline Settings:\n" +
-                       $"   Input Device: {LoadSttInputDevice()}\n" +
-                       $"   Vosk Model: {LoadSttModelPath()}\n" +
-                       $"   Speaker Embedding: {LoadSpeakerEmbeddingModelPath()}\n" +
-                       $"   Speaker Match Threshold: {LoadSpeakerMatchMinScore():F2}\n" +
-                       $"   Mic VAD Threshold: {LoadVoiceActivityThreshold():F0}\n" +
-                       $"   Discord VAD Threshold: {LoadDiscordVoiceActivityThreshold():F0}\n" +
-                       $"   VAD Silence Timeout: {LoadVadSilenceTimeoutMs()}ms\n" +
-                       $"   VAD Debounce Timeout: {LoadVadDebounceTimeoutMs()}ms";
-            }
-            catch (Exception ex)
-            {
-                return $"ERROR: Could not load STT settings: {ex.Message}";
-            }
-        }
-
-        /// <summary>
-        /// Initialize audio devices and log their status
-        /// </summary>
-        public static void InitializeAudioDevices()
-        {
-            try
-            {
-                Console.WriteLine("🎧 Initializing audio devices...");
-
-                // Log audio input mode selection
-                var audioMode = LoadAudioInMode();
-                var modeDescription = audioMode switch
-                {
-                    AudioInMode.LocalMic => "Local Microphone",
-                    AudioInMode.DiscordVoice => "Discord Voice (Opus→PCM)",
-                    AudioInMode.SystemLoopback => "System Loopback Capture",
-                    _ => "Unknown"
-                };
-                Console.WriteLine($"🎛️ Audio Input Mode: {modeDescription}");
-
-                // Suppress verbose enumeration
-                // AudioDeviceManager.LogAllDevices();
-
-                // Log current STT configuration (selection only)
-                var input = AudioDeviceManager.GetConfiguredInputDevice();
-                if (input != null)
-                {
-                    Console.WriteLine($"🎤 Using STT input device: {input.DeviceName} (Device #{input.DeviceNumber})");
-                }
-                else
-                {
-                    Console.WriteLine("🎤 STT input device: Default");
-                }
-
-                // Log current TTS output device (selection only)
-                var outputDevice = AudioDeviceManager.GetConfiguredOutputDevice();
-                if (outputDevice != null)
-                {
-                    Console.WriteLine($"🔊 Using TTS output device: {outputDevice.DeviceName} (Device #{outputDevice.DeviceNumber})");
-                }
-                else
-                {
-                    Console.WriteLine("🔊 TTS output device: Default");
-                }
-
-                Console.WriteLine("🎧 Audio device initialization complete!");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"❌ ERROR: Audio device initialization failed: {ex.Message}");
-            }
-        }
-
-        public static bool LoadTtsPreferDirectML()
-        {
-            try
-            {
-                return GetBool("TtsPreferDirectML");
-            }
-            catch (Exception ex)
-            {
-                LogSettingError("TtsPreferDirectML", $"READ FAILED: {ex.Message}");
-                return false;
-            }
-        }
-
-        public static void SaveTtsPreferDirectML(bool preferDml)
-        {
-            try
-            {
-                SetBool("TtsPreferDirectML", preferDml);
-                Console.WriteLine($"TTS: Saved Prefer DirectML: {preferDml}");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"ERROR: Error saving Prefer DirectML: {ex.Message}");
-            }
-        }
-
-        // Telemetry Settings
-        public static bool LoadTelemetryEnabled()
-        {
-            try
-            {
-                return GetBool("TelemetryEnabled");
-            }
-            catch (Exception ex)
-            {
-                LogSettingError("TelemetryEnabled", $"READ FAILED: {ex.Message}");
-                return false; // Default to disabled for safety
-            }
-        }
-
-        public static void SaveTelemetryEnabled(bool enabled)
-        {
-            try
-            {
-                SetBool("TelemetryEnabled", enabled);
-                Console.WriteLine($"Telemetry: Enabled: {enabled}");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"ERROR: Error saving telemetry enabled: {ex.Message}");
-            }
-        }
-
-        public static string LoadTelemetryFile()
-        {
-            try
-            {
-                var path = GetString("TelemetryFile");
-                return string.IsNullOrWhiteSpace(path) ? "logs/telemetry.ndjson" : path;
-            }
-            catch (Exception ex)
-            {
-                LogSettingError("TelemetryFile", $"READ FAILED: {ex.Message}");
-                return "logs/telemetry.ndjson";
-            }
-        }
-
-        public static void SaveTelemetryFile(string filePath)
-        {
-            try
-            {
-                SetString("TelemetryFile", filePath);
-                Console.WriteLine($"Telemetry: File path: {filePath}");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"ERROR: Error saving telemetry file path: {ex.Message}");
-            }
-        }
-
-        public static int LoadTelemetrySamplingPct()
-        {
-            try
-            {
-                var pct = GetInt("TelemetrySamplingPct");
-                return Math.Max(0, Math.Min(100, pct)); // Clamp to 0-100
-            }
-            catch (Exception ex)
-            {
-                LogSettingError("TelemetrySamplingPct", $"READ FAILED: {ex.Message}");
-                return 100; // Default to 100% sampling
-            }
-        }
-
-        public static void SaveTelemetrySamplingPct(int samplingPct)
-        {
-            try
-            {
-                var clampedPct = Math.Max(0, Math.Min(100, samplingPct));
-                SetInt("TelemetrySamplingPct", clampedPct);
-                Console.WriteLine($"Telemetry: Sampling percentage: {clampedPct}%");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"ERROR: Error saving telemetry sampling percentage: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Configure telemetry settings all at once
-        /// </summary>
-        public static void ConfigureTelemetrySettings(bool enabled = true, string filePath = "logs/telemetry.ndjson", int samplingPct = 100)
-        {
-            try
-            {
-                SaveTelemetryEnabled(enabled);
-                SaveTelemetryFile(filePath);
-                SaveTelemetrySamplingPct(samplingPct);
-
-                Console.WriteLine($"📊 Telemetry settings configured:");
-                Console.WriteLine($"   Enabled: {enabled}");
-                Console.WriteLine($"   File path: {filePath}");
-                Console.WriteLine($"   Sampling: {samplingPct}%");
-                Console.WriteLine($"   💡 All events logged to file; console shows warnings+ and summaries");
-                Console.WriteLine($"   💡 File rotates at ~5MB to prevent disk fill");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"ERROR: Error configuring telemetry settings: {ex.Message}");
-            }
-        }
-
-        /// <summary>
- /// Get telemetry settings summary
-        /// </summary>
-        public static string GetTelemetrySettingsSummary()
-        {
-            try
-            {
-                var enabled = LoadTelemetryEnabled();
-                var filePath = LoadTelemetryFile();
-                var samplingPct = LoadTelemetrySamplingPct();
-
-                return $"📊 Telemetry Settings:\n" +
-                       $"   Enabled: {enabled}\n" +
-                       $"   File path: {filePath}\n" +
-                       $"   Sampling: {samplingPct}%\n" +
-                       $"   Format: NDJSON (Newline Delimited JSON)\n" +
-                       $"   Console: Warnings+ and summaries only\n" +
-                       $"   Rotation: ~5MB file size limit";
-            }
-            catch (Exception ex)
-            {
-                return $"ERROR: Could not load telemetry settings: {ex.Message}";
-            }
-        }
-
-        // ====== IDENTITY FUSION SETTINGS ======
-
-        /// <summary>
-        /// Load fusion face weight (default: 0.6)
-        /// </summary>
-        public static float LoadFusionFaceWeight()
-        {
-            try
-            {
-                var value = GetFloat("FusionFaceWeight", 0.6f); // Use default fallback
-                if (value <= 0.0f || value > 1.0f)
-                {
-                    LogSettingError("FusionFaceWeight", $"OUT OF RANGE (expected 0.0-1.0, got {value})");
-                    return 0.6f; // Default face weight
-                }
-                return value;
-            }
-            catch (Exception ex)
-            {
-                LogSettingError("FusionFaceWeight", $"read FAILED: {ex.Message}");
-                return 0.6f; // Default face weight
-            }
-        }
-
-        /// <summary>
-        /// Save fusion face weight
-        /// </summary>
-        public static void SaveFusionFaceWeight(float weight)
-        {
-            try
-            {
-                var clampedWeight = Math.Max(0.0f, Math.Min(1.0f, weight));
-                SetFloat("FusionFaceWeight", clampedWeight);
-                Console.WriteLine($"Fusion: Face weight set to {clampedWeight:F2}");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"ERROR: Error saving fusion face weight: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Load fusion voice weight (default: 0.4)
-        /// </summary>
-        public static float LoadFusionVoiceWeight()
-        {
-            try
-            {
-                var value = GetFloat("FusionVoiceWeight", 0.4f); // Use default fallback
-                if (value <= 0.0f || value > 1.0f)
-                {
-                    LogSettingError("FusionVoiceWeight", $"OUT OF RANGE (expected 0.0-1.0, got {value})");
-                    return 0.4f; // Default voice weight
-                }
-                return value;
-            }
-            catch (Exception ex)
-            {
-                LogSettingError("FusionVoiceWeight", $"read FAILED: {ex.Message}");
-                return 0.4f; // Default voice weight
-            }
-        }
-
-        /// <summary>
-        /// Save fusion voice weight
-        /// </summary>
-        public static void SaveFusionVoiceWeight(float weight)
-        {
-            try
-            {
-                var clampedWeight = Math.Max(0.0f, Math.Min(1.0f, weight));
-                SetFloat("FusionVoiceWeight", clampedWeight);
-                Console.WriteLine($"Fusion: Voice weight set to {clampedWeight:F2}");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"ERROR: Error saving fusion voice weight: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Load fusion decay half-life in milliseconds (default: 2000ms = 2 seconds)
-        /// </summary>
-        public static int LoadFusionDecayHalfLifeMs()
-        {
-            try
-            {
-                var value = GetInt("FusionDecayHalfLifeMs", 2000); // Use default fallback
-                if (value < 500 || value > 10000)
-                {
-                    LogSettingError("FusionDecayHalfLifeMs", $"OUT OF RANGE (expected 500-10000ms, got {value})");
-                    return 2000; // Default 2 seconds
-                }
-                return value;
-            }
-            catch (Exception ex)
-            {
-                LogSettingError("FusionDecayHalfLifeMs", $"read FAILED: {ex.Message}");
-                return 2000; // Default 2 seconds
-            }
-        }
-
-        /// <summary>
-        /// Save fusion decay half-life in milliseconds
-        /// </summary>
-        public static void SaveFusionDecayHalfLifeMs(int halfLifeMs)
-        {
-            try
-            {
-                var clampedValue = Math.Max(500, Math.Min(10000, halfLifeMs));
-                SetInt("FusionDecayHalfLifeMs", clampedValue);
-                Console.WriteLine($"Fusion: Decay half-life set to {clampedValue}ms");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"ERROR: Error saving fusion decay half-life: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Load fusion unknown threshold (default: 0.3)
-        /// </summary>
-        public static float LoadFusionUnknownThreshold()
-        {
-            try
-            {
-                var value = GetFloat("FusionUnknownThreshold", 0.3f); // Use default fallback
-                if (value < 0.0f || value > 1.0f)
-                {
-                    LogSettingError("FusionUnknownThreshold", $"OUT OF RANGE (expected 0.0-1.0, got {value})");
-                    return 0.3f; // Default threshold
-                }
-                return value;
-            }
-            catch (Exception ex)
-            {
-                LogSettingError("FusionUnknownThreshold", $"read FAILED: {ex.Message}");
-                return 0.3f; // Default threshold
-            }
-        }
-
-        /// <summary>
-        /// Save fusion unknown threshold
-        /// </summary>
-        public static void SaveFusionUnknownThreshold(float threshold)
-        {
-            try
-            {
-                var clampedThreshold = Math.Max(0.0f, Math.Min(1.0f, threshold));
-                SetFloat("FusionUnknownThreshold", clampedThreshold);
-                Console.WriteLine($"Fusion: Unknown threshold set to {clampedThreshold:F2}");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"ERROR: Error saving fusion unknown threshold: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Configure fusion settings all at once
-        /// </summary>
-        public static void ConfigureFusionSettings(float faceWeight = 0.6f, float voiceWeight = 0.4f, int halfLifeMs = 2000, float unknownThreshold = 0.3f)
-        {
-            try
-            {
-                SaveFusionFaceWeight(faceWeight);
-                SaveFusionVoiceWeight(voiceWeight);
-                SaveFusionDecayHalfLifeMs(halfLifeMs);
-                SaveFusionUnknownThreshold(unknownThreshold);
-
-                Console.WriteLine($"🔀 Identity Fusion settings configured:");
-                Console.WriteLine($"   Face weight: {faceWeight:F2}");
-                Console.WriteLine($"   Voice weight: {voiceWeight:F2}");
-                Console.WriteLine($"   Decay half-life: {halfLifeMs}ms");
-                Console.WriteLine($"   Unknown threshold: {unknownThreshold:F2}");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"ERROR: Error configuring fusion settings: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Get fusion settings summary
-        /// </summary>
-        public static string GetFusionSettingsSummary()
-        {
-            try
-            {
-                var faceWeight = LoadFusionFaceWeight();
-                var voiceWeight = LoadFusionVoiceWeight();
-                var halfLifeMs = LoadFusionDecayHalfLifeMs();
-                var unknownThreshold = LoadFusionUnknownThreshold();
-
-                return $"🔀 Identity Fusion Settings:\n" +
-                       $"   Face weight: {faceWeight:F2}\n" +
-                       $"   Voice weight: {voiceWeight:F2}\n" +
-                       $"   Decay half-life: {halfLifeMs}ms\n" +
-                       $"   Unknown threshold: {unknownThreshold:F2}\n" +
-                       $"   Fusion formula: (face*{faceWeight:F1} + voice*{voiceWeight:F1}) / {faceWeight + voiceWeight:F1}\n" +
-                       $"   Time decay: score *= exp(-dt/{halfLifeMs}ms)";
-            }
-            catch (Exception ex)
-            {
-                return $"ERROR: Could not load fusion settings: {ex.Message}";
-            }
-        }
-
-        /// <summary>
-        /// Load audio input mode setting with fallback to LocalMic
-        /// </summary>
-        public static AudioInMode LoadAudioInMode()
-        {
-            try
-            {
-                var modeStr = GetString("AudioInMode", "LocalMic");
-                if (Enum.TryParse<AudioInMode>(modeStr, true, out var mode))
-                {
-                    // Update telemetry counter for current mode
-                    string telemetryMode = mode switch
-                    {
-                        AudioInMode.LocalMic => "local_mic",
-                        AudioInMode.DiscordVoice => "discord_voice",
-                        AudioInMode.SystemLoopback => "system_loopback",
-                        _ => "unknown"
-                    };
-                    Telemetry.Counter($"audio.ingest.mode.{telemetryMode}");
-                    
-                    return mode;
-                }
-                else
-                {
-                    LogSettingError("AudioInMode", $"INVALID VALUE (expected LocalMic|DiscordVoice|SystemLoopback, got '{modeStr}')");
-                    Telemetry.Counter("audio.ingest.mode.local_mic"); // Fallback to local_mic
-                    return AudioInMode.LocalMic;
-                }
-            }
-            catch (Exception ex)
-            {
-                LogSettingError("AudioInMode", $"READ FAILED: {ex.Message}");
-                Telemetry.Counter("audio.ingest.mode.local_mic"); // Fallback to local_mic
-                return AudioInMode.LocalMic;
-            }
-        }
-
-        /// <summary>
-        /// Save audio input mode setting
-        /// </summary>
-        public static void SaveAudioInMode(AudioInMode mode)
-        {
-            try
-            {
-                WriteSettingRaw("AudioInMode", mode.ToString());
-                Console.WriteLine($"🎧 Audio input mode saved: {mode}");
-                
-                // Update telemetry counter for new mode
-                string telemetryMode = mode switch
-                {
-                    AudioInMode.LocalMic => "local_mic",
-                    AudioInMode.DiscordVoice => "discord_voice",
-                    AudioInMode.SystemLoopback => "system_loopback",
-                    _ => "unknown"
-                };
-                Telemetry.Counter($"audio.ingest.mode.{telemetryMode}");
-            }
-            catch (Exception ex)
-            {
-                LogSettingError("AudioInMode", $"SAVE FAILED: {ex.Message}");
-            }
-        }
-        /// <summary>
-        /// Load audio input device ID
-        /// </summary>
-        public static int LoadAudioInputDeviceId()
-        {
-            try
-            {
-                var setting = GetApplicationSetting("AudioInputDeviceId") ?? "-1";
-                return int.TryParse(setting, out int value) ? value : -1;
-            }
-            catch (Exception ex)
-            {
-                LogSettingError("AudioInputDeviceId", ex.Message);
-                return -1;
-            }
-        }
-
-        /// <summary>
-        /// Save audio input device ID
-        /// </summary>
-        public static void SaveAudioInputDeviceId(int deviceId)
-        {
-            try
-            {
-                SetApplicationSetting("AudioInputDeviceId", deviceId.ToString());
-                Console.WriteLine($"💾 Saved audio input device ID: {deviceId}");
-            }
-            catch (Exception ex)
-            {
-                LogSettingError("AudioInputDeviceId", ex.Message);
-            }
-        }
-
-        /// <summary>
-        /// Load audio output device ID
-        /// </summary>
-        public static int LoadAudioOutputDeviceId()
-        {
-            try
-            {
-                var setting = GetApplicationSetting("AudioOutputDeviceId") ?? "-1";
-                return int.TryParse(setting, out int value) ? value : -1;
-            }
-            catch (Exception ex)
-            {
-                LogSettingError("AudioOutputDeviceId", ex.Message);
-                return -1;
-            }
-        }
-
-        /// <summary>
-        /// Save audio output device ID
-        /// </summary>
-        public static void SaveAudioOutputDeviceId(int deviceId)
-        {
-            try
-            {
-                SetApplicationSetting("AudioOutputDeviceId", deviceId.ToString());
-                Console.WriteLine($"💾 Saved audio output device ID: {deviceId}");
-            }
-            catch (Exception ex)
-            {
-                LogSettingError("AudioOutputDeviceId", ex.Message);
-            }
-        }
-
-        /// <summary>
-        /// Load microphone VAD threshold
-        /// </summary>
-        public static int LoadMicVadThreshold()
-        {
-            try
-            {
-                var setting = GetApplicationSetting("MicVadThreshold") ?? "300";
-                return int.TryParse(setting, out int value) ? value : 300;
-            }
-            catch (Exception ex)
-            {
-                LogSettingError("MicVadThreshold", ex.Message);
-                return 300;
-            }
-        }
-
-        /// <summary>
-        /// Save microphone VAD threshold
-        /// </summary>
-        public static void SaveMicVadThreshold(int threshold)
-        {
-            try
-            {
-                SetApplicationSetting("MicVadThreshold", threshold.ToString());
-                Console.WriteLine($"💾 Saved microphone VAD threshold: {threshold}");
-            }
-            catch (Exception ex)
-            {
-                LogSettingError("MicVadThreshold", ex.Message);
-            }
-        }
-
-        /// <summary>
-        /// Load Discord VAD threshold
-        /// </summary>
-        public static int LoadDiscordVadThreshold()
-        {
-            try
-            {
-                var setting = GetApplicationSetting("DiscordVadThreshold") ?? "25";
-                return int.TryParse(setting, out int value) ? value : 25;
-            }
-            catch (Exception ex)
-            {
-                LogSettingError("DiscordVadThreshold", ex.Message);
-                return 25;
-            }
-        }
-
-        /// <summary>
-        /// Save Discord VAD threshold
-        /// </summary>
-        public static void SaveDiscordVadThreshold(int threshold)
-        {
-            try
-            {
-                SetApplicationSetting("DiscordVadThreshold", threshold.ToString());
-                Console.WriteLine($"💾 Saved Discord VAD threshold: {threshold}");
-            }
-            catch (Exception ex)
-            {
-                LogSettingError("DiscordVadThreshold", ex.Message);
-            }
-        }
-
     }
 }

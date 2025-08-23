@@ -2,6 +2,7 @@
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Threading;
+using Kinectv1.Discord;
 
 namespace Kinectv1
 {
@@ -38,7 +39,11 @@ namespace Kinectv1
 
             try
             {
-                // Initialize application-wide settings early
+                // Validate and clamp all settings as early as possible
+                Console.WriteLine("⚙️ Validating app settings...");
+                AppSettings.ValidateAll();
+
+                // Initialize application-wide settings and print summaries
                 Console.WriteLine("⚙️ Initializing app settings...");
                 AppSettings.InitializeSettingsOnStartup();
                 Console.WriteLine("✅ App settings initialized successfully");
@@ -158,8 +163,8 @@ namespace Kinectv1
                 {
                     try 
                     { 
-                        var stopTask = ServicesManager.StopAllAsync(TimeSpan.FromSeconds(5)); // Reduced timeout
-                        bool completed = stopTask.Wait(6000); // 6s timeout for final cleanup
+                        var stopTask = ServicesManager.StopAllAsync(TimeSpan.FromSeconds(3)); // Global 3s timeout
+                        bool completed = stopTask.Wait(3500); // Slightly above 3s for final cleanup
                         
                         if (completed)
                         {
@@ -175,6 +180,18 @@ namespace Kinectv1
                     { 
                         Console.WriteLine($"⚠️ Hosted services stop error: {ex.Message}"); 
                     }
+                }
+
+                // Explicitly leave all Discord voice channels and dispose client
+                try 
+                { 
+                    DiscordNetBotManager.LeaveAllVoice();
+                    var shutdownTask = DiscordNetBotManager.ShutdownAsync();
+                    shutdownTask.Wait(2000); // short timeout for disposal
+                } 
+                catch (Exception ex) 
+                { 
+                    Console.WriteLine($"⚠️ Discord final shutdown error: {ex.Message}");
                 }
 
                 // Stop remaining services not yet converted to hosted services

@@ -13,6 +13,7 @@ namespace Kinectv1
     {
         private static readonly object _lock = new object();
         private static CancellationTokenSource _currentCts;
+        private static Task _currentTask = Task.CompletedTask;
         private static string _currentUtteranceId;
         private static int _utteranceCounter = 0;
 
@@ -29,7 +30,7 @@ namespace Kinectv1
             { 
                 lock (_lock)
                 {
-                    return _currentCts != null && !_currentCts.IsCancellationRequested;
+                    return _currentCts != null && !_currentCts.IsCancellationRequested && _currentTask != null && !_currentTask.IsCompleted;
                 }
             } 
         }
@@ -59,69 +60,76 @@ namespace Kinectv1
         public event Action OnPlaybackStop;
 
         /// <summary>
-        /// Start a new utterance, canceling any current utterance immediately.
+        /// Start a new utterance, canceling any current utterance immediately. Waits briefly for
+        /// the previous playback to stop (device release) before starting the next.
         /// </summary>
-        /// <param name="text">Text to speak</param>
-        /// <param name="speaker">Speaker voice to use</param>
-        /// <param name="speechFunc">Function to perform the actual speech synthesis and playback</param>
-        /// <returns>Task that completes when utterance finishes or is canceled</returns>
         public static async Task<bool> StartUtterance(string text, string speaker, Func<string, string, CancellationToken, Task<bool>> speechFunc)
         {
             if (string.IsNullOrWhiteSpace(text) || speechFunc == null)
                 return false;
 
-            string utteranceId;
-            CancellationToken token;
-            bool wasAlreadySpeaking;
+            // Prepare a new CTS and swap it in atomically
+            var newCts = new CancellationTokenSource();
+            var oldCts = Interlocked.Exchange(ref _currentCts, newCts);
 
+            // Snapshot and cancel previous
+            Task prevTask;
             lock (_lock)
             {
-                wasAlreadySpeaking = _currentCts != null && !_currentCts.IsCancellationRequested;
-                
-                // Cancel any existing utterance
-                _currentCts?.Cancel();
-                _currentCts?.Dispose();
+                prevTask = _currentTask;
+            }
+            try { oldCts?.Cancel(); } catch { }
 
-                // Create new utterance with unique ID
+            // Await previous playback to stop and release the device (short cap)
+            if (prevTask != null && !prevTask.IsCompleted)
+            {
+                try { await Task.WhenAny(prevTask, Task.Delay(500)).ConfigureAwait(false); } catch { }
+            }
+
+            // Dispose old CTS after cancellation
+            try { oldCts?.Dispose(); } catch { }
+
+            // Create new utterance id
+            string utteranceId;
+            lock (_lock)
+            {
                 _utteranceCounter++;
                 utteranceId = $"utterance_{_utteranceCounter}";
                 _currentUtteranceId = utteranceId;
-                _currentCts = new CancellationTokenSource();
-                token = _currentCts.Token;
             }
 
-            // Raise playback start event if we weren't already speaking
-            if (!wasAlreadySpeaking)
+            // Raise playback start
+            try
             {
-                try
-                {
-                    _instance.OnPlaybackStart?.Invoke();
-                    Telemetry.Gauge("tts.active", 1);
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"[TtsPlaybackController] Error raising OnPlaybackStart: {ex.Message}");
-                }
+                _instance.OnPlaybackStart?.Invoke();
+                Telemetry.Gauge("tts.active", 1);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[TtsPlaybackController] Error raising OnPlaybackStart: {ex.Message}");
+            }
+
+            // Start new playback and track task
+            Task<bool> playTask;
+            lock (_lock)
+            {
+                playTask = speechFunc(text, speaker, newCts.Token);
+                _currentTask = playTask;
             }
 
             try
             {
                 Console.WriteLine($"[TtsPlaybackController] Starting utterance: {utteranceId}");
-                var result = await speechFunc(text, speaker, token);
-                
+                var result = await playTask.ConfigureAwait(false);
+
                 lock (_lock)
                 {
-                    // Only log completion if this utterance wasn't superseded
                     if (_currentUtteranceId == utteranceId)
-                    {
                         Console.WriteLine($"[TtsPlaybackController] Completed utterance: {utteranceId}");
-                    }
                     else
-                    {
                         Console.WriteLine($"[TtsPlaybackController] Utterance {utteranceId} was superseded");
-                    }
                 }
-                
+
                 return result;
             }
             catch (OperationCanceledException)
@@ -136,25 +144,28 @@ namespace Kinectv1
             }
             finally
             {
+                // Clear current if still ours; dispose CTS and raise stop
+                bool raiseStop = false;
                 lock (_lock)
                 {
-                    // Clean up if this was the current utterance
                     if (_currentUtteranceId == utteranceId)
                     {
-                        _currentCts?.Dispose();
+                        try { _currentCts?.Dispose(); } catch { }
                         _currentCts = null;
                         _currentUtteranceId = null;
-                        
-                        // Raise playback stop event
-                        try
-                        {
-                            _instance.OnPlaybackStop?.Invoke();
-                            Telemetry.Gauge("tts.active", 0);
-                        }
-                        catch (Exception ex)
-                        {
-                            Console.WriteLine($"[TtsPlaybackController] Error raising OnPlaybackStop: {ex.Message}");
-                        }
+                        raiseStop = true;
+                    }
+                }
+                if (raiseStop)
+                {
+                    try
+                    {
+                        _instance.OnPlaybackStop?.Invoke();
+                        Telemetry.Gauge("tts.active", 0);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[TtsPlaybackController] Error raising OnPlaybackStop: {ex.Message}");
                     }
                 }
             }
@@ -165,16 +176,9 @@ namespace Kinectv1
         /// </summary>
         public static void CancelCurrent()
         {
-            lock (_lock)
-            {
-                if (_currentCts != null && !_currentCts.IsCancellationRequested)
-                {
-                    Console.WriteLine($"[TtsPlaybackController] Canceling current utterance: {_currentUtteranceId}");
-                    _currentCts.Cancel();
-                    
-                    // The OnPlaybackStop event will be raised in the finally block of StartUtterance
-                }
-            }
+            var cts = _currentCts;
+            try { cts?.Cancel(); } catch { }
+            // Stop event will be raised by StartUtterance finally when it unwinds
         }
 
         /// <summary>
@@ -182,10 +186,12 @@ namespace Kinectv1
         /// </summary>
         public static bool HasActiveUtterance()
         {
+            Task t;
             lock (_lock)
             {
-                return _currentCts != null && !_currentCts.IsCancellationRequested;
+                t = _currentTask;
             }
+            return t != null && !t.IsCompleted;
         }
 
         /// <summary>

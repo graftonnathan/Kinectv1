@@ -85,6 +85,9 @@ namespace Kinectv1
             // Load configurable VAD settings
             var silenceTimeoutMs = AppSettings.LoadVadSilenceTimeoutMs();
             var debounceTimeoutMs = AppSettings.LoadVadDebounceTimeoutMs();
+            // Clamp to sane bounds: debounce 50–400ms; silence 400–2000ms
+            silenceTimeoutMs = Math.Max(400, Math.Min(2000, silenceTimeoutMs));
+            debounceTimeoutMs = Math.Max(50, Math.Min(400, debounceTimeoutMs));
             _silenceTimeout = TimeSpan.FromMilliseconds(silenceTimeoutMs);
             _vadDebounceTimeout = TimeSpan.FromMilliseconds(debounceTimeoutMs);
             
@@ -599,6 +602,7 @@ namespace Kinectv1
         private void ProcessHighConfidenceResult(VoskResult result)
         {
             string text = result.Text.Trim();
+            text = PostProcess(text);
             _onTranscription?.Invoke(text);
             TriggerHandler.TryTrigger(text, _triggerName);
             _lastTranscription = text;
@@ -779,6 +783,7 @@ namespace Kinectv1
             using (var scope = Telemetry.LatencyScope("asr_final"))
             {
                 string text = result.Text.Trim();
+                text = PostProcess(text);
                 _onTranscription?.Invoke(text);
                 TriggerHandler.TryTrigger(text, _triggerName);
                 _lastTranscription = text;
@@ -833,6 +838,34 @@ namespace Kinectv1
                     }
                 }
             }
+        }
+
+        // Lightweight conservative post-processor for common mishears
+        private string PostProcess(string text)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(text)) return text;
+                var trimmed = text.Trim();
+                var lower = trimmed.ToLowerInvariant();
+
+                // Sentence-initial "the" -> "I" only when next token is a first-person verb
+                // e.g., "the think" -> "I think", "the am" -> "I am"
+                if (lower.StartsWith("the "))
+                {
+                    var rest = trimmed.Substring(4); // after "the "
+                    var nextTokenEnd = rest.IndexOf(' ');
+                    var nextToken = nextTokenEnd >= 0 ? rest.Substring(0, nextTokenEnd) : rest;
+                    var verb = nextToken.ToLowerInvariant();
+                    if (verb == "think" || verb == "am" || verb == "feel" || verb == "guess")
+                    {
+                        return "I " + rest;
+                    }
+                }
+
+                return trimmed;
+            }
+            catch { return text; }
         }
 
         /// <summary>

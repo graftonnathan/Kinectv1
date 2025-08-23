@@ -81,6 +81,7 @@ namespace Kinectv1
                 // Load STT settings
                 SttModelPathTextBox.Text = AppSettings.LoadSttModelPath() ?? "";
                 SpeakerModelPathTextBox.Text = AppSettings.LoadSpeakerEmbeddingModelPath() ?? "";
+                ArcFaceModelPathTextBox.Text = AppSettings.LoadArcFaceModelPath() ?? "";
 
                 UpdateStatus("Settings loaded successfully", false);
             }
@@ -178,6 +179,23 @@ namespace Kinectv1
             }
         }
 
+        private void BrowseArcFaceModelButton_Click(object sender, RoutedEventArgs e)
+        {
+            var dialog = new OpenFileDialog
+            {
+                Title = "Select ArcFace ONNX Model",
+                Filter = "ONNX Models (*.onnx)|*.onnx|All Files (*.*)|*.*",
+                CheckFileExists = true,
+                InitialDirectory = GetInitialDirectory(ArcFaceModelPathTextBox.Text)
+            };
+
+            if (dialog.ShowDialog() == true)
+            {
+                ArcFaceModelPathTextBox.Text = dialog.FileName;
+                UpdateStatus($"ArcFace model selected: {Path.GetFileName(dialog.FileName)}", false);
+            }
+        }
+
         /// <summary>
         /// Handle TTS voice selection change
         /// </summary>
@@ -252,73 +270,41 @@ namespace Kinectv1
                 string ttsModelPath = TtsModelPathTextBox.Text;
                 if (!string.IsNullOrWhiteSpace(ttsModelPath))
                 {
-                    if (File.Exists(ttsModelPath))
-                    {
-                        validationResults.Add("✅ TTS model file exists");
-                    }
-                    else
-                    {
-                        validationResults.Add("❌ TTS model file not found");
-                    }
+                    validationResults.Add(File.Exists(ttsModelPath) ? "✅ TTS model file exists" : "❌ TTS model file not found");
                 }
-                else
-                {
-                    validationResults.Add("⚠️ TTS model path not configured");
-                }
+                else validationResults.Add("⚠️ TTS model path not configured");
 
                 // Validate TTS model folder
                 string ttsModelFolder = TtsModelFolderTextBox.Text;
                 if (!string.IsNullOrWhiteSpace(ttsModelFolder))
                 {
-                    if (Directory.Exists(ttsModelFolder))
-                    {
-                        validationResults.Add("✅ TTS model folder exists");
-                    }
-                    else
-                    {
-                        validationResults.Add("❌ TTS model folder not found");
-                    }
+                    validationResults.Add(Directory.Exists(ttsModelFolder) ? "✅ TTS model folder exists" : "❌ TTS model folder not found");
                 }
-                else
-                {
-                    validationResults.Add("⚠️ TTS model folder not configured");
-                }
+                else validationResults.Add("⚠️ TTS model folder not configured");
 
                 // Validate STT model path
                 string sttModelPath = SttModelPathTextBox.Text;
                 if (!string.IsNullOrWhiteSpace(sttModelPath))
                 {
-                    if (Directory.Exists(sttModelPath))
-                    {
-                        validationResults.Add("✅ STT model directory exists");
-                    }
-                    else
-                    {
-                        validationResults.Add("❌ STT model directory not found");
-                    }
+                    validationResults.Add(Directory.Exists(sttModelPath) ? "✅ STT model directory exists" : "❌ STT model directory not found");
                 }
-                else
-                {
-                    validationResults.Add("⚠️ STT model path not configured");
-                }
+                else validationResults.Add("⚠️ STT model path not configured");
 
                 // Validate speaker model path
                 string speakerModelPath = SpeakerModelPathTextBox.Text;
                 if (!string.IsNullOrWhiteSpace(speakerModelPath))
                 {
-                    if (File.Exists(speakerModelPath))
-                    {
-                        validationResults.Add("✅ Speaker model file exists");
-                    }
-                    else
-                    {
-                        validationResults.Add("❌ Speaker model file not found");
-                    }
+                    validationResults.Add(File.Exists(speakerModelPath) ? "✅ Speaker model file exists" : "❌ Speaker model file not found");
                 }
-                else
+                else validationResults.Add("⚠️ Speaker model path not configured");
+
+                // Validate ArcFace model path
+                string arcPath = ArcFaceModelPathTextBox.Text;
+                if (!string.IsNullOrWhiteSpace(arcPath))
                 {
-                    validationResults.Add("⚠️ Speaker model path not configured");
+                    validationResults.Add(File.Exists(arcPath) ? "✅ ArcFace model file exists" : "❌ ArcFace model file not found");
                 }
+                else validationResults.Add("⚠️ ArcFace model path not configured");
 
                 string result = string.Join("\n", validationResults);
                 bool hasErrors = validationResults.Any(r => r.Contains("❌"));
@@ -360,6 +346,7 @@ namespace Kinectv1
                 // Save STT settings
                 AppSettings.SaveSttModelPath(SttModelPathTextBox.Text);
                 AppSettings.SaveSpeakerEmbeddingModelPath(SpeakerModelPathTextBox.Text);
+                AppSettings.SaveArcFaceModelPath(ArcFaceModelPathTextBox.Text);
 
                 UpdateStatus("All settings saved successfully!", false);
                 

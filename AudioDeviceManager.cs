@@ -404,67 +404,80 @@ namespace Kinectv1
 
                 // Peak normalization to prevent clipping/distortion
                 float peak = 0f;
-                for (int i = 0; i < audio.Length; i++)
-                {
-                    var a = Math.Abs(audio[i]);
-                    if (a > peak) peak = a;
-                }
+                for (int i = 0; i < audio.Length; i++) { var a = Math.Abs(audio[i]); if (a > peak) peak = a; }
                 float targetPeak = 0.98f;
                 float gain = (peak > 0f && peak > targetPeak) ? (targetPeak / peak) : 1.0f;
 
                 var pcm = new short[audio.Length];
-                for (int i = 0; i < audio.Length; i++)
-                {
-                    var x = Math.Max(-1.0f, Math.Min(1.0f, audio[i] * gain));
-                    pcm[i] = (short)(x * 32767);
-                }
+                for (int i = 0; i < audio.Length; i++) { var x = Math.Max(-1.0f, Math.Min(1.0f, audio[i] * gain)); pcm[i] = (short)(x * 32767); }
 
                 cancellationToken.ThrowIfCancellationRequested();
 
                 var waveFormat = new WaveFormat(sampleRate, 16, 1);
                 var deviceNumber = GetConfiguredOutputDeviceNumberFast() ?? -1; // -1 uses default device
-                var msDur = (int)Math.Ceiling(1000.0 * audio.Length / sampleRate) + 200;
+
+                // Build preroll + program buffer
+                int prerollMs = 80; // 50–100ms recommended; tune here
+                int prerollSamples = (int)(sampleRate * (prerollMs / 1000.0));
+                int prerollBytes = Math.Max(0, prerollSamples) * 2; // 16-bit mono
+                var programBytes = new byte[pcm.Length * 2];
+                Buffer.BlockCopy(pcm, 0, programBytes, 0, programBytes.Length);
+                var combined = new byte[prerollBytes + programBytes.Length]; // preroll zeros are default-initialized
+                Buffer.BlockCopy(programBytes, 0, combined, prerollBytes, programBytes.Length);
+
+                // Duration estimate for wait loop
+                var msDur = (int)Math.Ceiling(1000.0 * (prerollSamples + pcm.Length) / sampleRate) + 100;
 
                 await Task.Run(() =>
                 {
                     cancellationToken.ThrowIfCancellationRequested();
 
-                    // Create byte buffer once to avoid BinaryWriter closing the stream
-                    var bytes = new byte[pcm.Length * 2];
-                    Buffer.BlockCopy(pcm, 0, bytes, 0, bytes.Length);
-
-                    using var ms = new MemoryStream(bytes, writable: false);
+                    using var ms = new MemoryStream(combined, writable: false);
                     using var rss = new RawSourceWaveStream(ms, waveFormat);
-                    using var waveOut = new WaveOutEvent();
-                    if (deviceNumber >= 0) waveOut.DeviceNumber = deviceNumber;
-                    waveOut.Volume = (float)AppSettings.LoadLocalTtsVolume();
-                    waveOut.Init(rss);
-                    waveOut.Play();
-
-                    // Wait with cancellation support - poll in smaller intervals and stop immediately on cancellation
-                    var totalWaitMs = Math.Min(msDur, 30000);
-                    var pollIntervalMs = 50; // Reduced interval for more responsive cancellation
-                    var elapsed = 0;
-                    
-                    while (elapsed < totalWaitMs && !cancellationToken.IsCancellationRequested)
+                    WaveOutEvent waveOut = null;
+                    try
                     {
-                        var waitMs = Math.Min(pollIntervalMs, totalWaitMs - elapsed);
-                        Task.Delay(waitMs).GetAwaiter().GetResult();
-                        elapsed += waitMs;
-                    }
+                        waveOut = new WaveOutEvent
+                        {
+                            DesiredLatency = 100 // 80–120 ms recommended; tune for your device
+                        };
+                        if (deviceNumber >= 0) waveOut.DeviceNumber = deviceNumber;
+                        waveOut.Volume = (float)AppSettings.LoadLocalTtsVolume();
+                        waveOut.Init(rss);
+                        waveOut.Play();
 
-                    // Immediately stop audio playback on cancellation to flush buffers and release device
-                    if (cancellationToken.IsCancellationRequested)
+                        // Wait with cancellation support
+                        var totalWaitMs = Math.Min(msDur, 30000);
+                        var pollIntervalMs = 20; // tighter polling for responsive barge-in
+                        var elapsed = 0;
+                        
+                        while (elapsed < totalWaitMs && !cancellationToken.IsCancellationRequested)
+                        {
+                            Task.Delay(pollIntervalMs).GetAwaiter().GetResult();
+                            elapsed += pollIntervalMs;
+
+                            // Early exit if playback completed
+                            if (waveOut.PlaybackState != PlaybackState.Playing)
+                                break;
+                        }
+
+                        if (cancellationToken.IsCancellationRequested)
+                        {
+                            try { waveOut.Stop(); } catch { }
+                        }
+
+                        cancellationToken.ThrowIfCancellationRequested();
+                    }
+                    finally
                     {
-                        waveOut.Stop();
+                        try { waveOut?.Stop(); } catch { }
+                        try { waveOut?.Dispose(); } catch { }
                     }
-
-                    cancellationToken.ThrowIfCancellationRequested();
                 }, cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
-                // Clean cancellation - just rethrow
+                // Clean cancellation - swallow after ensuring cleanup
                 throw;
             }
             catch (Exception ex)
