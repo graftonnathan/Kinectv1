@@ -928,7 +928,11 @@ namespace Kinectv1
                 bool success = false;
                 if (ShouldPlayLocalTts())
                 {
-                    success = await CoquiTtsService.SpeakAsync(testText, currentSpeakerRefId);
+                    success = await TtsPlaybackController.StartUtterance(
+                        testText,
+                        currentSpeakerRefId,
+                        (t, s, ct) => CoquiTtsService.SpeakAsync(t, s, ct)
+                    );
                 }
                 else if (ShouldSendDiscordTts())
                 {
@@ -1228,7 +1232,7 @@ namespace Kinectv1
                     Dispatcher.Invoke(() =>
                     {
                         InitializeOllamaModels();
-                        OllamaStatusText.Text = "🤖 Ollama: Connection failed (using defaults)";
+                        OllamaStatusText.Text = "🤖 Olloma: Connection failed (using defaults)";
                         OllamaModelComboBox.IsEnabled = true;
                     });
                 }
@@ -1439,36 +1443,21 @@ namespace Kinectv1
         {
             try
             {
-                // Route TTS per rules to avoid echo/feedback
-                if (ShouldPlayLocalTts())
-                {
-                    var currentSpeaker = GetCurrentTtsSpeakerRefId();
-                    _ = Task.Run(async () =>
-                    {
-                        try { await CoquiTtsService.SpeakWithPreemptionAsync(response, currentSpeaker); }
-                        catch (Exception ex) { Console.WriteLine($"TTS speak failed: {ex.Message}"); }
-                    });
-                }
-                else if (ShouldSendDiscordTts())
-                {
-                    _ = Task.Run(async () =>
-                    {
-                        try { await DiscordNetBotManager.SendTtsToDiscordAsync(response, GetCurrentTtsSpeakerRefId()); }
-                        catch (Exception ex) { Console.WriteLine($"Discord TTS failed: {ex.Message}"); }
-                    });
-                }
-                else
-                {
-                    Console.WriteLine("🔇 TTS suppressed due to ingest routing (prevent echo)");
-                }
-
                 Dispatcher.Invoke(() =>
                 {
                     if (OllamaResponseBox != null) OllamaResponseBox.Text = response;
                     if (OllamaStatusText != null) OllamaStatusText.Text = "🤖 Ollama: Ready";
                 });
+
+                // Speak via preemption controller (local TTS)
+                var speaker = AppSettings.LoadTtsSpeaker();
+                _ = TtsPlaybackController.StartUtterance(
+                    response,
+                    speaker,
+                    (text, spk, ct) => CoquiTtsService.SpeakAsync(text, spk, ct)
+                );
             }
-            catch { }
+            catch { /* swallow */ }
         }
 
         private void OnOllamaError(string error)

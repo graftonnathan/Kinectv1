@@ -3,14 +3,12 @@ Write-Host "?? Downloading FRESH Discord.Net native audio libraries from GitHub.
 Write-Host "?? This will replace any existing/corrupted libraries"
 
 # Create directories
-$libsDir = "libs"
-$nativeDir = "native-libs"
 $tempDir = "temp-discord-natives"
 
 # Ensure directories exist
-@($libsDir, $nativeDir, $tempDir) | ForEach-Object {
+@($tempDir) | ForEach-Object {
     if (!(Test-Path $_)) {
-        New-Item -ItemType Directory -Path $_ -Force
+        New-Item -ItemType Directory -Path $_ -Force | Out-Null
         Write-Host "?? Created directory: $_"
     }
 }
@@ -37,29 +35,20 @@ try {
     }
     
     # Verify ZIP file was downloaded
-    if (!(Test-Path $zipFile)) {
-        throw "ZIP file download verification failed - file not found"
-    }
-    
+    if (!(Test-Path $zipFile)) { throw "ZIP file download verification failed - file not found" }
     $zipFileInfo = Get-Item $zipFile
     Write-Host "?? Downloaded ZIP size: $($zipFileInfo.Length) bytes"
-    
-    if ($zipFileInfo.Length -lt 100000) {
-        throw "ZIP file seems too small - possible download corruption"
-    }
+    if ($zipFileInfo.Length -lt 100000) { throw "ZIP file seems too small - possible download corruption" }
     
     # Extract the ZIP file
     Write-Host "?? Extracting native libraries from ZIP..."
     try {
-        # Use .NET classes for ZIP extraction (PowerShell 5.0+)
         Add-Type -AssemblyName System.IO.Compression.FileSystem
         [System.IO.Compression.ZipFile]::ExtractToDirectory($zipFile, $tempDir)
         Write-Host "? ZIP file extracted successfully"
     } catch {
         Write-Host "? Error extracting ZIP: $($_.Exception.Message)"
         Write-Host "?? Trying alternative extraction method..."
-        
-        # Try using Expand-Archive cmdlet as fallback
         Expand-Archive -Path $zipFile -DestinationPath $tempDir -Force
         Write-Host "? ZIP file extracted successfully (alternative method)"
     }
@@ -74,12 +63,8 @@ try {
     $libopusFile = $extractedFiles | Where-Object { $_.Name -eq "libopus.dll" } | Select-Object -First 1
     $libsodiumFile = $extractedFiles | Where-Object { $_.Name -eq "libsodium.dll" } | Select-Object -First 1
     
-    if (!$libopusFile) {
-        throw "libopus.dll not found in extracted files"
-    }
-    if (!$libsodiumFile) {
-        throw "libsodium.dll not found in extracted files"
-    }
+    if (!$libopusFile) { throw "libopus.dll not found in extracted files" }
+    if (!$libsodiumFile) { throw "libsodium.dll not found in extracted files" }
     
     Write-Host "? Found libopus.dll: $($libopusFile.FullName)"
     Write-Host "? Found libsodium.dll: $($libsodiumFile.FullName)"
@@ -89,83 +74,42 @@ try {
     Write-Host "?? Verifying extracted file integrity..."
     Write-Host "?? libopus.dll size: $($libopusFile.Length) bytes"
     Write-Host "?? libsodium.dll size: $($libsodiumFile.Length) bytes"
-    
-    if ($libopusFile.Length -lt 400000) {
-        Write-Host "?? WARNING: libopus.dll seems smaller than expected"
-    } else {
-        Write-Host "? libopus.dll size verification passed"
-    }
-    
-    if ($libsodiumFile.Length -lt 400000) {
-        Write-Host "?? WARNING: libsodium.dll seems smaller than expected"
-    } else {
-        Write-Host "? libsodium.dll size verification passed"
-    }
-    
-    # Copy to libs directory (rename libopus.dll to opus.dll for Discord.Net compatibility)
-    Write-Host ""
-    Write-Host "?? Copying fresh libraries to libs directory..."
-    Copy-Item $libopusFile.FullName "$libsDir\opus.dll" -Force
-    Copy-Item $libsodiumFile.FullName "$libsDir\libsodium.dll" -Force
-    Write-Host "? Fresh libraries copied to $libsDir"
-    Write-Host "   ?? libopus.dll ? opus.dll (renamed for Discord.Net compatibility)"
-    Write-Host "   ?? libsodium.dll ? libsodium.dll"
-    
-    # Also copy to native-libs directory for backup
-    Copy-Item $libopusFile.FullName "$nativeDir\opus.dll" -Force
-    Copy-Item $libsodiumFile.FullName "$nativeDir\libsodium.dll" -Force
-    Write-Host "? Backup copies created in $nativeDir"
-    
-    # Remove old corrupted files from lib directory if they exist
-    if (Test-Path "lib\libopus.dll") {
-        Remove-Item "lib\libopus.dll" -Force
-        Write-Host "??? Removed old lib\libopus.dll"
-    }
-    if (Test-Path "lib\libsodium.dll") {
-        Remove-Item "lib\libsodium.dll" -Force
-        Write-Host "??? Removed old lib\libsodium.dll"
-    }
+    if ($libopusFile.Length -lt 400000) { Write-Host "?? WARNING: libopus.dll seems smaller than expected" } else { Write-Host "? libopus.dll size verification passed" }
+    if ($libsodiumFile.Length -lt 400000) { Write-Host "?? WARNING: libsodium.dll seems smaller than expected" } else { Write-Host "? libsodium.dll size verification passed" }
     
     # Copy to output directory (x64 Debug only as requested)
     Write-Host ""
     Write-Host "?? Installing to output directories..."
-    
     $outputDirs = @("bin\x64\Debug\net481")
     foreach ($dir in $outputDirs) {
-        if (!(Test-Path $dir)) {
-            New-Item -ItemType Directory -Path $dir -Force | Out-Null
-        }
-        # Copy with correct names for Discord.Net (opus.dll, not libopus.dll)
-        Copy-Item "$libsDir\opus.dll" "$dir\opus.dll" -Force
-        Copy-Item "$libsDir\libsodium.dll" "$dir\libsodium.dll" -Force
+        if (!(Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        Copy-Item $libopusFile.FullName "$dir\opus.dll" -Force   # rename libopus.dll -> opus.dll
+        Copy-Item $libsodiumFile.FullName "$dir\libsodium.dll" -Force
         Write-Host "? Installed to $dir"
     }
     
     # Final verification of installed files
     Write-Host ""
     Write-Host "?? Final verification of installed files..."
-    
-    $finalOpusFile = Get-Item "$libsDir\opus.dll"
-    $finalLibsodiumFile = Get-Item "$libsDir\libsodium.dll"
-    
-    Write-Host "?? Final file verification:"
-    Write-Host "   opus.dll: $($finalOpusFile.Length) bytes ?"
-    Write-Host "   libsodium.dll: $($finalLibsodiumFile.Length) bytes ?"
+    foreach ($dir in $outputDirs) {
+        $finalOpusFile = Get-Item "$dir\opus.dll"
+        $finalLibsodiumFile = Get-Item "$dir\libsodium.dll"
+        Write-Host "?? Final file verification for $dir:"
+        Write-Host "   opus.dll: $($finalOpusFile.Length) bytes ?"
+        Write-Host "   libsodium.dll: $($finalLibsodiumFile.Length) bytes ?"
+    }
     
     Write-Host ""
     Write-Host "?? Fresh Discord.Net native libraries installed successfully!"
     Write-Host ""
     Write-Host "?? Files installed:"
-    Write-Host "   ?? libs\opus.dll (from libopus.dll - renamed for compatibility)"
-    Write-Host "   ?? libs\libsodium.dll"
-    Write-Host "   ?? bin\x64\Debug\net481\*.dll"
-    Write-Host "   ?? native-libs\* (backup copies)"
+    Write-Host "   ?? bin\x64\Debug\net481\opus.dll"
+    Write-Host "   ?? bin\x64\Debug\net481\libsodium.dll"
 
     Write-Host ""
     Write-Host "? Key notes:"
     Write-Host "   ?? Downloaded from official Discord.Net ZIP package"
     Write-Host "   ?? Proper renaming: libopus.dll ? opus.dll (Discord.Net expects 'opus.dll')"
-    Write-Host "   ??? Removed any old/corrupted files from lib directory"
     Write-Host "   ?? Installed to x64 Debug output only"
     Write-Host "   ?? File integrity verification at each step"
     Write-Host "   ?? Automatic extraction from official ZIP package"
@@ -195,8 +139,6 @@ try {
     Write-Host "   2. Extract libopus.dll and libsodium.dll"
     Write-Host "   3. Rename libopus.dll to opus.dll"
     Write-Host "   4. Place them in:"
-    Write-Host "      - libs\opus.dll (renamed from libopus.dll)"
-    Write-Host "      - libs\libsodium.dll"
     Write-Host "      - bin\x64\Debug\net481\opus.dll"
     Write-Host "      - bin\x64\Debug\net481\libsodium.dll"
     Write-Host ""
@@ -204,11 +146,7 @@ try {
 } finally {
     # Clean up temporary files
     if (Test-Path $tempDir) {
-        try {
-            Remove-Item $tempDir -Recurse -Force
-            Write-Host "?? Cleaned up temporary files"
-        } catch {
-            Write-Host "?? Could not clean up temporary directory: $tempDir"
-        }
+        try { Remove-Item $tempDir -Recurse -Force; Write-Host "?? Cleaned up temporary files" }
+        catch { Write-Host "?? Could not clean up temporary directory: $tempDir" }
     }
 }

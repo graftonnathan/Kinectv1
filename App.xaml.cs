@@ -3,6 +3,7 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Threading;
 using Kinectv1.Discord;
+using System.IO;
 
 namespace Kinectv1
 {
@@ -48,6 +49,9 @@ namespace Kinectv1
                 AppSettings.InitializeSettingsOnStartup();
                 Console.WriteLine("✅ App settings initialized successfully");
 
+                // Perform lightweight startup self-checks for critical resources
+                SelfCheckCriticalResources();
+
                 // Initialize telemetry system
                 Console.WriteLine("📊 Initializing telemetry...");
                 Telemetry.RefreshSettings();
@@ -67,6 +71,98 @@ namespace Kinectv1
                 Console.WriteLine($"❌ Startup error: {ex.Message}");
                 MessageBox.Show($"Application failed to start:\n{ex.Message}", "Startup Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 Shutdown();
+            }
+        }
+
+        private void SelfCheckCriticalResources()
+        {
+            try
+            {
+                var baseDir = AppDomain.CurrentDomain.BaseDirectory;
+
+                // STT (Vosk) model directory presence
+                try
+                {
+                    var sttDir = AppSettings.LoadSttModelPath();
+                    if (!string.IsNullOrWhiteSpace(sttDir))
+                    {
+                        var sttFull = Path.IsPathRooted(sttDir) ? sttDir : Path.Combine(baseDir, sttDir);
+                        if (!Directory.Exists(sttFull))
+                        {
+                            Console.WriteLine($"⚠️ STT model directory not found: {sttFull} (Vosk)");
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"⚠️ STT self-check failed: {ex.Message}");
+                }
+
+                // TTS (Kokoro) ONNX model presence
+                try
+                {
+                    var ttsModel = AppSettings.LoadTtsModelPath();
+                    if (!string.IsNullOrWhiteSpace(ttsModel))
+                    {
+                        var ttsFull = Path.IsPathRooted(ttsModel) ? ttsModel : Path.Combine(baseDir, ttsModel);
+                        if (!File.Exists(ttsFull))
+                        {
+                            Console.WriteLine($"⚠️ TTS model not found: {ttsFull} (Kokoro ONNX)");
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"⚠️ TTS self-check failed: {ex.Message}");
+                }
+
+                // Face (ArcFace) ONNX model presence
+                try
+                {
+                    var arc = AppSettings.LoadArcFaceModelPath();
+                    if (!string.IsNullOrWhiteSpace(arc))
+                    {
+                        var arcFull = Path.IsPathRooted(arc) ? arc : Path.Combine(baseDir, arc);
+                        if (!File.Exists(arcFull))
+                        {
+                            Console.WriteLine($"⚠️ Face model not found: {arcFull} (ArcFace ONNX)");
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"⚠️ Face model self-check failed: {ex.Message}");
+                }
+
+                // Audio device sanity: ensure configured output exists else fall back to Default
+                try
+                {
+                    var configuredOutput = AppSettings.LoadTtsOutputDevice();
+                    if (!string.IsNullOrWhiteSpace(configuredOutput) && !string.Equals(configuredOutput, "Default", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var exists = false;
+                        try
+                        {
+                            var outputs = AudioDeviceManager.GetOutputDevices();
+                            exists = outputs?.Exists(d => string.Equals(d.DeviceName, configuredOutput, StringComparison.OrdinalIgnoreCase)) == true;
+                        }
+                        catch { /* device enumeration failure should not crash app */ }
+
+                        if (!exists)
+                        {
+                            Console.WriteLine($"🔊 TTS output device '{configuredOutput}' not found. Falling back to Default.");
+                            AppSettings.SaveTtsOutputDevice("Default");
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"⚠️ Audio output self-check failed: {ex.Message}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"⚠️ Startup self-check encountered an error: {ex.Message}");
             }
         }
 
@@ -101,34 +197,49 @@ namespace Kinectv1
                         ServicesManager.RegisterService(voiceService);
                     }
 
-                    // Register TTS service
-                    var ttsService = new CoquiTtsHostedService();
-                    ServicesManager.RegisterService(ttsService);
+                    // Register TTS service (only if enabled)
+                    if (AppSettings.LoadTtsEnabled())
+                    {
+                        var ttsService = new CoquiTtsHostedService();
+                        ServicesManager.RegisterService(ttsService);
+                    }
+                    else
+                    {
+                        Console.WriteLine("🔇 TTS disabled in settings; TTS service not registered.");
+                    }
 
-                    // Register Discord services if enabled
+                    // Register Discord services if enabled and token configured
                     if (AppSettings.LoadDiscordBotEnabled())
                     {
-                        var discordBotService = new DiscordBotHostedService();
-                        ServicesManager.RegisterService(discordBotService);
+                        var discordToken = AppSettings.LoadDiscordBotToken();
+                        if (!string.IsNullOrWhiteSpace(discordToken))
+                        {
+                            var discordBotService = new DiscordBotHostedService();
+                            ServicesManager.RegisterService(discordBotService);
 
-                        // Conditionally register Discord audio services based on AudioInMode
-                        var audioMode = AppSettings.LoadAudioInMode();
-                        Console.WriteLine($"🎧 Audio input mode: {audioMode}");
-                        
-                        if (audioMode == AudioInMode.SystemLoopback)
-                        {
-                            var discordAudioService = new DiscordSystemAudioCaptureHostedService();
-                            ServicesManager.RegisterService(discordAudioService);
-                            Console.WriteLine("🔊 Discord system audio capture service registered (SystemLoopback mode)");
-                        }
-                        else if (audioMode == AudioInMode.DiscordVoice)
-                        {
-                            Console.WriteLine("🎤 Discord voice receiver will be used (DiscordVoice mode)");
-                            // Voice receiver is managed by DiscordNetBotManager, not as a separate service
+                            // Conditionally register Discord audio services based on AudioInMode
+                            var audioMode = AppSettings.LoadAudioInMode();
+                            Console.WriteLine($"🎧 Audio input mode: {audioMode}");
+                            
+                            if (audioMode == AudioInMode.SystemLoopback)
+                            {
+                                var discordAudioService = new DiscordSystemAudioCaptureHostedService();
+                                ServicesManager.RegisterService(discordAudioService);
+                                Console.WriteLine("🔊 Discord system audio capture service registered (SystemLoopback mode)");
+                            }
+                            else if (audioMode == AudioInMode.DiscordVoice)
+                            {
+                                Console.WriteLine("🎤 Discord voice receiver will be used (DiscordVoice mode)");
+                                // Voice receiver is managed by DiscordNetBotManager, not as a separate service
+                            }
+                            else
+                            {
+                                Console.WriteLine("🎤 Local microphone input will be used (LocalMic mode)");
+                            }
                         }
                         else
                         {
-                            Console.WriteLine("🎤 Local microphone input will be used (LocalMic mode)");
+                            Console.WriteLine("⚠️ Discord bot is enabled but no token is configured; skipping Discord services registration.");
                         }
                     }
 
@@ -163,18 +274,10 @@ namespace Kinectv1
                 {
                     try 
                     { 
-                        var stopTask = ServicesManager.StopAllAsync(TimeSpan.FromSeconds(3)); // Global 3s timeout
-                        bool completed = stopTask.Wait(3500); // Slightly above 3s for final cleanup
-                        
-                        if (completed)
-                        {
-                            Console.WriteLine("✅ Hosted services stopped");
-                        }
-                        else
-                        {
-                            Console.WriteLine("⚠️ Hosted services stop timed out in OnExit");
-                            Telemetry.Counter("app.stop.forced_kill");
-                        }
+                        // Await StopAllAsync with a 3s timeout
+                        var stopTask = ServicesManager.StopAllAsync(TimeSpan.FromSeconds(3));
+                        stopTask.Wait(3500);
+                        Console.WriteLine("✅ Hosted services stop requested");
                     } 
                     catch (Exception ex) 
                     { 
@@ -182,12 +285,15 @@ namespace Kinectv1
                     }
                 }
 
-                // Explicitly leave all Discord voice channels and dispose client
+                // Leave all Discord voice channels and close gateway with watchdogs
                 try 
                 { 
-                    DiscordNetBotManager.LeaveAllVoice();
-                    var shutdownTask = DiscordNetBotManager.ShutdownAsync();
-                    shutdownTask.Wait(2000); // short timeout for disposal
+                    // Prefer async cleanup with watchdogs
+                    var leaveTask = DiscordNetBotManager.LeaveAllVoiceAsync();
+                    leaveTask.Wait(2500);
+
+                    var closeTask = DiscordNetBotManager.CloseGatewayAsync();
+                    closeTask.Wait(2500);
                 } 
                 catch (Exception ex) 
                 { 

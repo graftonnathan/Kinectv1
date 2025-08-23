@@ -222,6 +222,93 @@ namespace Kinectv1.Discord
         }
 
         /// <summary>
+        /// Asynchronously leave all voice channels and dispose the current audio client.
+        /// Includes a 2s watchdog around StopAsync.
+        /// </summary>
+        public static async Task LeaveAllVoiceAsync()
+        {
+            try
+            {
+                await _voiceOpLock.WaitAsync().ConfigureAwait(false);
+                try
+                {
+                    var client = _currentAudioClient;
+                    if (client != null)
+                    {
+                        try
+                        {
+                            var stopTask = client.StopAsync();
+                            await Task.WhenAny(stopTask, Task.Delay(2000)).ConfigureAwait(false);
+                        }
+                        catch { }
+                        try { client.Dispose(); } catch { }
+                    }
+                }
+                finally
+                {
+                    _voiceOpLock.Release();
+                }
+            }
+            catch { }
+            finally
+            {
+                _currentAudioClient = null;
+                _currentChannelId = null;
+                _currentChannelName = null;
+
+                // Cancel and clear any pending voice handshakes
+                try
+                {
+                    foreach (var kv in _voiceHandshakes)
+                    {
+                        try { kv.Value.Cancel(); kv.Value.Dispose(); } catch { }
+                    }
+                    _voiceHandshakes.Clear();
+                }
+                catch { }
+            }
+        }
+
+        /// <summary>
+        /// Close the Discord gateway connection and dispose the client with a 2s watchdog.
+        /// </summary>
+        public static async Task CloseGatewayAsync()
+        {
+            try
+            {
+                var client = _client;
+                if (client == null) return;
+
+                try
+                {
+                    var stopTask = client.StopAsync();
+                    await Task.WhenAny(stopTask, Task.Delay(2000)).ConfigureAwait(false);
+                }
+                catch { }
+
+                try
+                {
+                    var logoutTask = client.LogoutAsync();
+                    await Task.WhenAny(logoutTask, Task.Delay(2000)).ConfigureAwait(false);
+                }
+                catch { }
+
+                try { client.Dispose(); } catch { }
+            }
+            finally
+            {
+                _client = null;
+                _isRunning = false;
+                _isInitialized = false;
+                _commands = null;
+                Interlocked.Exchange(ref _messageHandlerHooked, 0);
+                Interlocked.Exchange(ref _modulesRegistered, 0);
+                Interlocked.Exchange(ref _clientCreated, 0);
+                Interlocked.Exchange(ref _commandServiceCreated, 0);
+            }
+        }
+
+        /// <summary>
         /// Synchronously leave all voice channels and dispose the current audio client.
         /// Safe to call during App exit.
         /// </summary>
