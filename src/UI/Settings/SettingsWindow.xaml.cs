@@ -155,7 +155,10 @@ namespace Kinectv1.UI.Settings
                 IpaServiceTimeoutMs: ipaServiceTimeoutMs,
                 IpaOneShotTimeoutMs: ipaOneShotTimeoutMs
             );
-            return new global::Kinectv1.Settings.AppSettings(audio, tts, vad);
+            // Preserve existing Ollama snapshot during this editor's save
+            var current = _svc?.Current;
+            var ollama = current?.Ollama ?? new global::Kinectv1.Settings.OllamaSettings(false, string.Empty, true, 10, 5, 30, "history", string.Empty);
+            return new global::Kinectv1.Settings.AppSettings(audio, tts, vad, ollama);
         }
 
         private void Verify_Click(object sender, RoutedEventArgs e)

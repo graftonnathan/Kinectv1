@@ -126,6 +126,7 @@ namespace Kinectv1.Settings
 
             var defaultsObj = JObject.Parse(defaultsJson);
             changed |= BackfillTts(composite, defaultsObj);
+            changed |= BackfillOllama(composite, defaultsObj);
 
             if (changed)
             {
@@ -136,6 +137,25 @@ namespace Kinectv1.Settings
             if (result == null) throw new InvalidDataException("Merged settings invalid");
             Validate(result);
             return result;
+        }
+
+        // Deep-merge user JSON into defaults JSON (objects only)
+        private static void DeepMerge(JObject dst, JObject src)
+        {
+            foreach (var p in src.Properties())
+            {
+                if (p.Value is JObject srcObj)
+                {
+                    if (dst[p.Name] is JObject dstObj)
+                        DeepMerge(dstObj, srcObj);
+                    else
+                        dst[p.Name] = srcObj.DeepClone();
+                }
+                else
+                {
+                    dst[p.Name] = p.Value.DeepClone();
+                }
+            }
         }
 
         private void PersistNormalizedUserJson(JObject normalized)
@@ -199,6 +219,7 @@ namespace Kinectv1.Settings
             MergeInto("audio", "Audio");
             MergeInto("tts", "Tts");
             MergeInto("vad", "Vad");
+            MergeInto("ollama", "Ollama");
             return changed;
         }
 
@@ -241,22 +262,60 @@ namespace Kinectv1.Settings
             return changed;
         }
 
-        private static void DeepMerge(JObject dst, JObject src)
+        // New: Ensure Ollama section has required fields and defaults
+        private static bool BackfillOllama(JObject composite, JObject defaults)
         {
-            foreach (var p in src.Properties())
+            bool changed = false;
+            var ol = composite?["ollama"] as JObject;
+            var dOl = defaults?["ollama"] as JObject;
+            if (dOl == null)
+                return changed;
+            if (ol == null)
             {
-                if (p.Value is JObject srcObj)
+                composite["ollama"] = dOl.DeepClone();
+                return true;
+            }
+
+            void EnsureString(string name)
+            {
+                var tok = ol[name];
+                if (tok == null || tok.Type != JTokenType.String)
                 {
-                    if (dst[p.Name] is JObject dstObj)
-                        DeepMerge(dstObj, srcObj);
-                    else
-                        dst[p.Name] = srcObj.DeepClone();
-                }
-                else
-                {
-                    dst[p.Name] = p.Value.DeepClone();
+                    ol[name] = dOl[name]?.DeepClone();
+                    changed = true;
                 }
             }
+
+            void EnsureInt(string name)
+            {
+                var tok = ol[name];
+                if (tok == null || tok.Type != JTokenType.Integer)
+                {
+                    ol[name] = dOl[name]?.DeepClone();
+                    changed = true;
+                }
+            }
+
+            void EnsureBool(string name)
+            {
+                var tok = ol[name];
+                if (tok == null || tok.Type != JTokenType.Boolean)
+                {
+                    ol[name] = dOl[name]?.DeepClone();
+                    changed = true;
+                }
+            }
+
+            EnsureBool("enabled");
+            EnsureString("model");
+            EnsureBool("memoryEnabled");
+            EnsureInt("maxMessagesPerSpeaker");
+            EnsureInt("maxSystemMessages");
+            EnsureInt("conversationTimeoutMinutes");
+            EnsureString("conversationHistoryPath");
+            EnsureString("systemPromptPath");
+
+            return changed;
         }
 
         private string ReadEmbeddedDefaultJson()
@@ -316,7 +375,19 @@ namespace Kinectv1.Settings
             if (s.Tts.IpaOneShotTimeoutMs < 200 || s.Tts.IpaOneShotTimeoutMs > 5000)
                 throw new InvalidDataException("tts.ipaOneShotTimeoutMs must be 200..5000");
 
-            if (s.Vad.Threshold < 0) throw new InvalidDataException("vad.threshold must be >= 0");
+            // Ollama validation
+            if (s.Ollama == null)
+                throw new InvalidDataException("ollama section missing");
+            if (s.Ollama.Enabled)
+            {
+                // Model must be set when enabled
+                if (string.IsNullOrWhiteSpace(s.Ollama.Model))
+                    throw new InvalidDataException("ollama.model required when ollama.enabled");
+            }
+            if (s.Ollama.MaxMessagesPerSpeaker < 0 || s.Ollama.MaxSystemMessages < 0)
+                throw new InvalidDataException("ollama max message counts must be >= 0");
+            if (s.Ollama.ConversationTimeoutMinutes < 0)
+                throw new InvalidDataException("ollama.conversationTimeoutMinutes must be >= 0");
         }
     }
 }

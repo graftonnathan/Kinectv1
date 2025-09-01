@@ -32,6 +32,7 @@ namespace Kinectv1.Discord
         private static DiscordSocketClient _client;
         private static CommandService _commands;
         private static IAudioClient _currentAudioClient;
+        private static AudioOutStream _discordPcmStream; // persistent PCM stream for Discord TTS
 
         // State tracking
         private static bool _isRunning = false;
@@ -65,6 +66,7 @@ namespace Kinectv1.Discord
             public string SpeakerRefId { get; set; }
             public TaskCompletionSource<bool> Tcs { get; set; }
             public CancellationTokenSource Cts { get; set; }
+            public int Generation { get; set; }
         }
         private static readonly Channel<TtsJob> _ttsChannel = Channel.CreateBounded<TtsJob>(new BoundedChannelOptions(1)
         {
@@ -81,7 +83,8 @@ namespace Kinectv1.Discord
         private static volatile bool _ttsPlaying = false;
         private static int _sttBargeHooked = 0;
         private static DateTime _lastTtsEnded = DateTime.MinValue;
-        
+        private static int _ttsGeneration = 0; // increment per enqueue, used to avoid speaking state races
+
         // Backpressure configuration and metrics for TTS queue - length=1 with preemption
         private const int MAX_TTS_QUEUE_SIZE = 1; // TTS queue length=1 with preempt policy
         private static long _totalTtsDrops = 0;
@@ -443,7 +446,8 @@ namespace Kinectv1.Discord
                     _client.MessageReceived += HandleCommandAsync;
 
                 // ATOMIC COMMAND SERVICE CREATION - Prevent double creation
-                if (Interlocked.CompareExchange(ref _commandServiceCreated, 1, 0) == 0)
+                if (Interlocked.CompareExchange(ref _commandServiceCreated, 1, 0)
+                    == 0)
                     _commands = new CommandService(new CommandServiceConfig { DefaultRunMode = RunMode.Async, LogLevel = LogSeverity.Info });
 
                 commandsToUse = _commands; // Get reference for use
@@ -517,6 +521,10 @@ namespace Kinectv1.Discord
                 _currentAudioClient = audioClient;
                 _currentChannelId = channelId;
                 _currentChannelName = channelName;
+
+                // Create/recreate a persistent PCM stream for TTS output (reuse across utterances)
+                try { _discordPcmStream?.Dispose(); } catch { }
+                _discordPcmStream = _currentAudioClient?.CreatePCMStream(AudioApplication.Mixed, bitrate: 96000, bufferMillis: 200);
 
                 if (_currentAudioClient != null)
                 {
@@ -601,6 +609,8 @@ namespace Kinectv1.Discord
             {
                 if (_currentAudioClient != null)
                 {
+                    try { _discordPcmStream?.Dispose(); } catch { }
+                    _discordPcmStream = null;
                     await _currentAudioClient.StopAsync();
                     _currentAudioClient = null;
                 }
@@ -664,6 +674,40 @@ namespace Kinectv1.Discord
             
             // Telemetry: Start timing the join operation
             var joinTimer = Stopwatch.StartNew();
+
+            // NEW: Try Discord.Net's native ConnectAsync first with a 15s timeout. If it succeeds, skip custom handshake.
+            try
+            {
+                Console.WriteLine("🎯 Direct ConnectAsync attempt (15s timeout) before handshake...");
+                var connectTask = voiceChannel.ConnectAsync(selfDeaf: false, selfMute: false);
+                var completed = await Task.WhenAny(connectTask, Task.Delay(TimeSpan.FromSeconds(15)));
+                if (completed == connectTask)
+                {
+                    var audioClient = await connectTask;
+                    if (audioClient != null)
+                    {
+                        joinTimer.Stop();
+                        Console.WriteLine($"✅ Direct ConnectAsync succeeded in {joinTimer.ElapsedMilliseconds}ms, state: {audioClient.ConnectionState}");
+                        Telemetry.Timer("timer.discord.voice.join.ms", joinTimer.ElapsedMilliseconds);
+                        Telemetry.Gauge("gauge.discord.voice.connected", 1);
+                        Telemetry.Counter("discord.voice.join.success");
+                        return audioClient;
+                    }
+                    Console.WriteLine("⚠️ Direct ConnectAsync returned null, falling back to handshake flow...");
+                }
+                else
+                {
+                    Console.WriteLine("⚠️ Direct ConnectAsync timed out after 15s, falling back to handshake flow...");
+                }
+            }
+            catch (HttpException httpEx) when (httpEx.DiscordCode.HasValue && (int)httpEx.DiscordCode.Value == 4006)
+            {
+                Console.WriteLine($"❌ 4006 during direct ConnectAsync: {httpEx.Message} - will retry via handshake flow");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Direct ConnectAsync failed: {ex.GetType().Name}: {ex.Message} - will try handshake flow");
+            }
             
             for (int attempt = 1; attempt <= maxRetries; attempt++)
             {
@@ -841,7 +885,8 @@ namespace Kinectv1.Discord
                 Text = text,
                 SpeakerRefId = speakerRefId,
                 Tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously),
-                Cts = linked
+                Cts = linked,
+                Generation = Interlocked.Increment(ref _ttsGeneration)
             };
             
             // Backpressure: With length=1 and DropOldest, check if queue is full before writing
@@ -911,11 +956,12 @@ namespace Kinectv1.Discord
                             lock (_ttsCancelLock) { _currentTtsCts = job.Cts; }
 
                             bool ok = false;
-                            try { ok = await SendTtsToDiscordCoreAsync(job.Text, job.SpeakerRefId, job.Cts.Token); }
+                            try { ok = await SendTtsToDiscordCoreAsync(job.Text, job.SpeakerRefId, job.Cts.Token, job.Generation); }
                             catch (OperationCanceledException) { ok = false; }
                             catch (Exception ex) { Console.WriteLine($"[TTS] Job failed: {ex.Message}"); }
                             finally { job.Tcs.TrySetResult(ok); Console.WriteLine($"[TTS] Job finished. Success={ok}"); }
                             await Task.Delay(1);
+
                         }
                     }
                     finally { lock (_ttsWorkerLock) { _ttsWorkerRunning = false; } }
@@ -934,9 +980,9 @@ namespace Kinectv1.Discord
             finally { try { cts.Dispose(); } catch { } }
         }
 
-        private static async Task<bool> SendTtsToDiscordCoreAsync(string text, string speakerRefId, CancellationToken ct)
+        private static async Task<bool> SendTtsToDiscordCoreAsync(string text, string speakerRefId, CancellationToken ct, int generation)
         {
-            Console.WriteLine($"[TTS] Enter SendTtsToDiscordCoreAsync. Connected={( _currentAudioClient!=null ? _currentAudioClient.ConnectionState.ToString():"null")} SpeakerRef={speakerRefId ?? AppSettings.LoadTtsSpeaker()} TextLen={text?.Length ?? 0}");
+            Console.WriteLine($"[TTS] Enter SendTtsToDiscordCoreAsync gen={generation}. Connected={( _currentAudioClient!=null ? _currentAudioClient.ConnectionState.ToString():"null")} SpeakerRef={speakerRefId ?? AppSettings.LoadTtsSpeaker()} TextLen={text?.Length ?? 0}");
             ct.ThrowIfCancellationRequested();
 
             if (_currentAudioClient == null || _currentAudioClient.ConnectionState != ConnectionState.Connected)
@@ -970,58 +1016,99 @@ namespace Kinectv1.Discord
             using (var srcStream = new MemoryStream(pcm22050, writable: false))
             using (var srcProvider = new RawSourceWaveStream(srcStream, new WaveFormat(22050, 16, 1)))
             using (var resampler = new MediaFoundationResampler(srcProvider, new WaveFormat(48000, 16, 2)) { ResamplerQuality = 60 })
-            using (var discordStream = _currentAudioClient.CreatePCMStream(AudioApplication.Mixed, bitrate: 96000, bufferMillis: 200))
-            {
+             {
+                 // Avoid speaking state races across utterances
+                 CancelSpeakingHoldSafe();
+
+                 // Only set speaking if we are still the latest generation (next utterance not queued)
+                 if (generation < Volatile.Read(ref _ttsGeneration))
+                 {
+                     Console.WriteLine($"[TTS] Gen {generation} canceled before start by newer gen {_ttsGeneration}");
+                     return false;
+                 }
+
                 await _currentAudioClient.SetSpeakingAsync(true);
+                await Task.Delay(60, ct); // allow state to propagate
                 try
                 {
-                    byte[] buf = new byte[8192];
+                    const int frameBytes = 3840; // 20ms
+                    byte[] resampleBuf = new byte[8192];
+                    byte[] carry = new byte[frameBytes];
+                    int carryLen = 0;
                     int n;
-                    bool hasWrittenFirstChunk = false;
-                    
-                    while ((n = resampler.Read(buf, 0, buf.Length)) > 0)
+
+                    var sw = Stopwatch.StartNew();
+                    int framesSent = 0;
+
+                    while ((n = resampler.Read(resampleBuf, 0, resampleBuf.Length)) > 0)
                     {
                         ct.ThrowIfCancellationRequested();
-                        
-                        // Fix: Only write to stream after we have non-empty PCM data
-                        // This prevents silent headers from being sent before actual audio
-                        if (!hasWrittenFirstChunk)
+
+                        // If a newer generation has been queued mid-stream, we can choose to continue to completion
+                        // but we must not allow a stale post-hold to flip speaking=false during our stream.
+
+                        int offset = 0;
+                        while (offset < n)
                         {
-                            // Check if buffer contains non-zero audio data
-                            bool hasAudioData = false;
-                            for (int i = 0; i < n; i++)
+                            int toCopy = Math.Min(frameBytes - carryLen, n - offset);
+                            Buffer.BlockCopy(resampleBuf, offset, carry, carryLen, toCopy);
+                            carryLen += toCopy;
+                            offset += toCopy;
+
+                            if (carryLen == frameBytes)
                             {
-                                if (buf[i] != 0)
+                                long expectedMs = (long)(framesSent * 20);
+                                long nowMs = sw.ElapsedMilliseconds;
+                                if (nowMs < expectedMs)
                                 {
-                                    hasAudioData = true;
-                                    break;
+                                    var delay = (int)(expectedMs - nowMs);
+                                    if (delay > 0) await Task.Delay(delay, ct);
                                 }
-                            }
-                            
-                            if (hasAudioData)
-                            {
-                                hasWrittenFirstChunk = true;
-                                Console.WriteLine($"[TTS] Starting Discord stream with first non-empty PCM chunk ({n} bytes)");
-                            }
-                            else
-                            {
-                                // Skip empty/silent chunks at the beginning
-                                continue;
+
+                                var stream = _discordPcmStream ?? _currentAudioClient.CreatePCMStream(AudioApplication.Mixed, bitrate: 96000, bufferMillis: 200);
+                                if (_discordPcmStream == null) _discordPcmStream = stream; // cache for future
+                                await stream.WriteAsync(carry, 0, frameBytes, ct).ConfigureAwait(false);
+                                totalWritten += frameBytes;
+                                carryLen = 0;
+                                framesSent++;
                             }
                         }
-                        
-                        await discordStream.WriteAsync(buf, 0, n, ct).ConfigureAwait(false);
-                        totalWritten += n;
                     }
-                    await discordStream.FlushAsync(ct).ConfigureAwait(false);
+
+                    if (carryLen > 0)
+                    {
+                        Array.Clear(carry, carryLen, frameBytes - carryLen);
+                        long expectedMs = (long)(framesSent * 20);
+                        long nowMs = sw.ElapsedMilliseconds;
+                        if (nowMs < expectedMs)
+                        {
+                            var delay = (int)(expectedMs - nowMs);
+                            if (delay > 0) await Task.Delay(delay, ct);
+                        }
+                        var stream = _discordPcmStream ?? _currentAudioClient.CreatePCMStream(AudioApplication.Mixed, bitrate: 96000, bufferMillis: 200);
+                        if (_discordPcmStream == null) _discordPcmStream = stream;
+                        await stream.WriteAsync(carry, 0, frameBytes, ct).ConfigureAwait(false);
+                        totalWritten += frameBytes;
+                        framesSent++;
+                    }
+
+                    try { await (_discordPcmStream?.FlushAsync(ct) ?? Task.CompletedTask).ConfigureAwait(false); } catch { }
                     Console.WriteLine($"[TTS] Sent {totalWritten} PCM bytes to Discord (48k/16-bit/2ch).\n");
                     return totalWritten > 0;
                 }
                 finally
                 {
-                    _ = SpeakingIdleHoldAsync(); // small post-hold before clearing speaking
+                    _ = SpeakingIdleHoldAsync();
                 }
-            }
+             }
+        }
+       
+
+        private static void CancelSpeakingHoldSafe()
+        {
+            try { _speakHoldCts?.Cancel(); } catch { }
+            try { _speakHoldCts?.Dispose(); } catch { }
+            _speakHoldCts = null;
         }
 
         private static byte[] FloatsToPcm16(float[] src, float gain)

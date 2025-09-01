@@ -758,7 +758,7 @@ namespace Kinectv1
                                 IpaOneShotTimeoutMs: ipaOne
                             );
                             var vadSettings = new Kinectv1.Settings.VadSettings(vad);
-                            return new Kinectv1.Settings.AppSettings(audio, tts, vadSettings);
+                            return new Kinectv1.Settings.AppSettings(audio, tts, vadSettings, current.Ollama);
                         });
                     }
                 }
@@ -930,7 +930,7 @@ namespace Kinectv1
                 svc?.Save(current =>
                 {
                     var tts = current.Tts with { LocalVolume = lv };
-                    return new Kinectv1.Settings.AppSettings(current.Audio, tts, current.Vad);
+                    return new Kinectv1.Settings.AppSettings(current.Audio, tts, current.Vad, current.Ollama);
                 });
             }
             catch (Exception ex)
@@ -951,7 +951,7 @@ namespace Kinectv1
                 svc?.Save(current =>
                 {
                     var tts = current.Tts with { DiscordVolume = dv };
-                    return new Kinectv1.Settings.AppSettings(current.Audio, tts, current.Vad);
+                    return new Kinectv1.Settings.AppSettings(current.Audio, tts, current.Vad, current.Ollama);
                 });
             }
             catch (Exception ex)
@@ -971,7 +971,7 @@ namespace Kinectv1
                 svc?.Save(current =>
                 {
                     var tts = current.Tts with { Speed = (float)speed };
-                    return new Kinectv1.Settings.AppSettings(current.Audio, tts, current.Vad);
+                    return new Kinectv1.Settings.AppSettings(current.Audio, tts, current.Vad, current.Ollama);
                 });
             }
             catch (Exception ex) { UpdateStatus($"Error saving TTS speed: {ex.Message}", true); }
@@ -989,7 +989,7 @@ namespace Kinectv1
                 svc?.Save(current =>
                 {
                     var tts = current.Tts with { TrimThreshold = thr };
-                    return new Kinectv1.Settings.AppSettings(current.Audio, tts, current.Vad);
+                    return new Kinectv1.Settings.AppSettings(current.Audio, tts, current.Vad, current.Ollama);
                 });
             }
             catch (Exception ex) { UpdateStatus($"Error saving trim threshold: {ex.Message}", true); }
@@ -1006,7 +1006,7 @@ namespace Kinectv1
                 svc?.Save(current =>
                 {
                     var tts = current.Tts with { TrimLeaveMs = leave };
-                    return new Kinectv1.Settings.AppSettings(current.Audio, tts, current.Vad);
+                    return new Kinectv1.Settings.AppSettings(current.Audio, tts, current.Vad, current.Ollama);
                 });
             }
             catch (Exception ex) { UpdateStatus($"Error saving Trim Leave (ms): {ex.Message}", true); }
@@ -1023,7 +1023,7 @@ namespace Kinectv1
                 svc?.Save(current =>
                 {
                     var tts = current.Tts with { TrimMaxMs = max };
-                    return new Kinectv1.Settings.AppSettings(current.Audio, tts, current.Vad);
+                    return new Kinectv1.Settings.AppSettings(current.Audio, tts, current.Vad, current.Ollama);
                 });
             }
             catch (Exception ex) { UpdateStatus($"Error saving Trim Max (ms): {ex.Message}", true); }
@@ -1040,7 +1040,7 @@ namespace Kinectv1
                 svc?.Save(current =>
                 {
                     var tts = current.Tts with { MinClausePaddingMs = pad };
-                    return new Kinectv1.Settings.AppSettings(current.Audio, tts, current.Vad);
+                    return new Kinectv1.Settings.AppSettings(current.Audio, tts, current.Vad, current.Ollama);
                 });
             }
             catch (Exception ex) { UpdateStatus($"Error saving padding: {ex.Message}", true); }

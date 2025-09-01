@@ -5,7 +5,8 @@ namespace Kinectv1.Settings
     public sealed record AppSettings(
         AudioSettings Audio,
         TtsSettings Tts,
-        VadSettings Vad
+        VadSettings Vad,
+        OllamaSettings Ollama
     );
 
     public sealed record AudioSettings(double VoiceThreshold, int VadThreshold, int BufferSize);
@@ -33,4 +34,16 @@ namespace Kinectv1.Settings
     );
 
     public sealed record VadSettings(int Threshold);
+
+    // New: Ollama settings section persisted in JSON settings pipeline
+    public sealed record OllamaSettings(
+        bool Enabled,
+        string Model,
+        bool MemoryEnabled,
+        int MaxMessagesPerSpeaker,
+        int MaxSystemMessages,
+        int ConversationTimeoutMinutes,
+        string ConversationHistoryPath,
+        string SystemPromptPath
+    );
 }

@@ -18,5 +18,15 @@
     "ipaServiceTimeoutMs": 1500,
     "ipaOneShotTimeoutMs": 1500
   },
-  "vad": { "threshold": 50 }
+  "vad": { "threshold": 50 },
+  "ollama": {
+    "enabled": false,
+    "model": "",
+    "memoryEnabled": true,
+    "maxMessagesPerSpeaker": 10,
+    "maxSystemMessages": 5,
+    "conversationTimeoutMinutes": 30,
+    "conversationHistoryPath": "history",
+    "systemPromptPath": ""
+  }
 }

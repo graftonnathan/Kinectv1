@@ -200,7 +200,14 @@ namespace Kinectv1
 
         public static void SetEnabled(bool enabled)
         {
-            AppSettings.SaveOllamaEnabled(enabled);
+            try
+            {
+                // Persist through JSON settings pipeline
+                var svc = App.SettingsProvider;
+                if (svc == null) { AppSettings.SaveOllamaEnabled(enabled); return; }
+                svc.Save(curr => curr with { Ollama = curr.Ollama with { Enabled = enabled } });
+            }
+            catch { AppSettings.SaveOllamaEnabled(enabled); }
         }
 
         public static async Task<bool> TestConnectionAsync(CancellationToken ct = default)
@@ -253,6 +260,27 @@ namespace Kinectv1
         }
 
         /// <summary>
+        /// Immediately switch the active Ollama model and persist it.
+        /// </summary>
+        public static void SetDefaultModel(string model)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(model)) return;
+                lock (_lock)
+                {
+                    _defaultModel = model.Trim();
+                }
+                AppSettings.SaveOllamaModel(model.Trim());
+                Console.WriteLine($"Saved Ollama model: {model.Trim()}");
+            }
+            catch (Exception ex)
+            {
+                OnError?.Invoke($"SetDefaultModel failed: {ex.Message}");
+            }
+        }
+
+        /// <summary>
         /// Primary async entry used by VoiceProcessor. Sends a prompt and raises events.
         /// </summary>
         public static async Task SendPromptAsync(string speakerName, string transcription, CancellationToken ct = default)
@@ -269,7 +297,25 @@ namespace Kinectv1
 
                 // Load model from settings each call in case user changed it in UI
                 var model = AppSettings.LoadOllamaModel();
-                if (!string.IsNullOrWhiteSpace(model)) _defaultModel = model;
+                if (!string.IsNullOrWhiteSpace(model))
+                {
+                    lock (_lock) { _defaultModel = model.Trim(); }
+                }
+                // Resolve model via JSON settings pipeline; fall back to legacy only if pipeline not available
+                string effectiveModel = null;
+                try
+                {
+                    var svc = App.SettingsProvider;
+                    var snap = svc?.Current;
+                    effectiveModel = snap?.Ollama?.Model;
+                }
+                catch { }
+                if (string.IsNullOrWhiteSpace(effectiveModel))
+                {
+                    var legacy = AppSettings.LoadOllamaModel();
+                    if (!string.IsNullOrWhiteSpace(legacy)) effectiveModel = legacy.Trim();
+                }
+                if (string.IsNullOrWhiteSpace(effectiveModel)) effectiveModel = _defaultModel;
 
                 var system = LoadSystemPrompt();
                 var normalizedSpeaker = string.IsNullOrWhiteSpace(speakerName) ? "UnknownSpeaker" : speakerName.Trim();
@@ -286,7 +332,7 @@ namespace Kinectv1
                 // Use /api/generate (simpler) with stream=false
                 var payload = new
                 {
-                    model = _defaultModel,
+                    model = effectiveModel,
                     prompt = userPrompt,
                     stream = false
                 };
