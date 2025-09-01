@@ -1191,5 +1191,17 @@ namespace Kinectv1.Discord
             for (int n = 0; n < targetLength; n++) { double t = (double)n * sourceRate / targetRate; int t0 = (int)t; int t1 = Math.Min(t0 + 1, sourceLength - 1); double frac = t - t0; target[n] = (float)((1.0 - frac) * source[t0] + frac * source[t1]); }
             return target;
         }
+
+        public static void CancelCurrentTts()
+        {
+            try
+            {
+                lock (_ttsCancelLock)
+                {
+                    _currentTtsCts?.Cancel();
+                }
+            }
+            catch { }
+        }
     }
 }

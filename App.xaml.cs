@@ -4,13 +4,36 @@ using System.Windows;
 using System.Windows.Threading;
 using Kinectv1.Discord;
 using System.IO;
+using Kinectv1.Settings;
+using System.Text; // Ensure we can set Console encodings
+using System.Runtime.InteropServices; // For SetConsoleCP
 
 namespace Kinectv1
 {
     public partial class App : Application
     {
+        // P/Invoke to force UTF-8 in classic console hosts
+        [DllImport("kernel32.dll")] private static extern bool SetConsoleOutputCP(uint wCodePageID);
+        [DllImport("kernel32.dll")] private static extern bool SetConsoleCP(uint wCodePageID);
+
+        private static void EnsureUtf8Console()
+        {
+            try
+            {
+                // Set Windows code pages first, then .NET encodings
+                SetConsoleCP(65001);
+                SetConsoleOutputCP(65001);
+                Console.InputEncoding = Encoding.UTF8;
+                Console.OutputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+            }
+            catch { /* Non-fatal if console host does not support */ }
+        }
+
         // Global hosted services manager instance
         public static HostedServicesManager ServicesManager { get; private set; }
+
+        // Minimal JSON settings provider (defaults + user overlay)
+        public static SettingsService SettingsProvider { get; private set; }
 
         public App()
         {
@@ -26,6 +49,7 @@ namespace Kinectv1
             try
             {
                 ConsoleManager.ShowConsole();
+                EnsureUtf8Console(); // Force UTF-8 so emoji/icons render correctly
                 Console.WriteLine("🚀 Kinect Face & Voice Recognition - Starting...");
             }
             catch (Exception ex)
@@ -40,14 +64,36 @@ namespace Kinectv1
 
             try
             {
-                // Validate and clamp all settings as early as possible
+                // Initialize new JSON settings (defaults embedded + user overlay)
+                try
+                {
+                    SettingsProvider = new SettingsService();
+                    var cfg = SettingsProvider.Current;
+                    Console.WriteLine($"⚙️ JSON settings loaded: audio.voiceThreshold={cfg.Audio.VoiceThreshold:F2}, tts.enabled={cfg.Tts.Enabled}, tts.exec={cfg.Tts.Execution}");
+                }
+                catch (Exception sx)
+                {
+                    Console.WriteLine($"❌ JSON settings failed to load: {sx.Message}");
+                    throw;
+                }
+
+                // Validate and clamp all legacy settings as early as possible
                 Console.WriteLine("⚙️ Validating app settings...");
                 AppSettings.ValidateAll();
 
-                // Initialize application-wide settings and print summaries
+                // Initialize application-wide legacy settings and print summaries
                 Console.WriteLine("⚙️ Initializing app settings...");
                 AppSettings.InitializeSettingsOnStartup();
                 Console.WriteLine("✅ App settings initialized successfully");
+
+                // SAFELY force CUDA device to 0 without flushing entire ProgramValueList
+                try { AppSettings.SaveTtsGpuDeviceId(0); } catch { }
+
+                // Ensure telemetry is enabled so program status is logged to the configured file
+                if (!AppSettings.LoadTelemetryEnabled())
+                {
+                    AppSettings.SaveTelemetryEnabled(true);
+                }
 
                 // Perform lightweight startup self-checks for critical resources
                 SelfCheckCriticalResources();
@@ -197,15 +243,15 @@ namespace Kinectv1
                         ServicesManager.RegisterService(voiceService);
                     }
 
-                    // Register TTS service (only if enabled)
-                    if (AppSettings.LoadTtsEnabled())
+                    // Register TTS service (use JSON settings for enablement)
+                    if (SettingsProvider?.Current.Tts.Enabled == true)
                     {
                         var ttsService = new CoquiTtsHostedService();
                         ServicesManager.RegisterService(ttsService);
                     }
                     else
                     {
-                        Console.WriteLine("🔇 TTS disabled in settings; TTS service not registered.");
+                        Console.WriteLine("🔇 TTS disabled in JSON settings; TTS service not registered.");
                     }
 
                     // Register Discord services if enabled and token configured
@@ -269,6 +315,9 @@ namespace Kinectv1
                 Console.WriteLine("🔻 Application exiting - stopping services...");
                 var stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
+                // Stop any active TTS playback first to release audio devices and cancel loops
+                try { TtsPlaybackController.CancelCurrent(); } catch { }
+
                 // Stop hosted services manager first (centralized shutdown)
                 if (ServicesManager != null)
                 {
@@ -305,17 +354,19 @@ namespace Kinectv1
 
                 // Dispose all shared Vosk models after recognizers are stopped
                 try { VoskModelManager.DisposeAllModels(); } catch (Exception ex) { Console.WriteLine($"DisposeAllModels error: {ex.Message}"); }
-
-                // Hide console
-                try { ConsoleManager.HideConsole(); } catch { }
                 
                 stopwatch.Stop();
                 Telemetry.Timer("app.exit", stopwatch.ElapsedMilliseconds);
                 Console.WriteLine($"📊 App.OnExit completed in {stopwatch.ElapsedMilliseconds}ms");
+
+                // Hide console AFTER all Console.WriteLine calls to avoid invalid handle errors
+                try { ConsoleManager.HideConsole(); } catch { }
             }
             finally
             {
                 base.OnExit(e);
+                // Hard fail-safe to guarantee process termination if any foreground threads remain
+                try { Environment.Exit(0); } catch { }
             }
         }
 

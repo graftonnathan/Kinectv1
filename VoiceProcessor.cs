@@ -85,9 +85,9 @@ namespace Kinectv1
             // Load configurable VAD settings
             var silenceTimeoutMs = AppSettings.LoadVadSilenceTimeoutMs();
             var debounceTimeoutMs = AppSettings.LoadVadDebounceTimeoutMs();
-            // Clamp to sane bounds: debounce 50–400ms; silence 400–2000ms
-            silenceTimeoutMs = Math.Max(400, Math.Min(2000, silenceTimeoutMs));
-            debounceTimeoutMs = Math.Max(50, Math.Min(400, debounceTimeoutMs));
+            // Clamp to sane bounds: debounce 50–250ms; silence 200–1000ms for more responsive UI
+            silenceTimeoutMs = Math.Max(200, Math.Min(1000, silenceTimeoutMs));
+            debounceTimeoutMs = Math.Max(50, Math.Min(250, debounceTimeoutMs));
             _silenceTimeout = TimeSpan.FromMilliseconds(silenceTimeoutMs);
             _vadDebounceTimeout = TimeSpan.FromMilliseconds(debounceTimeoutMs);
             
@@ -249,8 +249,8 @@ namespace Kinectv1
                 }
                 else
                 {
-                    // Call microphone RMS callback
-                    _onRmsLevel?.Invoke(rms);
+                    // Mic RMS is published by WaveIn DataAvailable for smoother UI; avoid duplicate UI updates here
+                    // _onRmsLevel?.Invoke(rms);
                 }
 
                 // ENHANCED: Different VAD handling for Discord vs microphone audio
@@ -603,6 +603,15 @@ namespace Kinectv1
         {
             string text = result.Text.Trim();
             text = PostProcess(text);
+
+            // NEW: Barge-in — if TTS is speaking, cancel it immediately so we can respond
+            if (TtsPlaybackController.Instance.IsSpeaking)
+            {
+                Console.WriteLine("[BARGE-IN] Canceling current TTS due to new STT input");
+                try { TtsPlaybackController.CancelCurrent(); } catch { }
+                try { Discord.DiscordNetBotManager.CancelCurrentTts(); } catch { }
+            }
+
             _onTranscription?.Invoke(text);
             TriggerHandler.TryTrigger(text, _triggerName);
             _lastTranscription = text;
@@ -868,6 +877,32 @@ namespace Kinectv1
             catch { return text; }
         }
 
+        // Remove metadata like "Timestamp: 2025-08-05T19:47:03..." from user text before sending to LLM
+        private static string SanitizeForOllama(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return text;
+            try
+            {
+                var t = text;
+                // Remove whole lines starting with Timestamp:/Time Stamp:
+                t = System.Text.RegularExpressions.Regex.Replace(
+                    t,
+                    @"(?im)^\s*(time\s*stamp|timestamp)\s*:\s*.*$",
+                    string.Empty);
+
+                // Remove inline labels like "..., Timestamp: 2025-..." (ISO-ish datetime)
+                t = System.Text.RegularExpressions.Regex.Replace(
+                    t,
+                    @"(?i)\b(time\s*stamp|timestamp)\s*:\s*\d{4}-\d{2}-\d{2}T[^\s]+",
+                    string.Empty);
+
+                // Collapse whitespace
+                t = System.Text.RegularExpressions.Regex.Replace(t, @"\s+", " ").Trim();
+                return t;
+            }
+            catch { return text; }
+        }
+
         /// <summary>
         /// NEW: Centralized Ollama dispatch system - only ONE place where Ollama calls are made
         /// </summary>
@@ -876,26 +911,30 @@ namespace Kinectv1
             if (string.IsNullOrWhiteSpace(transcription))
                 return;
 
+            // Sanitize metadata before any gating/dup checks
+            var clean = SanitizeForOllama(transcription);
+            if (string.IsNullOrWhiteSpace(clean)) return;
+
             lock (_ollamaDispatchLock)
             {
-                // Check if this transcription was already processed
-                if (_processedTranscriptions.Contains(transcription))
+                // Check if this transcription was already processed (single-flight)
+                if (_processedTranscriptions.Contains(clean))
                 {
-                    Console.WriteLine($"?? DUPLICATE BLOCKED: '{transcription}' from {source} (already processed)");
+                    Console.WriteLine($"?? DUPLICATE BLOCKED: '{clean}' from {source} (already processed)");
                     return;
                 }
 
                 // Check if another dispatch is in progress
                 if (_ollamaDispatchInProgress)
                 {
-                    Console.WriteLine($"?? DISPATCH BLOCKED: '{transcription}' from {source} (dispatch in progress)");
+                    Console.WriteLine($"?? DISPATCH BLOCKED: '{clean}' from {source} (dispatch in progress)");
                     return;
                 }
 
                 // Check if Ollama is enabled
                 if (!OllamaService.IsEnabled())
                 {
-                    Console.WriteLine($"?? DISPATCH SKIPPED: '{transcription}' from {source} (Ollama disabled)");
+                    Console.WriteLine($"?? DISPATCH SKIPPED: '{clean}' from {source} (Ollama disabled)");
                     return;
                 }
 
@@ -903,42 +942,42 @@ namespace Kinectv1
                 // Only suppress ASR if barge-in is disabled (per requirements)
                 if (TtsPlaybackController.Instance.IsSpeaking && !AppSettings.LoadBargeInEnabled())
                 {
-                    Console.WriteLine($"?? DISPATCH BLOCKED: '{transcription}' from {source} (TTS currently speaking - ASR suppressed, barge-in disabled)");
+                    Console.WriteLine($"?? DISPATCH BLOCKED: '{clean}' from {source} (TTS currently speaking - ASR suppressed, barge-in disabled)");
                     Telemetry.Counter("asr.dispatch_blocked_due_to_tts");
                     return;
                 }
 
-                // NEW: Enhanced gating for Local scenario - require wake word or higher confidence
+                // NEW: Enhanced gating for Local scenario - optional wake word requirement via setting
                 var currentScenario = AppSettings.LoadAppScenario();
-                if (currentScenario == AppScenario.Local)
+                if (currentScenario == AppScenario.Local && AppSettings.LoadWakeWordRequired())
                 {
-                    // For Local scenario, we want to be more conservative about LLM dispatch
-                    // Check if this was triggered by wake word detection
-                    var hasTriggerWord = !string.IsNullOrWhiteSpace(_triggerName) && 
-                                        transcription.IndexOf(_triggerName, StringComparison.OrdinalIgnoreCase) >= 0;
-                    
-                    if (!hasTriggerWord)
+                    // Enforce wake word only if a non-empty trigger is configured
+                    if (!string.IsNullOrWhiteSpace(_triggerName))
                     {
-                        Console.WriteLine($"?? DISPATCH BLOCKED: '{transcription}' from {source} (Local scenario - no wake word detected)");
-                        Telemetry.Counter("asr.dispatch_blocked_no_wake_word");
-                        return;
+                        var hasTriggerWord = clean.IndexOf(_triggerName, StringComparison.OrdinalIgnoreCase) >= 0;
+                        if (!hasTriggerWord)
+                        {
+                            Console.WriteLine($"?? DISPATCH BLOCKED: '{clean}' from {source} (Local scenario - wake word required, missing '{_triggerName}')");
+                            Telemetry.Counter("asr.dispatch_blocked_no_wake_word");
+                            return;
+                        }
+                        else
+                        {
+                            Console.WriteLine($"?? WAKE WORD DETECTED: '{_triggerName}' in '{clean}' - proceeding with dispatch");
+                        }
                     }
-                    else
-                    {
-                        Console.WriteLine($"?? WAKE WORD DETECTED: '{_triggerName}' in '{transcription}' - proceeding with dispatch");
-                    }
+                    // If no trigger configured, proceed without wake word gating
                 }
 
-                // Mark as processed and set dispatch flag
-                _processedTranscriptions.Add(transcription);
+                // Mark as processed (single-flight) and set dispatch flag using sanitized text
+                _processedTranscriptions.Add(clean);
                 _ollamaDispatchInProgress = true;
                 
-                Console.WriteLine($"?? DISPATCHING: '{transcription}' from {source} (#{_processedTranscriptions.Count} unique transcriptions)");
+                Console.WriteLine($"?? DISPATCHING: '{clean}' from {source} (#{_processedTranscriptions.Count} unique transcriptions)");
 
                 // Clear old processed transcriptions to prevent memory leaks (keep only recent 10)
                 if (_processedTranscriptions.Count > 10)
                 {
-                    // Optimize: avoid LINQ and directly remove excess items
                     var excessCount = _processedTranscriptions.Count - 10;
                     var itemsToRemove = new List<string>();
                     var count = 0;
@@ -962,11 +1001,13 @@ namespace Kinectv1
                         // Get current speaker instead of sending empty string
                         var (currentSpeaker, currentConfidence, currentMethod) = GetCurrentSpeaker();
                         
-                        // If we don't have a good speaker identification, try again
+                        // If we don't have a good speaker identification, try again now
                         if (currentSpeaker == "Unknown" || string.IsNullOrEmpty(currentSpeaker))
                         {
                             var (newSpeaker, newConfidence, newMethod) = IdentifyCurrentSpeaker();
                             currentSpeaker = newSpeaker;
+                            currentConfidence = newConfidence;
+                            currentMethod = newMethod;
                         }
                         
                         // Use a fallback speaker name if still unknown
@@ -974,8 +1015,11 @@ namespace Kinectv1
                         {
                             currentSpeaker = "UnknownSpeaker"; // Fallback name that's not empty
                         }
+
+                        // Notify UI exactly what speaker was resolved and sent to Ollama
+                        try { VoiceRecognizer.OnSpeakerResolvedForOllama?.Invoke(currentSpeaker, currentConfidence, currentMethod); } catch { }
                         
-                        await OllamaService.SendPromptAsync(currentSpeaker, transcription);
+                        await OllamaService.SendPromptAsync(currentSpeaker, clean);
                     }
                     catch (Exception ex)
                     {
@@ -983,10 +1027,11 @@ namespace Kinectv1
                     }
                     finally
                     {
-                        // Mark dispatch as complete
+                        // Mark dispatch as complete and allow same text again (single-flight only)
                         lock (_ollamaDispatchLock)
                         {
                             _ollamaDispatchInProgress = false;
+                            _processedTranscriptions.Remove(clean);
                         }
                     }
                 });

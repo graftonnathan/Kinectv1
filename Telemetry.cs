@@ -27,9 +27,9 @@ namespace Kinectv1
         private static readonly ConcurrentDictionary<string, long> _counters = new ConcurrentDictionary<string, long>();
         private static readonly ConcurrentDictionary<string, double> _accumulators = new ConcurrentDictionary<string, double>();
         
-        private static bool _enabled = true;
+        private static bool _enabled = false; // disabled globally
         private static string _logFilePath = "logs/telemetry.ndjson";
-        private static int _samplingPct = 100;
+        private static int _samplingPct = 0;
         private static readonly Random _random = new Random();
         
         // File rotation settings
@@ -45,25 +45,10 @@ namespace Kinectv1
         /// </summary>
         private static void LoadSettings()
         {
-            try
-            {
-                _enabled = AppSettings.LoadTelemetryEnabled();
-                _logFilePath = AppSettings.LoadTelemetryFile();
-                _samplingPct = AppSettings.LoadTelemetrySamplingPct();
-                
-                // Ensure logs directory exists
-                var logDir = Path.GetDirectoryName(_logFilePath);
-                if (!string.IsNullOrEmpty(logDir) && !Directory.Exists(logDir))
-                {
-                    Directory.CreateDirectory(logDir);
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Telemetry: Failed to load settings: {ex.Message}");
-                // Use defaults on error
-                _enabled = false;
-            }
+            // Force disabled regardless of persisted settings to remove telemetry
+            _enabled = false;
+            _logFilePath = null;
+            _samplingPct = 0;
         }
 
         /// <summary>
@@ -82,36 +67,10 @@ namespace Kinectv1
         /// <param name="level">Event level</param>
         public static void Event(string name, object data = null, TelemetryLevel level = TelemetryLevel.Info)
         {
-            if (!_enabled || ShouldSample() == false)
-                return;
+            if (!_enabled)
+                return; // fully disabled
 
-            try
-            {
-                var eventData = new
-                {
-                    ts = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
-                    lvl = level.ToString().ToLowerInvariant(),
-                    name = name,
-                    data = data,
-                    threadId = Thread.CurrentThread.ManagedThreadId
-                };
-
-                var json = JsonConvert.SerializeObject(eventData, Formatting.None);
-                
-                // Console output - only for important events to keep console quieter
-                if (level >= TelemetryLevel.Warning || name.Contains("health.snapshot") || name.Contains("app."))
-                {
-                    Console.WriteLine(json);
-                }
-                
-                // File output with rotation (all events)
-                WriteToFile(json);
-            }
-            catch (Exception ex)
-            {
-                // Silently fail to avoid disrupting application
-                Console.WriteLine($"Telemetry.Event error: {ex.Message}");
-            }
+            // Legacy logic retained (no-op due to _enabled=false)
         }
 
         /// <summary>
@@ -119,40 +78,28 @@ namespace Kinectv1
         /// </summary>
         /// <param name="name">Event name</param>
         /// <param name="data">Optional event data</param>
-        public static void Info(string name, object data = null)
-        {
-            Event(name, data, TelemetryLevel.Info);
-        }
+        public static void Info(string name, object data = null) => Event(name, data, TelemetryLevel.Info);
 
         /// <summary>
         /// Emit a warning-level telemetry event
         /// </summary>
         /// <param name="name">Event name</param>
         /// <param name="data">Optional event data</param>
-        public static void Warn(string name, object data = null)
-        {
-            Event(name, data, TelemetryLevel.Warning);
-        }
+        public static void Warn(string name, object data = null) => Event(name, data, TelemetryLevel.Warning);
 
         /// <summary>
         /// Emit an error-level telemetry event
         /// </summary>
         /// <param name="name">Event name</param>
         /// <param name="data">Optional event data</param>
-        public static void Error(string name, object data = null)
-        {
-            Event(name, data, TelemetryLevel.Error);
-        }
+        public static void Error(string name, object data = null) => Event(name, data, TelemetryLevel.Error);
 
         /// <summary>
         /// Emit a structured metric event with data fields
         /// </summary>
         /// <param name="name">Metric name</param>
         /// <param name="data">Metric data (will be JSON serialized)</param>
-        public static void Metric(string name, object data)
-        {
-            Event(name, data, TelemetryLevel.Info);
-        }
+        public static void Metric(string name, object data) => Event(name, data, TelemetryLevel.Info);
 
         /// <summary>
         /// Increment a counter by name
@@ -161,9 +108,7 @@ namespace Kinectv1
         /// <param name="increment">Amount to increment (default: 1)</param>
         public static void Counter(string name, long increment = 1)
         {
-            if (!_enabled)
-                return;
-
+            if (!_enabled) return;
             _counters.AddOrUpdate(name, increment, (key, existing) => existing + increment);
         }
 
@@ -174,9 +119,7 @@ namespace Kinectv1
         /// <param name="value">Value to add</param>
         public static void Accumulator(string name, double value)
         {
-            if (!_enabled)
-                return;
-
+            if (!_enabled) return;
             _accumulators.AddOrUpdate(name, value, (key, existing) => existing + value);
         }
 
@@ -185,20 +128,14 @@ namespace Kinectv1
         /// </summary>
         /// <param name="name">Counter name</param>
         /// <returns>Current counter value</returns>
-        public static long GetCounter(string name)
-        {
-            return _counters.TryGetValue(name, out var value) ? value : 0L;
-        }
+        public static long GetCounter(string name) => _counters.TryGetValue(name, out var value) ? value : 0L;
 
         /// <summary>
         /// Get current accumulator value
         /// </summary>
         /// <param name="name">Accumulator name</param>
         /// <returns>Current accumulator value</returns>
-        public static double GetAccumulator(string name)
-        {
-            return _accumulators.TryGetValue(name, out var value) ? value : 0.0;
-        }
+        public static double GetAccumulator(string name) => _accumulators.TryGetValue(name, out var value) ? value : 0.0;
 
         /// <summary>
         /// Record a timer value in milliseconds
@@ -207,9 +144,7 @@ namespace Kinectv1
         /// <param name="milliseconds">Duration in milliseconds</param>
         public static void Timer(string name, long milliseconds)
         {
-            if (!_enabled)
-                return;
-
+            if (!_enabled) return;
             Counter($"{name}.count");
             Accumulator($"{name}.total_ms", milliseconds);
         }
@@ -221,10 +156,8 @@ namespace Kinectv1
         /// <param name="value">Current value</param>
         public static void Gauge(string name, double value)
         {
-            if (!_enabled)
-                return;
-
-            _accumulators[name] = value; // Gauges are point-in-time values, not cumulative
+            if (!_enabled) return;
+            _accumulators[name] = value;
         }
 
         /// <summary>
@@ -233,13 +166,7 @@ namespace Kinectv1
         /// <returns>Dictionary of all current values</returns>
         public static object GetSnapshot()
         {
-            var snapshot = new
-            {
-                counters = new ConcurrentDictionary<string, long>(_counters),
-                accumulators = new ConcurrentDictionary<string, double>(_accumulators),
-                timestamp = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
-            };
-            return snapshot;
+            return new { }; // disabled
         }
 
         /// <summary>
@@ -267,11 +194,7 @@ namespace Kinectv1
         /// </summary>
         private static bool ShouldSample()
         {
-            if (_samplingPct >= 100)
-                return true;
-            if (_samplingPct <= 0)
-                return false;
-            return _random.Next(100) < _samplingPct;
+            return false; // disabled
         }
 
         /// <summary>
@@ -279,51 +202,13 @@ namespace Kinectv1
         /// </summary>
         private static void WriteToFile(string json)
         {
-            try
-            {
-                lock (_fileLock)
-                {
-                    // Check if rotation is needed
-                    if (File.Exists(_logFilePath))
-                    {
-                        var fileInfo = new FileInfo(_logFilePath);
-                        if (fileInfo.Length > MAX_FILE_SIZE_BYTES)
-                        {
-                            RotateLogFile();
-                        }
-                    }
-
-                    // Append to current log file
-                    File.AppendAllText(_logFilePath, json + Environment.NewLine, Encoding.UTF8);
-                }
-            }
-            catch (Exception ex)
-            {
-                // Silently fail to avoid disrupting application
-                Console.WriteLine($"Telemetry file write error: {ex.Message}");
-            }
+            // disabled
         }
 
         /// <summary>
         /// Rotate log file when it gets too large
         /// </summary>
-        private static void RotateLogFile()
-        {
-            try
-            {
-                var timestamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss");
-                var directory = Path.GetDirectoryName(_logFilePath);
-                var filename = Path.GetFileNameWithoutExtension(_logFilePath);
-                var extension = Path.GetExtension(_logFilePath);
-                var rotatedFile = Path.Combine(directory, $"{filename}_{timestamp}{extension}");
-                
-                File.Move(_logFilePath, rotatedFile);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Telemetry log rotation error: {ex.Message}");
-            }
-        }
+        private static void RotateLogFile() { }
 
         /// <summary>
         /// Internal implementation of latency scope
@@ -345,16 +230,10 @@ namespace Kinectv1
             {
                 _stopwatch.Stop();
                 var elapsedMs = _stopwatch.Elapsed.TotalMilliseconds;
-                
-                // Update counters
+                if (!_enabled) return;
                 Counter($"{_name}.count");
                 Accumulator($"{_name}.total_ms", elapsedMs);
-                
-                // Optionally emit event
-                if (_emitEvent)
-                {
-                    Event($"{_name}.completed", new { duration_ms = elapsedMs });
-                }
+                if (_emitEvent) Event($"{_name}.completed", new { duration_ms = elapsedMs });
             }
         }
     }

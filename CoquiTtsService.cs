@@ -63,8 +63,8 @@ namespace Kinectv1
 
                 var voiceKey = speakerName ?? _currentSpeaker ?? AppSettings.LoadTtsSpeaker();
 
-                // Generate audio using KokoroTtsService with cancellation support
-                var audio = await Task.Run(() => KokoroTtsService.GenerateAudio(text, voiceKey), cancellationToken);
+                // Generate audio using KokoroTtsService without registering CT with Task.Run to avoid CTS disposal races
+                var audio = await Task.Run(() => KokoroTtsService.GenerateAudio(text, voiceKey));
                 
                 if (audio == null || audio.Length == 0) { OnTtsError?.Invoke("Kokoro returned empty audio"); return false; }
 
@@ -234,6 +234,7 @@ namespace Kinectv1
 
         /// <summary>
         /// Convert text to speech and play it with reduced latency by streaming segments with cancellation support
+        /// Prefetches the next segment while the current one is playing to minimize inter-segment gaps.
         /// </summary>
         public static async Task<bool> SpeakStreamingAsync(string text, string speakerName = null, CancellationToken cancellationToken = default)
         {
@@ -241,16 +242,56 @@ namespace Kinectv1
             {
                 if (!IsEnabled() || string.IsNullOrWhiteSpace(text)) return false;
 
-                cancellationToken.ThrowIfCancellationRequested();
+                var ct = cancellationToken; // use incoming token directly; do not create a linked CTS
+
+                ct.ThrowIfCancellationRequested();
                 OnTtsSpeakingStarted?.Invoke(text);
 
                 var voiceKey = speakerName ?? _currentSpeaker ?? AppSettings.LoadTtsSpeaker();
 
-                foreach (var segment in KokoroTtsService.GenerateAudioSegments(text, voiceKey, cancellationToken))
+                // Get a pull-based enumerator for segments
+                using var enumerator = KokoroTtsService.GenerateAudioSegments(text, voiceKey, ct).GetEnumerator();
+                if (!enumerator.MoveNext())
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    if (segment == null || segment.Length == 0) continue;
-                    await AudioDeviceManager.PlayLocallyAsync(segment, KokoroTtsService.GetSampleRate(), cancellationToken);
+                    OnTtsSpeakingFinished?.Invoke();
+                    return true; // nothing to play
+                }
+
+                // Current segment and prefetch task for the next
+                float[] current = enumerator.Current;
+                Task<bool> prefetchTask = null;
+
+                // Kick off first prefetch (wrap MoveNext to swallow OCE)
+                prefetchTask = Task.Run(() =>
+                {
+                    try { return enumerator.MoveNext(); }
+                    catch (OperationCanceledException) { return false; }
+                });
+
+                while (current != null && current.Length > 0)
+                {
+                    if (ct.IsCancellationRequested) throw new OperationCanceledException();
+
+                    // Play current while next is being prepared
+                    await AudioDeviceManager.PlayLocallyAsync(current, KokoroTtsService.GetSampleRate(), ct).ConfigureAwait(false);
+
+                    // Get prefetch result (wait if needed)
+                    bool hasNext = false;
+                    if (prefetchTask != null)
+                    {
+                        hasNext = await prefetchTask.ConfigureAwait(false);
+                    }
+
+                    if (!hasNext)
+                        break; // done
+
+                    // Move to next and start prefetch again (wrap to swallow OCE)
+                    current = enumerator.Current;
+                    prefetchTask = Task.Run(() =>
+                    {
+                        try { return enumerator.MoveNext(); }
+                        catch (OperationCanceledException) { return false; }
+                    });
                 }
 
                 OnTtsSpeakingFinished?.Invoke();

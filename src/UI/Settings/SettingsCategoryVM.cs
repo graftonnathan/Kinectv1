@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using System.Windows;
 
 namespace Kinectv1.UI.Settings
 {
@@ -9,7 +10,7 @@ namespace Kinectv1.UI.Settings
     public class SettingsCategoryVM : INotifyPropertyChanged
     {
         private string _name;
-        private SettingsEditorView _editorView;
+        private FrameworkElement _editorView;
 
         public string Name
         {
@@ -24,7 +25,7 @@ namespace Kinectv1.UI.Settings
             }
         }
 
-        public SettingsEditorView EditorView
+        public FrameworkElement EditorView
         {
             get => _editorView;
             set
@@ -47,7 +48,7 @@ namespace Kinectv1.UI.Settings
 
     /// <summary>
     /// Simple data class for the content displayed in the ContentPresenter
-    /// This will be replaced with actual settings controls in future iterations
+    /// This is kept for backward compatibility but not used anymore.
     /// </summary>
     public class SettingsEditorView
     {

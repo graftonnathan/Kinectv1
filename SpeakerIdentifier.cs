@@ -5,7 +5,7 @@ namespace Kinectv1
 {
     public static class SpeakerIdentifier
     {
-        private static float _defaultThreshold = 0.40f; // Default threshold
+        private static float _defaultThreshold = 0.40f; // Default threshold (legacy)
         private static string _discordSpeakerHint = ""; // Discord speaker hint
         private static DateTime _discordSpeakerHintTime = DateTime.MinValue;
         private static readonly TimeSpan _discordSpeakerHintTimeout = TimeSpan.FromSeconds(10); // Hint expires after 10 seconds
@@ -175,7 +175,9 @@ namespace Kinectv1
                 {
                     Console.WriteLine($"  Total: {count} enrolled speaker(s)");
                 }
-                Console.WriteLine($"🔧 Current system threshold: {_defaultThreshold:F3}");
+                // Print threshold from settings (not legacy field)
+                var current = Kinectv1.AppSettings.LoadSpeakerMatchMinScore();
+                Console.WriteLine($"🔧 Current system threshold: {current:F3}");
                 
                 // Show Discord speaker hint status
                 if (HasValidDiscordSpeakerHint())
@@ -193,14 +195,15 @@ namespace Kinectv1
         public static void TestRecognitionWithLowerThreshold(float[] embedding)
         {
             Console.WriteLine("🧪 Testing voice recognition with multiple thresholds:");
-            Console.WriteLine($"   Current system threshold: {_defaultThreshold:F3}");
+            var current = Kinectv1.AppSettings.LoadSpeakerMatchMinScore();
+            Console.WriteLine($"   Current system threshold: {current:F3}");
             
             var thresholds = new float[] { 0.10f, 0.15f, 0.20f, 0.25f, 0.30f, 0.35f, 0.40f, 0.45f, 0.50f };
             
             foreach (var threshold in thresholds)
             {
                 var match = MemoryStore.MatchBestVoice(embedding, threshold);
-                string indicator = (Math.Abs(threshold - _defaultThreshold) < 0.001f) ? " ← CURRENT" : "";
+                string indicator = (Math.Abs(threshold - current) < 0.001f) ? " ← CURRENT" : "";
                 
                 if (match.HasValue)
                 {

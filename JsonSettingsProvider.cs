@@ -173,6 +173,15 @@ namespace Kinectv1
                 settings["LocalTtsVolume"] = AppSettings.LoadLocalTtsVolume();
                 settings["DiscordTtsVolume"] = AppSettings.LoadDiscordTtsVolume();
 
+                // TTS pacing (added)
+                settings["TtsSpeed"] = AppSettings.LoadTtsSpeed();
+                settings["TtsTrimThreshold"] = AppSettings.LoadTtsTrimThreshold();
+                settings["TtsTrimLeaveMs"] = AppSettings.LoadTtsTrimLeaveMs();
+                settings["TtsTrimMaxMs"] = AppSettings.LoadTtsTrimMaxMs();
+                settings["TtsMinClausePaddingMs"] = AppSettings.LoadTtsMinClausePaddingMs();
+                settings["TtsIpaServiceTimeoutMs"] = AppSettings.LoadTtsIpaServiceTimeoutMs();
+                settings["TtsIpaOneShotTimeoutMs"] = AppSettings.LoadTtsIpaOneShotTimeoutMs();
+
                 // Model paths
                 settings["TtsModelPath"] = AppSettings.LoadTtsModelPath();
                 settings["SttModelPath"] = AppSettings.LoadSttModelPath();
@@ -270,6 +279,28 @@ namespace Kinectv1
                         case "DiscordTtsVolume":
                             AppSettings.SaveDiscordTtsVolume(GetValueAsDouble(value));
                             break;
+                        // TTS pacing (added)
+                        case "TtsSpeed":
+                            AppSettings.SaveTtsSpeed(GetValueAsFloat(value));
+                            break;
+                        case "TtsTrimThreshold":
+                            AppSettings.SaveTtsTrimThreshold(GetValueAsDouble(value));
+                            break;
+                        case "TtsTrimLeaveMs":
+                            AppSettings.SaveTtsTrimLeaveMs(GetValueAsInt(value));
+                            break;
+                        case "TtsTrimMaxMs":
+                            AppSettings.SaveTtsTrimMaxMs(GetValueAsInt(value));
+                            break;
+                        case "TtsMinClausePaddingMs":
+                            AppSettings.SaveTtsMinClausePaddingMs(GetValueAsInt(value));
+                            break;
+                        case "TtsIpaServiceTimeoutMs":
+                            AppSettings.SaveTtsIpaServiceTimeoutMs(GetValueAsInt(value));
+                            break;
+                        case "TtsIpaOneShotTimeoutMs":
+                            AppSettings.SaveTtsIpaOneShotTimeoutMs(GetValueAsInt(value));
+                            break;
                         case "DarkMode":
                             AppSettings.SaveDarkMode(GetValueAsBool(value));
                             break;
@@ -312,6 +343,14 @@ namespace Kinectv1
             if (value is float f) return f;
             if (value is JToken jToken) return jToken.ToObject<double>();
             return double.Parse(value?.ToString() ?? "0");
+        }
+
+        private int GetValueAsInt(object value)
+        {
+            if (value is int i) return i;
+            if (value is long l) return (int)l;
+            if (value is JToken jToken) return jToken.ToObject<int>();
+            return int.Parse(value?.ToString() ?? "0");
         }
 
         /// <summary>

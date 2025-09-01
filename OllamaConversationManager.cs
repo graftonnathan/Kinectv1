@@ -8,6 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using System.Text.RegularExpressions;
 
 namespace Kinectv1
 {
@@ -38,6 +39,160 @@ namespace Kinectv1
         private static string _defaultModel = "llama3.1:8b";
         private static string _systemPrompt = "";
         private static DateTime _lastSystemPromptLoad = DateTime.MinValue;
+
+        // --- Conversation persistence (minimal) ---
+        private class ConversationMessage
+        {
+            public string Role { get; set; }
+            public string Content { get; set; }
+            public DateTime Timestamp { get; set; }
+            public string Speaker { get; set; }
+        }
+        private static readonly object _convLock = new object();
+
+        private static string GetConversationFilePath()
+        {
+            var dir = AppSettings.LoadConversationHistoryPath();
+            if (string.IsNullOrWhiteSpace(dir)) dir = "history"; // AppSettings already validates; keep simple here
+            var baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            var fullDir = Path.IsPathRooted(dir) ? dir : Path.Combine(baseDir, dir);
+            try { Directory.CreateDirectory(fullDir); } catch { }
+            return Path.Combine(fullDir, "conversation.json");
+        }
+
+        private static Dictionary<string, List<ConversationMessage>> LoadConversations()
+        {
+            try
+            {
+                var path = GetConversationFilePath();
+                if (!File.Exists(path)) return new Dictionary<string, List<ConversationMessage>>(StringComparer.OrdinalIgnoreCase);
+                var json = File.ReadAllText(path, Encoding.UTF8);
+                var data = JsonConvert.DeserializeObject<Dictionary<string, List<ConversationMessage>>>(json);
+                return data ?? new Dictionary<string, List<ConversationMessage>>(StringComparer.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return new Dictionary<string, List<ConversationMessage>>(StringComparer.OrdinalIgnoreCase);
+            }
+        }
+
+        private static void SaveConversations(Dictionary<string, List<ConversationMessage>> conv)
+        {
+            try
+            {
+                var path = GetConversationFilePath();
+                var json = JsonConvert.SerializeObject(conv, Formatting.Indented);
+                File.WriteAllText(path, json, Encoding.UTF8);
+            }
+            catch (Exception ex)
+            {
+                OnError?.Invoke($"Conversation save failed: {ex.Message}");
+            }
+        }
+
+        private static void AppendConversation(string speaker, string role, string content)
+        {
+            if (!AppSettings.LoadOllamaMemoryEnabled()) return;
+            if (string.IsNullOrWhiteSpace(speaker)) speaker = "UnknownSpeaker";
+            try
+            {
+                lock (_convLock)
+                {
+                    var conv = LoadConversations();
+                    if (!conv.TryGetValue(speaker, out var list))
+                    {
+                        list = new List<ConversationMessage>();
+                        conv[speaker] = list;
+                    }
+                    list.Add(new ConversationMessage
+                    {
+                        Role = role,
+                        Content = content ?? string.Empty,
+                        Timestamp = DateTime.Now,
+                        Speaker = speaker
+                    });
+
+                    // Trim per-speaker list to max
+                    var maxPerSpeaker = AppSettings.LoadOllamaMaxMessagesPerSpeaker();
+                    if (maxPerSpeaker > 0 && list.Count > maxPerSpeaker)
+                    {
+                        list.RemoveRange(0, list.Count - maxPerSpeaker);
+                    }
+                    SaveConversations(conv);
+                }
+            }
+            catch (Exception ex)
+            {
+                OnError?.Invoke($"Conversation append failed: {ex.Message}");
+            }
+        }
+
+        private static string BuildHistoryBlock(string speaker)
+        {
+            if (!AppSettings.LoadOllamaMemoryEnabled()) return string.Empty;
+            try
+            {
+                lock (_convLock)
+                {
+                    var conv = LoadConversations();
+                    if (!conv.TryGetValue(speaker, out var list) || list.Count == 0) return string.Empty;
+
+                    // Use most recent N items
+                    var maxPerSpeaker = AppSettings.LoadOllamaMaxMessagesPerSpeaker();
+                    var start = Math.Max(0, list.Count - Math.Max(1, maxPerSpeaker));
+                    var sb = new StringBuilder();
+                    for (int i = start; i < list.Count; i++)
+                    {
+                        var m = list[i];
+                        if (string.Equals(m.Role, "user", StringComparison.OrdinalIgnoreCase))
+                            sb.AppendLine($"USER ({speaker}): {m.Content}");
+                        else
+                            sb.AppendLine($"ASSISTANT: {m.Content}");
+                    }
+                    return sb.ToString();
+                }
+            }
+            catch { return string.Empty; }
+        }
+
+        private static string CleanAssistantPrefix(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return text;
+            var t = text.TrimStart();
+            // Strip common assistant labels at the start
+            t = Regex.Replace(t, @"^(assistant|ai|bot|system|maggie)\s*[:\-]\s*", string.Empty, RegexOptions.IgnoreCase);
+            // Strip accidental speaker echo like "Nathan says:" at the start
+            t = Regex.Replace(t, "^(?:[A-Za-z][\\w .'\"]{0,40})\\s+says\\s*[:\\-]\\s*", string.Empty, RegexOptions.IgnoreCase);
+            return t.Trim();
+        }
+
+        // Remove metadata like "Timestamp: 2025-..." from model responses
+        private static string SanitizeAssistantText(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return text;
+            try
+            {
+                var t = CleanAssistantPrefix(text);
+
+                // Normalize fancy quotes to ASCII so regex can match
+                t = t.Replace('\u201C', '"').Replace('\u201D', '"')
+                     .Replace('\u2018', '\'').Replace('\u2019', '\'');
+
+                // Remove whole lines starting with Timestamp:/Time Stamp:
+                t = Regex.Replace(t, @"(?im)^\s*(time\s*stamp|timestamp)\s*:\s*.*$", string.Empty);
+
+                // Remove inline labels like "..., Timestamp: \"2025-...\"" or without quotes
+                t = Regex.Replace(
+                    t,
+                    @"(?i)\b(time\s*stamp|timestamp)\s*:\s*[""']?\d{4}-\d{2}-\d{2}T[^\s""']+[""']?",
+                    string.Empty);
+
+                // Collapse whitespace
+                t = Regex.Replace(t, @"\s+", " ").Trim();
+                return t;
+            }
+            catch { return CleanAssistantPrefix(text); }
+        }
 
         // --------------- Public API expected by the app ---------------
 
@@ -117,9 +272,16 @@ namespace Kinectv1
                 if (!string.IsNullOrWhiteSpace(model)) _defaultModel = model;
 
                 var system = LoadSystemPrompt();
-                var userPrompt = BuildUserPrompt(speakerName, transcription, system);
+                var normalizedSpeaker = string.IsNullOrWhiteSpace(speakerName) ? "UnknownSpeaker" : speakerName.Trim();
+
+                // Build history block if memory enabled
+                var historyBlock = BuildHistoryBlock(normalizedSpeaker);
+                var userPrompt = BuildUserPrompt(normalizedSpeaker, transcription, system, historyBlock);
 
                 OnPromptSent?.Invoke(userPrompt);
+
+                // Persist user message
+                AppendConversation(normalizedSpeaker, "user", transcription);
 
                 // Use /api/generate (simpler) with stream=false
                 var payload = new
@@ -147,7 +309,12 @@ namespace Kinectv1
                 if (string.IsNullOrWhiteSpace(text))
                     text = "(no response)";
 
-                OnResponseReceived?.Invoke(text);
+                var cleaned = SanitizeAssistantText(text);
+
+                // Persist assistant response
+                AppendConversation(normalizedSpeaker, "assistant", cleaned);
+
+                OnResponseReceived?.Invoke(cleaned);
             }
             catch (Exception ex)
             {
@@ -220,9 +387,9 @@ namespace Kinectv1
             return _systemPrompt ?? string.Empty;
         }
 
-        private static string BuildUserPrompt(string speakerName, string transcription, string systemPrompt)
+        private static string BuildUserPrompt(string speakerName, string transcription, string systemPrompt, string historyBlock = null)
         {
-            speakerName = string.IsNullOrWhiteSpace(speakerName) ? "UnknownSpeaker" : speakerName.Trim();
+            speakerName = string.IsNullOrWhiteSpace(speakerName) ? "Unknown" : speakerName.Trim();
             var sb = new StringBuilder();
 
             if (!string.IsNullOrWhiteSpace(systemPrompt))
@@ -242,11 +409,17 @@ namespace Kinectv1
                 sb.AppendLine();
             }
 
-            sb.Append("USER");
-            if (!string.IsNullOrWhiteSpace(speakerName))
-                sb.Append($" ({speakerName})");
-            sb.Append(": ");
-            sb.Append(transcription?.Trim() ?? "");
+            if (!string.IsNullOrWhiteSpace(historyBlock))
+            {
+                sb.AppendLine("CONVERSATION:");
+                sb.AppendLine(historyBlock.Trim());
+                sb.AppendLine();
+            }
+
+            // Align incoming message format with system prompt guidance:
+            // "Name says: <their words>"
+            var userLine = $"{speakerName} says: {transcription?.Trim()}";
+            sb.Append(userLine);
             return sb.ToString();
         }
 

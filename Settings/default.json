@@ -1,0 +1,22 @@
+{
+  "audio": { "voiceThreshold": 0.2, "vadThreshold": 50, "bufferSize": 7 },
+  "tts": {
+    "enabled": true,
+    "speaker": "af_aoede",
+    "execution": "GPU",
+    "modelFolder": "models/tts/kokoro",
+    "modelPath": "models/tts/kokoro/onnx/model.onnx",
+    "vocoderPath": "models/tts/kokoro-82M/onnx/model_q8f16.onnx",
+    "outputDevice": "Default",
+    "localVolume": 1.0,
+    "discordVolume": 1.0,
+    "speed": 1.05,
+    "trimThreshold": 0.003,
+    "trimLeaveMs": 6,
+    "trimMaxMs": 800,
+    "minClausePaddingMs": 10,
+    "ipaServiceTimeoutMs": 1500,
+    "ipaOneShotTimeoutMs": 1500
+  },
+  "vad": { "threshold": 50 }
+}

@@ -1,261 +1,237 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
-	<PropertyGroup>
-		<!-- core WPF SDK settings -->
-		<OutputType>WinExe</OutputType>
-		<TargetFramework>net481</TargetFramework>
-		<UseWPF>true</UseWPF>
-		<Nullable>disable</Nullable>
-		<!-- Force x64 for Kinect - CRITICAL for Kinect SDK -->
-		<PlatformTarget>x64</PlatformTarget>
-		<Platforms>x64</Platforms>
-		<!-- Enable automatic package reference copying for non-Kinect packages -->
-		<CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
-		<LangVersion>10.0</LangVersion>
-		<GenerateAssemblyInfo>false</GenerateAssemblyInfo>
-		<AssemblyTitle>Kinect Face &amp; Voice Recognition</AssemblyTitle>
-		<AssemblyProduct>Kinectv1</AssemblyProduct>
-		<AssemblyVersion>1.0.0.0</AssemblyVersion>
-		<FileVersion>1.0.0.0</FileVersion>
-		<AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
-		<!-- Re-enable lock file; use central package mgmt -->
-		<RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
-		<NuGetAudit>False</NuGetAudit>
-		<ImplicitUsings>disable</ImplicitUsings>
-	</PropertyGroup>
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net481</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>disable</Nullable>
+    <PlatformTarget>x64</PlatformTarget>
+    <Platforms>x64</Platforms>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <LangVersion>10.0</LangVersion>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <AssemblyTitle>Kinect Face &amp; Voice Recognition</AssemblyTitle>
+    <AssemblyProduct>Kinectv1</AssemblyProduct>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <NuGetAudit>False</NuGetAudit>
+    <ImplicitUsings>disable</ImplicitUsings>
+  </PropertyGroup>
 
-	<!-- Exclude tool and test sources and their obj outputs from compilation -->
-	<ItemGroup>
-		<Compile Remove="tools\**\*.cs" />
-		<Compile Remove="tools\obj\**\*.cs" />
-		<Compile Remove="tests\**\*.cs" />
-		<None Include="tools\**\*" Exclude="tools\obj\**\*" />
-		<None Include="tests\**\*" />
-	</ItemGroup>
+  <ItemGroup>
+    <Compile Remove="tools\**\*.cs" />
+    <Compile Remove="tools\obj\**\*.cs" />
+    <Compile Remove="tests\**\*.cs" />
+    <None Include="tools\**\*" Exclude="tools\obj\**\*" />
+    <None Include="tests\**\*" />
+  </ItemGroup>
 
-	<!-- Remove explicit XAML includes to avoid duplicate Page items; rely on SDK implicit items -->
-	<ItemGroup>
-		<Compile Remove="src\UI\Settings\Editors\GeneralSettingsView.xaml.cs" />
-		<Page Remove="src\UI\Settings\Editors\GeneralSettingsView.xaml" />
-	</ItemGroup>
+  <ItemGroup>
+    <Compile Remove="src\UI\Settings\Editors\GeneralSettingsView.xaml.cs" />
+    <Page Remove="src\UI\Settings\Editors\GeneralSettingsView.xaml" />
+  </ItemGroup>
 
-	<!-- Organize developer-provided DLLs from lib/ into structured lib/ subfolders -->
-	<Target Name="OrganizeDevLibs" BeforeTargets="Build">
-		<!-- Ensure categorized folders exist -->
-		<MakeDir Directories="$(ProjectDir)lib" Condition="!Exists('$(ProjectDir)lib')" />
-		<MakeDir Directories="$(ProjectDir)lib\onnxruntime" Condition="!Exists('$(ProjectDir)lib\onnxruntime')" />
-		<MakeDir Directories="$(ProjectDir)lib\discord" Condition="!Exists('$(ProjectDir)lib\discord')" />
-		<MakeDir Directories="$(ProjectDir)lib\cuda" Condition="!Exists('$(ProjectDir)lib\cuda')" />
-		<MakeDir Directories="$(ProjectDir)lib\cudnn" Condition="!Exists('$(ProjectDir)lib\cudnn')" />
-		<MakeDir Directories="$(ProjectDir)lib\tensorrt" Condition="!Exists('$(ProjectDir)lib\tensorrt')" />
+  <Target Name="OrganizeDevLibs" BeforeTargets="Build">
+    <MakeDir Directories="$(ProjectDir)lib" Condition="!Exists('$(ProjectDir)lib')" />
+    <MakeDir Directories="$(ProjectDir)lib\onnxruntime" Condition="!Exists('$(ProjectDir)lib\onnxruntime')" />
+    <MakeDir Directories="$(ProjectDir)lib\discord" Condition="!Exists('$(ProjectDir)lib\discord')" />
+    <MakeDir Directories="$(ProjectDir)lib\cuda" Condition="!Exists('$(ProjectDir)lib\cuda')" />
+    <MakeDir Directories="$(ProjectDir)lib\cudnn" Condition="!Exists('$(ProjectDir)lib\cudnn')" />
+    <MakeDir Directories="$(ProjectDir)lib\tensorrt" Condition="!Exists('$(ProjectDir)lib\tensorrt')" />
+    <Copy SourceFiles="@(OrtDlls)" DestinationFolder="$(ProjectDir)lib\onnxruntime\" SkipUnchangedFiles="true" Condition=" '@(OrtDlls)' != '' " />
+    <Copy SourceFiles="@(DiscordDlls)" DestinationFolder="$(ProjectDir)lib\discord\" SkipUnchangedFiles="true" Condition=" '@(DiscordDlls)' != '' " />
+    <Copy SourceFiles="@(CudaLocalDlls)" DestinationFolder="$(ProjectDir)lib\cuda\" SkipUnchangedFiles="true" Condition=" '@(CudaLocalDlls)' != '' " />
+    <Copy SourceFiles="@(CuDnnLocalDlls)" DestinationFolder="$(ProjectDir)lib\cudnn\" SkipUnchangedFiles="true" Condition=" '@(CuDnnLocalDlls)' != '' " />
+    <Copy SourceFiles="@(TrtLocalDlls)" DestinationFolder="$(ProjectDir)lib\tensorrt\" SkipUnchangedFiles="true" Condition=" '@(TrtLocalDlls)' != '' " />
+    <Delete Files="@(OrtDllsToDelete)" Condition=" '@(OrtDllsToDelete)' != '' " />
+    <Delete Files="@(DiscordDllsToDelete)" Condition=" '@(DiscordDllsToDelete)' != '' " />
+    <Delete Files="@(CudaLocalDllsToDelete)" Condition=" '@(CudaLocalDllsToDelete)' != '' " />
+    <Delete Files="@(CuDnnLocalDllsToDelete)" Condition=" '@(CuDnnLocalDllsToDelete)' != '' " />
+    <Delete Files="@(TrtLocalDllsToDelete)" Condition=" '@(TrtLocalDllsToDelete)' != '' " />
+  </Target>
 
-		
+  <Target Name="NormalizeLibLayout" AfterTargets="OrganizeDevLibs">
+    <MakeDir Directories="$(ProjectDir)lib\onnxruntime" Condition="!Exists('$(ProjectDir)lib\onnxruntime')" />
+    <MakeDir Directories="$(ProjectDir)lib\discord" Condition="!Exists('$(ProjectDir)lib\discord')" />
+    <MakeDir Directories="$(ProjectDir)lib\cuda" Condition="!Exists('$(ProjectDir)lib\cuda')" />
+    <MakeDir Directories="$(ProjectDir)lib\cudnn" Condition="!Exists('$(ProjectDir)lib\cudnn')" />
+    <MakeDir Directories="$(ProjectDir)lib\tensorrt" Condition="!Exists('$(ProjectDir)lib\tensorrt')" />
 
-		<!-- Copy into categorized folders (non-destructive; leaves originals) -->
-		<Copy SourceFiles="@(OrtDlls)" DestinationFolder="$(ProjectDir)lib\onnxruntime\" SkipUnchangedFiles="true" Condition=" '@(OrtDlls)' != '' " />
-		<Copy SourceFiles="@(DiscordDlls)" DestinationFolder="$(ProjectDir)lib\discord\" SkipUnchangedFiles="true" Condition=" '@(DiscordDlls)' != '' " />
-		<Copy SourceFiles="@(CudaLocalDlls)" DestinationFolder="$(ProjectDir)lib\cuda\" SkipUnchangedFiles="true" Condition=" '@(CudaLocalDlls)' != '' " />
-		<Copy SourceFiles="@(CuDnnLocalDlls)" DestinationFolder="$(ProjectDir)lib\cudnn\" SkipUnchangedFiles="true" Condition=" '@(CuDnnLocalDlls)' != '' " />
-		<Copy SourceFiles="@(TrtLocalDlls)" DestinationFolder="$(ProjectDir)lib\tensorrt\" SkipUnchangedFiles="true" Condition=" '@(TrtLocalDlls)' != '' " />
-	    <Delete Files="@(OrtDllsToDelete)" Condition=" '@(OrtDllsToDelete)' != '' " />
-		<Delete Files="@(DiscordDllsToDelete)" Condition=" '@(DiscordDllsToDelete)' != '' " />
-		<Delete Files="@(CudaLocalDllsToDelete)" Condition=" '@(CudaLocalDllsToDelete)' != '' " />
-		<Delete Files="@(CuDnnLocalDllsToDelete)" Condition=" '@(CuDnnLocalDllsToDelete)' != '' " />
-		<Delete Files="@(TrtLocalDllsToDelete)" Condition=" '@(TrtLocalDllsToDelete)' != '' " />
-	</Target>
+    <ItemGroup>
+      <LibRootOrt Include="$(ProjectDir)lib\onnxruntime*.dll" />
+      <LibRootDiscord Include="$(ProjectDir)lib\opus*.dll;$(ProjectDir)lib\libsodium*.dll" />
+      <LibRootCuda Include="$(ProjectDir)lib\cud*.dll;$(ProjectDir)lib\cublas*.dll;$(ProjectDir)lib\curand*.dll;$(ProjectDir)lib\nvrtc*.dll" />
+      <LibRootCuDnn Include="$(ProjectDir)lib\cudnn*.dll" />
+      <LibRootTrt Include="$(ProjectDir)lib\nvinfer*.dll;$(ProjectDir)lib\nvonnxparser*.dll;$(ProjectDir)lib\myelin*.dll" />
+    </ItemGroup>
 
-	<!-- Normalize lib/ root: move misplaced DLLs into categorized subfolders and remove originals -->
-	<Target Name="NormalizeLibLayout" AfterTargets="OrganizeDevLibs">
-		<MakeDir Directories="$(ProjectDir)lib\onnxruntime" Condition="!Exists('$(ProjectDir)lib\onnxruntime')" />
-		<MakeDir Directories="$(ProjectDir)lib\discord" Condition="!Exists('$(ProjectDir)lib\discord')" />
-		<MakeDir Directories="$(ProjectDir)lib\cuda" Condition="!Exists('$(ProjectDir)lib\cuda')" />
-		<MakeDir Directories="$(ProjectDir)lib\cudnn" Condition="!Exists('$(ProjectDir)lib\cudnn')" />
-		<MakeDir Directories="$(ProjectDir)lib\tensorrt" Condition="!Exists('$(ProjectDir)lib\tensorrt')" />
+    <Copy SourceFiles="@(LibRootOrt)" DestinationFolder="$(ProjectDir)lib\onnxruntime\" SkipUnchangedFiles="true" Condition=" '@(LibRootOrt)' != '' " />
+    <Copy SourceFiles="@(LibRootDiscord)" DestinationFolder="$(ProjectDir)lib\discord\" SkipUnchangedFiles="true" Condition=" '@(LibRootDiscord)' != '' " />
+    <Copy SourceFiles="@(LibRootCuda)" DestinationFolder="$(ProjectDir)lib\cuda\" SkipUnchangedFiles="true" Condition=" '@(LibRootCuda)' != '' " />
+    <Copy SourceFiles="@(LibRootCuDnn)" DestinationFolder="$(ProjectDir)lib\cudnn\" SkipUnchangedFiles="true" Condition=" '@(LibRootCuDnn)' != '' " />
+    <Copy SourceFiles="@(LibRootTrt)" DestinationFolder="$(ProjectDir)lib\tensorrt\" SkipUnchangedFiles="true" Condition=" '@(LibRootTrt)' != '' " />
 
-		<ItemGroup>
-			<LibRootOrt Include="$(ProjectDir)lib\onnxruntime*.dll" />
-			<LibRootDiscord Include="$(ProjectDir)lib\opus*.dll;$(ProjectDir)lib\libsodium*.dll" />
-			<LibRootCuda Include="$(ProjectDir)lib\cud*.dll;$(ProjectDir)lib\cublas*.dll;$(ProjectDir)lib\curand*.dll;$(ProjectDir)lib\nvrtc*.dll" />
-			<LibRootCuDnn Include="$(ProjectDir)lib\cudnn*.dll" />
-			<LibRootTrt Include="$(ProjectDir)lib\nvinfer*.dll;$(ProjectDir)lib\nvonnxparser*.dll;$(ProjectDir)lib\myelin*.dll" />
-		</ItemGroup>
+    <Delete Files="@(LibRootOrt)" Condition=" '@(LibRootOrt)' != '' " />
+    <Delete Files="@(LibRootDiscord)" Condition=" '@(LibRootDiscord)' != '' " />
+    <Delete Files="@(LibRootCuda)" Condition=" '@(LibRootCuda)' != '' " />
+    <Delete Files="@(LibRootCuDnn)" Condition=" '@(LibRootCuDnn)' != '' " />
+    <Delete Files="@(LibRootTrt)" Condition=" '@(LibRootTrt)' != '' " />
+  </Target>
 
-		<Copy SourceFiles="@(LibRootOrt)" DestinationFolder="$(ProjectDir)lib\onnxruntime\" SkipUnchangedFiles="true" Condition=" '@(LibRootOrt)' != '' " />
-		<Copy SourceFiles="@(LibRootDiscord)" DestinationFolder="$(ProjectDir)lib\discord\" SkipUnchangedFiles="true" Condition=" '@(LibRootDiscord)' != '' " />
-		<Copy SourceFiles="@(LibRootCuda)" DestinationFolder="$(ProjectDir)lib\cuda\" SkipUnchangedFiles="true" Condition=" '@(LibRootCuda)' != '' " />
-		<Copy SourceFiles="@(LibRootCuDnn)" DestinationFolder="$(ProjectDir)lib\cudnn\" SkipUnchangedFiles="true" Condition=" '@(LibRootCuDnn)' != '' " />
-		<Copy SourceFiles="@(LibRootTrt)" DestinationFolder="$(ProjectDir)lib\tensorrt\" SkipUnchangedFiles="true" Condition=" '@(LibRootTrt)' != '' " />
+  <Target Name="NormalizeBinLayout" AfterTargets="Build">
+    <PropertyGroup>
+      <OutLib>$(OutputPath)lib\</OutLib>
+    </PropertyGroup>
+    <MakeDir Directories="$(OutLib)onnxruntime" Condition="!Exists('$(OutLib)onnxruntime')" />
+    <MakeDir Directories="$(OutLib)discord" Condition="!Exists('$(OutLib)discord')" />
+    <MakeDir Directories="$(OutLib)cuda" Condition="!Exists('$(OutLib)cuda')" />
+    <MakeDir Directories="$(OutLib)cudnn" Condition="!Exists('$(OutLib)cudnn')" />
+    <MakeDir Directories="$(OutLib)tensorrt" Condition="!Exists('$(OutLib)tensorrt')" />
 
-		<Delete Files="@(LibRootOrt)" Condition=" '@(LibRootOrt)' != '' " />
-		<Delete Files="@(LibRootDiscord)" Condition=" '@(LibRootDiscord)' != '' " />
-		<Delete Files="@(LibRootCuda)" Condition=" '@(LibRootCuda)' != '' " />
-		<Delete Files="@(LibRootCuDnn)" Condition=" '@(LibRootCuDnn)' != '' " />
-		<Delete Files="@(LibRootTrt)" Condition=" '@(LibRootTrt)' != '' " />
-	</Target>
+    <ItemGroup>
+      <BinOrt Include="$(OutputPath)onnxruntime*.dll" />
+      <BinDiscord Include="$(OutputPath)opus*.dll;$(OutputPath)libsodium*.dll" />
+      <BinCuda Include="$(OutputPath)cud*.dll;$(OutputPath)cublas*.dll;$(OutputPath)curand*.dll;$(OutputPath)nvrtc*.dll" />
+      <BinCuDnn Include="$(OutputPath)cudnn*.dll" />
+      <BinTrt Include="$(OutputPath)nvinfer*.dll;$(OutputPath)nvonnxparser*.dll;$(OutputPath)myelin*.dll" />
+    </ItemGroup>
 
-	<!-- Normalize bin output: move misplaced DLLs from bin root into bin\lib subfolders and remove originals -->
-	<Target Name="NormalizeBinLayout" AfterTargets="Build">
-		<PropertyGroup>
-			<OutLib>$(OutputPath)lib\</OutLib>
-		</PropertyGroup>
-		<MakeDir Directories="$(OutLib)onnxruntime" Condition="!Exists('$(OutLib)onnxruntime')" />
-		<MakeDir Directories="$(OutLib)discord" Condition="!Exists('$(OutLib)discord')" />
-		<MakeDir Directories="$(OutLib)cuda" Condition="!Exists('$(OutLib)cuda')" />
-		<MakeDir Directories="$(OutLib)cudnn" Condition="!Exists('$(OutLib)cudnn')" />
-		<MakeDir Directories="$(OutLib)tensorrt" Condition="!Exists('$(OutLib)tensorrt')" />
+    <Copy SourceFiles="@(BinOrt)" DestinationFolder="$(OutLib)onnxruntime\" SkipUnchangedFiles="true" Condition=" '@(BinOrt)' != '' " />
+    <Copy SourceFiles="@(BinDiscord)" DestinationFolder="$(OutLib)discord\" SkipUnchangedFiles="true" Condition=" '@(BinDiscord)' != '' " />
+    <Copy SourceFiles="@(BinCuda)" DestinationFolder="$(OutLib)cuda\" SkipUnchangedFiles="true" Condition=" '@(BinCuda)' != '' " />
+    <Copy SourceFiles="@(BinCuDnn)" DestinationFolder="$(OutLib)cudnn\" SkipUnchangedFiles="true" Condition=" '@(BinCuDnn)' != '' " />
+    <Copy SourceFiles="@(BinTrt)" DestinationFolder="$(OutLib)tensorrt\" SkipUnchangedFiles="true" Condition=" '@(BinTrt)' != '' " />
 
-		<ItemGroup>
-			<BinOrt Include="$(OutputPath)onnxruntime*.dll" />
-			<BinDiscord Include="$(OutputPath)opus*.dll;$(OutputPath)libsodium*.dll" />
-			<BinCuda Include="$(OutputPath)cud*.dll;$(OutputPath)cublas*.dll;$(OutputPath)curand*.dll;$(OutputPath)nvrtc*.dll" />
-			<BinCuDnn Include="$(OutputPath)cudnn*.dll" />
-			<BinTrt Include="$(OutputPath)nvinfer*.dll;$(OutputPath)nvonnxparser*.dll;$(OutputPath)myelin*.dll" />
-		</ItemGroup>
+    <Delete Files="@(BinOrt)" Condition=" '@(BinOrt)' != '' " />
+    <Delete Files="@(BinDiscord)" Condition=" '@(BinDiscord)' != '' " />
+    <Delete Files="@(BinCuda)" Condition=" '@(BinCuda)' != '' " />
+    <Delete Files="@(BinCuDnn)" Condition=" '@(BinCuDnn)' != '' " />
+    <Delete Files="@(BinTrt)" Condition=" '@(BinTrt)' != '' " />
+  </Target>
 
-		<Copy SourceFiles="@(BinOrt)" DestinationFolder="$(OutLib)onnxruntime\" SkipUnchangedFiles="true" Condition=" '@(BinOrt)' != '' " />
-		<Copy SourceFiles="@(BinDiscord)" DestinationFolder="$(OutLib)discord\" SkipUnchangedFiles="true" Condition=" '@(BinDiscord)' != '' " />
-		<Copy SourceFiles="@(BinCuda)" DestinationFolder="$(OutLib)cuda\" SkipUnchangedFiles="true" Condition=" '@(BinCuda)' != '' " />
-		<Copy SourceFiles="@(BinCuDnn)" DestinationFolder="$(OutLib)cudnn\" SkipUnchangedFiles="true" Condition=" '@(BinCuDnn)' != '' " />
-		<Copy SourceFiles="@(BinTrt)" DestinationFolder="$(OutLib)tensorrt\" SkipUnchangedFiles="true" Condition=" '@(BinTrt)' != '' " />
+  <Target Name="CopyNuGetRuntimesToLib" AfterTargets="Build" BeforeTargets="NormalizeBinLayout">
+    <PropertyGroup>
+      <OutLib>$(OutputPath)lib\</OutLib>
+    </PropertyGroup>
+    <MakeDir Directories="$(OutLib)onnxruntime" Condition="!Exists('$(OutLib)onnxruntime')" />
+    <MakeDir Directories="$(OutLib)discord" Condition="!Exists('$(OutLib)discord')" />
+    <MakeDir Directories="$(OutLib)vosk" Condition="!Exists('$(OutLib)vosk')" />
+    <MakeDir Directories="$(OutLib)kinect" Condition="!Exists('$(OutLib)kinect')" />
 
-		<Delete Files="@(BinOrt)" Condition=" '@(BinOrt)' != '' " />
-		<Delete Files="@(BinDiscord)" Condition=" '@(BinDiscord)' != '' " />
-		<Delete Files="@(BinCuda)" Condition=" '@(BinCuda)' != '' " />
-		<Delete Files="@(BinCuDnn)" Condition=" '@(BinCuDnn)' != '' " />
-		<Delete Files="@(BinTrt)" Condition=" '@(BinTrt)' != '' " />
-	</Target>
+    <ItemGroup>
+      <RuntimesOrt Include="$(OutputPath)runtimes\**\onnxruntime*.dll" />
+      <RuntimesDiscord Include="$(OutputPath)runtimes\**\opus*.dll;$(OutputPath)runtimes\**\libsodium*.dll" />
+      <RuntimesVosk Include="$(OutputPath)runtimes\**\*vosk*.dll" />
+      <RuntimesKinect Include="$(OutputPath)runtimes\**\Kinect*.dll" />
+    </ItemGroup>
 
-	<!-- Copy NuGet package native DLLs from runtimes/** into bin\lib subfolders -->
-	<Target Name="CopyNuGetRuntimesToLib" AfterTargets="Build" BeforeTargets="NormalizeBinLayout">
-		<PropertyGroup>
-			<OutLib>$(OutputPath)lib\</OutLib>
-		</PropertyGroup>
-		<MakeDir Directories="$(OutLib)onnxruntime" Condition="!Exists('$(OutLib)onnxruntime')" />
-		<MakeDir Directories="$(OutLib)discord" Condition="!Exists('$(OutLib)discord')" />
-		<MakeDir Directories="$(OutLib)vosk" Condition="!Exists('$(OutLib)vosk')" />
-		<MakeDir Directories="$(OutLib)kinect" Condition="!Exists('$(OutLib)kinect')" />
+    <Copy SourceFiles="@(RuntimesOrt)" DestinationFolder="$(OutLib)onnxruntime\" SkipUnchangedFiles="true" Condition=" '@(RuntimesOrt)' != '' " />
+    <Copy SourceFiles="@(RuntimesDiscord)" DestinationFolder="$(OutLib)discord\" SkipUnchangedFiles="true" Condition=" '@(RuntimesDiscord)' != '' " />
+    <Copy SourceFiles="@(RuntimesVosk)" DestinationFolder="$(OutLib)vosk\" SkipUnchangedFiles="true" Condition=" '@(RuntimesVosk)' != '' " />
+    <Copy SourceFiles="@(RuntimesKinect)" DestinationFolder="$(OutLib)kinect\" SkipUnchangedFiles="true" Condition=" '@(RuntimesKinect)' != '' " />
+  </Target>
 
-		<ItemGroup>
-			<RuntimesOrt Include="$(OutputPath)runtimes\**\onnxruntime*.dll" />
-			<RuntimesDiscord Include="$(OutputPath)runtimes\**\opus*.dll;$(OutputPath)runtimes\**\libsodium*.dll" />
-			<RuntimesVosk Include="$(OutputPath)runtimes\**\*vosk*.dll" />
-			<!-- Kinect native DLLs if any appear under runtimes -->
-			<RuntimesKinect Include="$(OutputPath)runtimes\**\Kinect*.dll" />
-		</ItemGroup>
+  <ItemGroup>
+    <Content Include="models\**\*" Condition="Exists('models')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
 
-		<Copy SourceFiles="@(RuntimesOrt)" DestinationFolder="$(OutLib)onnxruntime\" SkipUnchangedFiles="true" Condition=" '@(RuntimesOrt)' != '' " />
-		<Copy SourceFiles="@(RuntimesDiscord)" DestinationFolder="$(OutLib)discord\" SkipUnchangedFiles="true" Condition=" '@(RuntimesDiscord)' != '' " />
-		<Copy SourceFiles="@(RuntimesVosk)" DestinationFolder="$(OutLib)vosk\" SkipUnchangedFiles="true" Condition=" '@(RuntimesVosk)' != '' " />
-		<Copy SourceFiles="@(RuntimesKinect)" DestinationFolder="$(OutLib)kinect\" SkipUnchangedFiles="true" Condition=" '@(RuntimesKinect)' != '' " />
-	</Target>
+  <ItemGroup>
+    <Content Include="prompts\system.txt" Condition="Exists('prompts/system.txt')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="prompts\**\*.txt" Condition="Exists('prompts')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
 
-	<!-- Copy entire models tree to bin/models (replaces ad-hoc entries) -->
-	<ItemGroup>
-		<Content Include="models\**\*" Condition="Exists('models')">
-			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-		</Content>
-	</ItemGroup>
+  <ItemGroup>
+    <Content Include="lib\**\*.dll" Condition="Exists('lib')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
 
-	<!-- NEW: System prompt files -->
-	<ItemGroup>
-		<Content Include="prompts\system.txt" Condition="Exists('prompts/system.txt')">
-			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-		</Content>
-		<Content Include="prompts\**\*.txt" Condition="Exists('prompts')">
-			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-		</Content>
-	</ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Kinect" />
+    <PackageReference Include="Microsoft.Kinect.Face.x64" />
+    <PackageReference Include="Google.Protobuf" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" />
+    <PackageReference Include="NAudio" />
+    <PackageReference Include="Vosk" />
+    <PackageReference Include="System.Management" />
+    <PackageReference Include="Newtonsoft.Json" />
+    <PackageReference Include="System.Configuration.ConfigurationManager" />
+    <PackageReference Include="Discord.Net" />
+    <PackageReference Include="Discord.Net.Commands" />
+    <PackageReference Include="Discord.Net.WebSocket" />
+    <PackageReference Include="System.Threading.Channels" />
+  </ItemGroup>
+  
+  <ItemGroup>
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Net.Http" />
+  </ItemGroup>
+  
+  <ItemGroup>
+    <None Remove="copilot-instructions.md" />
+    <None Remove="models\tts\cmudict.dict" />
+    <None Remove="models\tts\model.onnx" />
+    <None Remove="models\tts\SpeakerList.txt" />
+    <None Remove="models\tts\symbols.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Update="Properties\Settings.Designer.cs">
+      <DesignTimeSharedInput>True</DesignTimeSharedInput>
+      <AutoGen>True</AutoGen>
+      <DependentUpon>Settings.settings</DependentUpon>
+    </Compile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Update="Properties\Settings.settings">
+      <Generator>SettingsSingleFileGenerator</Generator>
+      <LastGenOutput>Settings.Designer.cs</LastGenOutput>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include=".github\copilot-instructions.md" />
+    <None Include=".github\workflows\agent-bridge.yml" />
+    <None Include=".github\workflows\asr-testing.yml" />
+    <None Include=".github\workflows\copilot-task-runner.yml" />
+    <None Include=".github\workflows\pr-summary.yml" />
+  </ItemGroup>
 
-	<!-- Copy TensorRT/CUDA/cuDnn provider DLLs from local lib into output if present -->
-	<ItemGroup>
-		<Content Include="lib\**\*.dll" Condition="Exists('lib')">
-			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-		</Content>
-		
-	</ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Settings\default.json">
+      <LogicalName>$(AssemblyName).Settings.default.json</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
 
-	<!-- NuGet packages; versions managed centrally in Directory.Packages.props -->
-	<ItemGroup>
-		<PackageReference Include="Microsoft.Kinect" />
-		<PackageReference Include="Microsoft.Kinect.Face.x64" />
-		<PackageReference Include="Google.Protobuf" />
-		<PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" />
-		<PackageReference Include="NAudio" />
-		<PackageReference Include="Vosk" />
-		<PackageReference Include="System.Management" />
-		<PackageReference Include="Newtonsoft.Json" />
-		<!-- Remove explicit System.Net.Http; rely on inbox framework assembly on .NET Framework 4.8.1 -->
-		<PackageReference Include="System.Configuration.ConfigurationManager" />
-		<PackageReference Include="Discord.Net" />
-		<PackageReference Include="Discord.Net.Commands" />
-		<PackageReference Include="Discord.Net.WebSocket" />
-		<PackageReference Include="System.Threading.Channels" />
-		<!-- Remove explicit System.* additions; rely on transitive and binding redirects -->
-	</ItemGroup>
-	
-	<!-- Framework references for WPF and Windows Forms -->
-	<ItemGroup>
-		<Reference Include="System.Windows.Forms" />
-		<Reference Include="System.Net.Http" />
-	</ItemGroup>
-	
-	<!-- Remove legacy Coqui TTS file copies (not used with Kokoro) -->
-	<ItemGroup>
-		<None Remove="copilot-instructions.md" />
-		<None Remove="models\tts\cmudict.dict" />
-		<None Remove="models\tts\model.onnx" />
-		<None Remove="models\tts\SpeakerList.txt" />
-		<None Remove="models\tts\symbols.txt" />
-	</ItemGroup>
-	<ItemGroup>
-	  <Compile Update="Properties\Settings.Designer.cs">
-	    <DesignTimeSharedInput>True</DesignTimeSharedInput>
-	    <AutoGen>True</AutoGen>
-	    <DependentUpon>Settings.settings</DependentUpon>
-	  </Compile>
-	</ItemGroup>
-	<ItemGroup>
-		<None Update="Properties\Settings.settings">
-			<Generator>SettingsSingleFileGenerator</Generator>
-			<LastGenOutput>Settings.Designer.cs</LastGenOutput>
-		</None>
-	</ItemGroup>
-	<ItemGroup>
-	  <None Include=".github\copilot-instructions.md" />
-	  <None Include=".github\workflows\agent-bridge.yml" />
-	  <None Include=".github\workflows\asr-testing.yml" />
-	  <None Include=".github\workflows\copilot-task-runner.yml" />
-	  <None Include=".github\workflows\pr-summary.yml" />
-	</ItemGroup>
+  <Target Name="VerifyRuntimeSetup" AfterTargets="Build">
+    <Message Text="✅ .NET Framework 4.8.1 Build Status:" Importance="high" />
+    <Message Text="Build completed - using .NET Framework with native Kinect support" Importance="high" />
+    <Message Text="✅ Using Newtonsoft.Json for better .NET Framework compatibility" Importance="high" />
+    <Message Text="✅ System prompt files copied to output directory" Importance="high" />
+  </Target>
 
-	<!-- Enhanced verification with prompt files -->
-	<Target Name="VerifyRuntimeSetup" AfterTargets="Build">
-		<Message Text="✅ .NET Framework 4.8.1 Build Status:" Importance="high" />
-		<Message Text="Build completed - using .NET Framework with native Kinect support" Importance="high" />
-		<Message Text="✅ Using Newtonsoft.Json for better .NET Framework compatibility" Importance="high" />
-		<Message Text="✅ System prompt files copied to output directory" Importance="high" />
-	</Target>
+  <Target Name="VerifySystemPrompt" AfterTargets="Build" Condition="Exists('$(OutputPath)prompts\system.txt')">
+    <Message Text="System prompt file verified in output: $(OutputPath)prompts/system.txt" Importance="high" />
+  </Target>
+  
+  <Target Name="WarnMissingSystemPrompt" AfterTargets="Build" Condition="!Exists('$(OutputPath)prompts\system.txt')">
+    <Warning Text="System prompt file not found in output directory. Create prompts\system.txt in project root." />
+  </Target>
 
-	<!-- Verify system prompt file after build -->
-	<Target Name="VerifySystemPrompt" AfterTargets="Build" Condition="Exists('$(OutputPath)prompts\system.txt')">
-		<Message Text="System prompt file verified in output: $(OutputPath)prompts/system.txt" Importance="high" />
-	</Target>
-	
-	<Target Name="WarnMissingSystemPrompt" AfterTargets="Build" Condition="!Exists('$(OutputPath)prompts\system.txt')">
-		<Warning Text="System prompt file not found in output directory. Create prompts\system.txt in project root." />
-	</Target>
-
-	<!-- Ensure Discord voice natives (opus.dll, libsodium.dll) are pulled on build and placed next to the EXE -->
-	<Target Name="EnsureDiscordVoiceNatives" AfterTargets="Build">
-		<PropertyGroup>
-			<OpusOut>$(OutputPath)opus.dll</OpusOut>
-			<SodiumOut>$(OutputPath)libsodium.dll</SodiumOut>
-		</PropertyGroup>
-		<!-- If missing, run the downloader script (non-fatal) -->
-		<Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(ProjectDir)download-discord-natives.ps1&quot;" WorkingDirectory="$(ProjectDir)" Condition="!Exists('$(OpusOut)') Or !Exists('$(SodiumOut)')" ContinueOnError="true" />
-		<!-- Fallback: copy from local repo folders if present -->
-		<ItemGroup>
-			<DiscordLibs Include="$(ProjectDir)lib\discord\opus.dll;$(ProjectDir)lib\discord\libsodium.dll;$(ProjectDir)libs\opus.dll;$(ProjectDir)libs\libsodium.dll" />
-		</ItemGroup>
-		<Copy SourceFiles="@(DiscordLibs)" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" Condition=" '@(DiscordLibs)' != '' " />
-	</Target>
+  <Target Name="EnsureDiscordVoiceNatives" AfterTargets="Build">
+    <PropertyGroup>
+      <OpusOut>$(OutputPath)opus.dll</OpusOut>
+      <SodiumOut>$(OutputPath)libsodium.dll</SodiumOut>
+    </PropertyGroup>
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(ProjectDir)download-discord-natives.ps1&quot;" WorkingDirectory="$(ProjectDir)" Condition="!Exists('$(OpusOut)') Or !Exists('$(SodiumOut)')" ContinueOnError="true" />
+    <ItemGroup>
+      <DiscordLibs Include="$(ProjectDir)lib\discord\opus.dll;$(ProjectDir)lib\discord\libsodium.dll;$(ProjectDir)libs\opus.dll;$(ProjectDir)libs\libsodium.dll" />
+    </ItemGroup>
+    <Copy SourceFiles="@(DiscordLibs)" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" Condition=" '@(DiscordLibs)' != '' " />
+  </Target>
 </Project>

@@ -86,6 +86,9 @@ namespace Kinectv1
                 try { await Task.WhenAny(prevTask, Task.Delay(500)).ConfigureAwait(false); } catch { }
             }
 
+            // Small backoff to let audio device fully release after cancellation
+            await Task.Delay(75).ConfigureAwait(false);
+
             // Dispose old CTS after cancellation
             try { oldCts?.Dispose(); } catch { }
 
@@ -144,13 +147,13 @@ namespace Kinectv1
             }
             finally
             {
-                // Clear current if still ours; dispose CTS and raise stop
+                // Clear current if still ours; raise stop (do not dispose CTS here to avoid race with in-flight tasks)
                 bool raiseStop = false;
                 lock (_lock)
                 {
                     if (_currentUtteranceId == utteranceId)
                     {
-                        try { _currentCts?.Dispose(); } catch { }
+                        // Intentionally do not dispose _currentCts here; it may still be observed by in-flight tasks.
                         _currentCts = null;
                         _currentUtteranceId = null;
                         raiseStop = true;

@@ -400,7 +400,7 @@ namespace Kinectv1
             if (audio == null || audio.Length == 0) return;
             try
             {
-                cancellationToken.ThrowIfCancellationRequested();
+                if (cancellationToken.IsCancellationRequested) return;
 
                 // Peak normalization to prevent clipping/distortion
                 float peak = 0f;
@@ -411,7 +411,7 @@ namespace Kinectv1
                 var pcm = new short[audio.Length];
                 for (int i = 0; i < audio.Length; i++) { var x = Math.Max(-1.0f, Math.Min(1.0f, audio[i] * gain)); pcm[i] = (short)(x * 32767); }
 
-                cancellationToken.ThrowIfCancellationRequested();
+                if (cancellationToken.IsCancellationRequested) return;
 
                 var waveFormat = new WaveFormat(sampleRate, 16, 1);
                 var deviceNumber = GetConfiguredOutputDeviceNumberFast() ?? -1; // -1 uses default device
@@ -430,7 +430,7 @@ namespace Kinectv1
 
                 await Task.Run(() =>
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
+                    if (cancellationToken.IsCancellationRequested) return;
 
                     using var ms = new MemoryStream(combined, writable: false);
                     using var rss = new RawSourceWaveStream(ms, waveFormat);
@@ -464,21 +464,20 @@ namespace Kinectv1
                         if (cancellationToken.IsCancellationRequested)
                         {
                             try { waveOut.Stop(); } catch { }
+                            return;
                         }
-
-                        cancellationToken.ThrowIfCancellationRequested();
                     }
                     finally
                     {
                         try { waveOut?.Stop(); } catch { }
                         try { waveOut?.Dispose(); } catch { }
                     }
-                }, cancellationToken).ConfigureAwait(false);
+                }).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
-                // Clean cancellation - swallow after ensuring cleanup
-                throw;
+                // Clean cancellation during barge-in: swallow to avoid surfacing as an error
+                return;
             }
             catch (Exception ex)
             {

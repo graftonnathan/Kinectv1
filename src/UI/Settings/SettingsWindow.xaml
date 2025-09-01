@@ -18,99 +18,53 @@
         <SolidColorBrush x:Key="TextSecondary" Color="#FFE0E0E0"/>
         <SolidColorBrush x:Key="TextMuted" Color="#FFB0B0B0"/>
         <SolidColorBrush x:Key="AccentBlue" Color="#FF0078D4"/>
-        
-        <!-- TreeView Style -->
-        <Style x:Key="SettingsTreeViewStyle" TargetType="TreeView">
-            <Setter Property="Background" Value="{DynamicResource SurfaceBackground}"/>
-            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
-            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
-            <Setter Property="BorderThickness" Value="1"/>
-        </Style>
-        
-        <!-- TreeViewItem Style -->
-        <Style x:Key="SettingsTreeViewItemStyle" TargetType="TreeViewItem">
-            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
-            <Setter Property="Padding" Value="8,4"/>
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="TreeViewItem">
-                        <Border Background="Transparent" BorderThickness="0" Padding="{TemplateBinding Padding}">
-                            <ContentPresenter Content="{TemplateBinding Header}"/>
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsSelected" Value="True">
-                                <Setter Property="Background" Value="{DynamicResource AccentBlue}"/>
-                            </Trigger>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter Property="Background" Value="{DynamicResource SurfaceBackgroundLight}"/>
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
+        <SolidColorBrush x:Key="AccentGreen" Color="#FF107C10"/>
+        <SolidColorBrush x:Key="AccentRed" Color="#FFE74C3C"/>
     </Window.Resources>
 
-    <Grid>
-        <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="250" MinWidth="200"/>
-            <ColumnDefinition Width="5"/>
-            <ColumnDefinition Width="*"/>
-        </Grid.ColumnDefinitions>
+    <DockPanel>
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="250" MinWidth="200"/>
+                <ColumnDefinition Width="5"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
 
-        <!-- Left Panel: TreeView for Categories -->
-        <Border Grid.Column="0" 
-                Background="{DynamicResource SurfaceBackground}"
-                BorderBrush="{DynamicResource BorderBrush}"
-                BorderThickness="0,0,1,0">
-            <TreeView Name="CategoriesTreeView"
-                      Style="{StaticResource SettingsTreeViewStyle}"
-                      ItemsSource="{Binding Categories}"
-                      SelectedItemChanged="CategoriesTreeView_SelectedItemChanged">
-                <TreeView.ItemTemplate>
-                    <DataTemplate>
-                        <TextBlock Text="{Binding Name}" 
-                                   Style="{StaticResource SettingsTreeViewItemStyle}"
-                                   Foreground="{DynamicResource TextPrimary}"/>
-                    </DataTemplate>
-                </TreeView.ItemTemplate>
-            </TreeView>
-        </Border>
+            <!-- Left Panel: TreeView for Categories -->
+            <Border Grid.Column="0" 
+                    Background="{DynamicResource SurfaceBackground}"
+                    BorderBrush="{DynamicResource BorderBrush}"
+                    BorderThickness="0,0,1,0">
+                <TreeView Name="CategoriesTreeView"
+                          Background="{DynamicResource SurfaceBackground}"
+                          Foreground="{DynamicResource TextPrimary}"
+                          BorderBrush="{DynamicResource BorderBrush}"
+                          BorderThickness="1"
+                          ItemsSource="{Binding Categories}"
+                          SelectedItemChanged="CategoriesTreeView_SelectedItemChanged">
+                    <TreeView.ItemTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding Name}" 
+                                       Foreground="{DynamicResource TextPrimary}"/>
+                        </DataTemplate>
+                    </TreeView.ItemTemplate>
+                </TreeView>
+            </Border>
 
-        <!-- Splitter -->
-        <GridSplitter Grid.Column="1" 
-                      HorizontalAlignment="Stretch"
-                      Background="{DynamicResource BorderBrush}"
-                      ResizeBehavior="PreviousAndNext"/>
+            <!-- Splitter -->
+            <GridSplitter Grid.Column="1" 
+                          HorizontalAlignment="Stretch"
+                          Background="{DynamicResource BorderBrush}"
+                          ResizeBehavior="PreviousAndNext"/>
 
-        <!-- Right Panel: ContentPresenter for Settings -->
-        <Border Grid.Column="2"
-                Background="{DynamicResource WindowBackground}"
-                Padding="20">
-            <ContentPresenter Content="{Binding SelectedCategory.EditorView}"
-                              HorizontalAlignment="Stretch"
-                              VerticalAlignment="Top">
-                <ContentPresenter.ContentTemplate>
-                    <DataTemplate>
-                        <Border Background="{DynamicResource SurfaceBackground}"
-                                BorderBrush="{DynamicResource BorderBrush}"
-                                BorderThickness="1"
-                                CornerRadius="4"
-                                Padding="20">
-                            <StackPanel>
-                                <TextBlock Text="{Binding CategoryName}"
-                                           FontSize="18"
-                                           FontWeight="SemiBold"
-                                           Foreground="{DynamicResource TextPrimary}"
-                                           Margin="0,0,0,10"/>
-                                <TextBlock Text="{Binding Description}"
-                                           Foreground="{DynamicResource TextSecondary}"
-                                           TextWrapping="Wrap"/>
-                            </StackPanel>
-                        </Border>
-                    </DataTemplate>
-                </ContentPresenter.ContentTemplate>
-            </ContentPresenter>
-        </Border>
-    </Grid>
+            <!-- Right Panel: ContentPresenter for Settings -->
+            <Border Grid.Column="2"
+                    Background="{DynamicResource WindowBackground}"
+                    Padding="20">
+                <ContentPresenter Content="{Binding SelectedCategory.EditorView}"
+                                  HorizontalAlignment="Stretch"
+                                  VerticalAlignment="Stretch"/>
+            </Border>
+        </Grid>
+    </DockPanel>
 </Window>

@@ -537,15 +537,6 @@
             <Button Name="ListSpeakersButton" Content="📋 List Speakers" Padding="10,6" 
                     Click="ListSpeakersButton_Click" Style="{StaticResource ThemedButtonStyle}"
                     Background="{DynamicResource SurfaceBackgroundLight}" Margin="0,0,15,0"/>
-                    
-            <TextBlock Text="Voice Threshold:" FontWeight="Bold" VerticalAlignment="Center" 
-                       Foreground="{DynamicResource TextPrimary}" Margin="0,0,8,0"/>
-            <TextBox Name="ThresholdTextBox" Width="80" Height="30" VerticalAlignment="Center" 
-                     Text="0.40" Margin="0,0,8,0" Style="{StaticResource ThemedTextBoxStyle}"
-                     HorizontalContentAlignment="Center" FontSize="12" FontWeight="Normal" BorderThickness="0,0,0,0" HorizontalAlignment="Center"/>
-            <Button Name="SetAsDefaultButton" Content="Set Default" Padding="8,4" 
-                    Click="SetAsDefaultButton_Click" Style="{StaticResource ThemedButtonStyle}"
-                    Background="{DynamicResource AccentGreen}" FontSize="10" Margin="0,0,15,0"/>
 
             <Button Name="FlushVoiceButton" Content="🗑 Clear Voice Data" Padding="10,6" 
                     Click="FlushVoiceButton_Click" Style="{StaticResource ThemedButtonStyle}"
@@ -563,7 +554,7 @@
         <Border Grid.Row="6" BorderBrush="{DynamicResource AccentBlue}" BorderThickness="2" CornerRadius="6" 
                 Background="{DynamicResource SurfaceBackground}">
             <StackPanel Margin="15">
-                <Grid Margin="0,0,0,10">
+                <Grid Margin="0,0,0,10" Visibility="Collapsed">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="20"/>
@@ -613,7 +604,7 @@
 
         <!-- TTS (Text-to-Speech) Section - New Addition -->
         <Border Grid.Row="7" BorderBrush="{DynamicResource AccentOrange}" BorderThickness="2" CornerRadius="6" 
-                Background="{DynamicResource SurfaceBackground}" Margin="0,10,0,0">
+                Background="{DynamicResource SurfaceBackground}" Margin="0,10,0,0" Visibility="Collapsed">
             <StackPanel Margin="15">
                 <Grid Margin="0,0,0,10">
                     <Grid.ColumnDefinitions>
@@ -694,143 +685,10 @@
                 </Grid>
             </TabItem>
 
-            <!-- Diagnostics Tab -->
-            <TabItem Header="🔍 Diagnostics">
-                <Grid Margin="0,10,0,0">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="*"/>
-                        <RowDefinition Height="Auto"/>
-                    </Grid.RowDefinitions>
-
-                    <!-- Scenario Configuration Section -->
-                    <Border Grid.Row="0" BorderBrush="{DynamicResource AccentBlue}" BorderThickness="2" CornerRadius="6" 
-                            Background="{DynamicResource SurfaceBackground}" Margin="0,0,0,15">
-                        <StackPanel Margin="15">
-                            <Grid Margin="0,0,0,10">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto"/>
-                                    <ColumnDefinition Width="15"/>
-                                    <ColumnDefinition Width="200"/>
-                                    <ColumnDefinition Width="15"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                    <ColumnDefinition Width="*"/>
-                                </Grid.ColumnDefinitions>
-
-                                <TextBlock Grid.Column="0" Text="Application Scenario:" FontWeight="Bold" FontSize="14" 
-                                           Foreground="{DynamicResource TextPrimary}" VerticalAlignment="Center"/>
-
-                                <ComboBox Grid.Column="2" Name="ScenarioComboBox" Height="35" 
-                                          SelectionChanged="ScenarioComboBox_SelectionChanged"
-                                          Style="{StaticResource ThemedComboBoxStyle}"
-                                          ToolTip="Select application scenario to apply appropriate defaults">
-                                    <ComboBoxItem Content="Local - Local processing only" Tag="Local"/>
-                                    <ComboBoxItem Content="Discord - Bot integration enabled" Tag="Discord"/>
-                                    <ComboBoxItem Content="Kiosk - Public-facing mode" Tag="Kiosk"/>
-                                </ComboBox>
-
-                                <Button Grid.Column="4" Name="ApplyScenarioButton" Content="Apply Defaults" 
-                                        Height="35" Padding="12,6" Click="ApplyScenarioButton_Click"
-                                        Style="{StaticResource ThemedButtonStyle}"
-                                        Background="{DynamicResource AccentGreen}"
-                                        ToolTip="Apply scenario-specific default settings"/>
-                            </Grid>
-
-                            <TextBlock Name="ScenarioDescriptionText" Text="Select a scenario to see its description." 
-                                       FontSize="12" Foreground="{DynamicResource TextSecondary}" 
-                                       Margin="0,5,0,0" TextWrapping="Wrap"/>
-                        </StackPanel>
-                    </Border>
-
-                    <!-- Validation Results Section -->
-                    <Border Grid.Row="1" BorderBrush="{DynamicResource AccentOrange}" BorderThickness="2" CornerRadius="6" 
-                            Background="{DynamicResource SurfaceBackground}" Margin="0,0,0,15">
-                        <StackPanel Margin="15">
-                            <Grid Margin="0,0,0,10">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto"/>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-
-                                <TextBlock Grid.Column="0" Text="Configuration Validation:" FontWeight="Bold" FontSize="14" 
-                                           Foreground="{DynamicResource TextPrimary}" VerticalAlignment="Center"/>
-
-                                <Button Grid.Column="2" Name="RefreshValidationButton" Content="🔄 Refresh" 
-                                        Height="30" Padding="10,5" Click="RefreshValidationButton_Click"
-                                        Style="{StaticResource ThemedButtonStyle}"
-                                        Background="{DynamicResource SurfaceBackgroundLight}"
-                                        ToolTip="Refresh validation results"/>
-                            </Grid>
-
-                            <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="4"
-                                    Background="{DynamicResource WindowBackground}">
-                                <ScrollViewer MaxHeight="150" VerticalScrollBarVisibility="Auto">
-                                    <ItemsControl Name="ValidationResultsList" Margin="10">
-                                        <ItemsControl.ItemTemplate>
-                                            <DataTemplate>
-                                                <TextBlock Text="{Binding}" FontSize="11" FontFamily="Consolas" 
-                                                           Foreground="{DynamicResource TextSecondary}" Margin="0,1"/>
-                                            </DataTemplate>
-                                        </ItemsControl.ItemTemplate>
-                                    </ItemsControl>
-                                </ScrollViewer>
-                            </Border>
-                        </StackPanel>
-                    </Border>
-
-                    <!-- Full Diagnostics Report -->
-                    <Border Grid.Row="2" BorderBrush="{DynamicResource AccentPurple}" BorderThickness="2" CornerRadius="6" 
-                            Background="{DynamicResource SurfaceBackground}">
-                        <Grid Margin="15">
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="*"/>
-                            </Grid.RowDefinitions>
-
-                            <Grid Grid.Row="0" Margin="0,0,0,10">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto"/>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                    <ColumnDefinition Width="10"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-
-                                <TextBlock Grid.Column="0" Text="Full Diagnostics Report:" FontWeight="Bold" FontSize="14" 
-                                           Foreground="{DynamicResource TextPrimary}" VerticalAlignment="Center"/>
-
-                                <Button Grid.Column="2" Name="RefreshDiagnosticsButton" Content="🔄 Refresh" 
-                                        Height="30" Padding="10,5" Click="RefreshDiagnosticsButton_Click"
-                                        Style="{StaticResource ThemedButtonStyle}"
-                                        Background="{DynamicResource SurfaceBackgroundLight}"
-                                        ToolTip="Refresh full diagnostics report"/>
-
-                                <Button Grid.Column="4" Name="CopyDiagnosticsButton" Content="📋 Copy" 
-                                        Height="30" Padding="10,5" Click="CopyDiagnosticsButton_Click"
-                                        Style="{StaticResource ThemedButtonStyle}"
-                                        Background="{DynamicResource AccentBlue}"
-                                        ToolTip="Copy diagnostics report to clipboard"/>
-                            </Grid>
-
-                            <Border Grid.Row="1" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="4"
-                                    Background="{DynamicResource WindowBackground}">
-                                <TextBox Name="DiagnosticsReportTextBox" TextWrapping="Wrap" IsReadOnly="True" 
-                                         VerticalScrollBarVisibility="Auto" Background="Transparent" BorderThickness="0" 
-                                         Padding="10" FontSize="11" FontFamily="Consolas"
-                                         Foreground="{DynamicResource TextSecondary}"
-                                         Style="{StaticResource ThemedTextBoxStyle}"/>
-                            </Border>
-                        </Grid>
-                    </Border>
-
-                    <!-- Status Bar -->
-                    <Border Grid.Row="3" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="4" 
-                            Margin="0,15,0,0" Background="{DynamicResource SurfaceBackground}">
-                        <TextBlock Name="DiagnosticsStatusText" Text="Diagnostics ready - Select scenario and refresh validation" 
-                                   Padding="10" FontWeight="Bold" Foreground="{DynamicResource AccentBlue}" FontSize="12"/>
-                    </Border>
+            <!-- Settings Tab -->
+            <TabItem Header="⚙ Settings">
+                <Grid Margin="10">
+                    <ContentControl x:Name="SettingsHost"/>
                 </Grid>
             </TabItem>
         </TabControl>

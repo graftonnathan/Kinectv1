@@ -30,7 +30,7 @@ namespace Kinectv1
         SystemLoopback  // System audio loopback capture
     }
 
-    public static class AppSettings
+    public static partial class AppSettings
     {
         // Thread-safe configuration access
         private static readonly object _configLock = new object();
@@ -204,6 +204,11 @@ namespace Kinectv1
         private static void SetInt(string name, int value) => WriteSettingRaw(name, value.ToString(CultureInfo.InvariantCulture));
         private static void SetDouble(string name, double value) => WriteSettingRaw(name, value.ToString(CultureInfo.InvariantCulture));
         private static void SetFloat(string name, float value) => WriteSettingRaw(name, value.ToString(CultureInfo.InvariantCulture));
+
+        // Public save helpers needed by UI (ints)
+        public static void SaveOllamaMaxMessagesPerSpeaker(int value) => SetInt("OllamaMaxMessagesPerSpeaker", value);
+        public static void SaveOllamaMaxSystemMessages(int value) => SetInt("OllamaMaxSystemMessages", value);
+        public static void SaveOllamaConversationTimeoutMinutes(int value) => SetInt("OllamaConversationTimeoutMinutes", value);
 
         // Validation clamp helpers and full validation pass
         private static float ClampAndPersist(string key, float value, float min, float max, Action<float> saver)
@@ -1280,6 +1285,9 @@ namespace Kinectv1
             }
         }
 
+        /// <summary>
+        /// Load Ollama maximum messages per speaker
+        /// </summary>
         public static int LoadOllamaMaxMessagesPerSpeaker()
         {
             try
@@ -1296,6 +1304,9 @@ namespace Kinectv1
             }
         }
 
+        /// <summary>
+        /// Load Ollama maximum system messages
+        /// </summary>
         public static int LoadOllamaMaxSystemMessages()
         {
             try
@@ -1312,6 +1323,9 @@ namespace Kinectv1
             }
         }
 
+        /// <summary>
+        /// Load Ollama conversation timeout in minutes
+        /// </summary>
         public static int LoadOllamaConversationTimeoutMinutes()
         {
             try
@@ -1707,7 +1721,7 @@ namespace Kinectv1
             {
                 if (deviceId < 0) deviceId = 0;
                 SetInt("ttsgpudeviceid", deviceId);
-                // Write legacy for compatibility
+                // Also write legacy for compatibility
                 SetInt("TtsGpuDeviceId", deviceId);
                 Console.WriteLine($"TTS: Saved CUDA GPU device id: {deviceId}");
             }
@@ -1794,12 +1808,13 @@ namespace Kinectv1
         {
             try
             {
-                return GetBool("BargeInEnabled");
+                // Default to true unless explicitly disabled in settings
+                return GetBool("BargeInEnabled", true);
             }
             catch (Exception ex)
             {
                 LogSettingError("BargeInEnabled", $"READ FAILED: {ex.Message}");
-                return false; // Default: barge-in disabled
+                return true; // Default: barge-in enabled if read fails
             }
         }
 
@@ -1816,6 +1831,38 @@ namespace Kinectv1
             catch (Exception ex)
             {
                 Console.WriteLine($"ERROR: Error saving barge-in setting: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Load wake word requirement setting (when true, require wake word to dispatch)
+        /// </summary>
+        public static bool LoadWakeWordRequired()
+        {
+            try
+            {
+                return GetBool("WakeWordRequired");
+            }
+            catch (Exception ex)
+            {
+                LogSettingError("WakeWordRequired", $"READ FAILED: {ex.Message}");
+                return false; // default disabled
+            }
+        }
+
+        /// <summary>
+        /// Save wake word requirement setting
+        /// </summary>
+        public static void SaveWakeWordRequired(bool required)
+        {
+            try
+            {
+                SetBool("WakeWordRequired", required);
+                Console.WriteLine($"ASR: Saved wake word required: {required}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"ERROR: Error saving wake word requirement: {ex.Message}");
             }
         }
 
@@ -2107,7 +2154,7 @@ namespace Kinectv1
 
                 return $"🤖 Discord Bot Settings:\n" +
                        $"   Enabled: {enabled}\n" +
-                       $"   Token configured: {(!string.IsNullOrEmpty(token) ? "Yes" : "No")}\n" +
+                       $"   Token configured: {(string.IsNullOrEmpty(token) ? "No" : "Yes")}\n" +
                        $"   Command prefix: {prefix}\n" +
                        $"   Auto-join voice: {autoJoin}\n" +
                        $"   Discord VAD threshold: {discordVadThreshold:F0} (voice activity detection)\n" +
@@ -2512,7 +2559,14 @@ namespace Kinectv1
                        $"   Symbols: {LoadTtsSymbolsPath()}\n" +
                        $"   Output Device: {LoadTtsOutputDevice()}\n" +
                        $"   Local Volume: {LoadLocalTtsVolume() * 100:F0}%\n" +
-                       $"   Discord Volume: {LoadDiscordTtsVolume() * 100:F0}%";
+                       $"   Discord Volume: {LoadDiscordTtsVolume() * 100:F0}%\n" +
+                       $"   Speed: {LoadTtsSpeed():F2}x\n" +
+                       $"   Trim Threshold: {LoadTtsTrimThreshold():F4}\n" +
+                       $"   Trim Leave Ms: {LoadTtsTrimLeaveMs()}ms\n" +
+                       $"   Trim Max Ms: {LoadTtsTrimMaxMs()}ms\n" +
+                       $"   Min Clause Padding: {LoadTtsMinClausePaddingMs()}ms\n" +
+                       $"   IPA Service Timeout: {LoadTtsIpaServiceTimeoutMs()}ms\n" +
+                       $"   IPA One-Shot Timeout: {LoadTtsIpaOneShotTimeoutMs()}ms";
             }
             catch (Exception ex) { return $"ERROR: Could not load TTS settings: {ex.Message}"; }
         }
@@ -2586,6 +2640,125 @@ namespace Kinectv1
             {
                 Console.WriteLine($"ERROR: Error saving speaker match threshold: {ex.Message}");
             }
+        }
+
+        // ===== TTS Latency/Pacing Settings =====
+        public static float LoadTtsSpeed()
+        {
+            try
+            {
+                var v = GetFloat("TtsSpeed", 1.05f);
+                if (v < 0.5f || v > 2.0f) LogSettingError("TtsSpeed", $"OUT OF RANGE (0.5-2.0, got {v:F2})");
+                return v;
+            }
+            catch (Exception ex) { LogSettingError("TtsSpeed", $"READ FAILED: {ex.Message}"); return 1.05f; }
+        }
+        public static void SaveTtsSpeed(float speed)
+        {
+            try { var c = Math.Max(0.5f, Math.Min(2.0f, speed)); SetFloat("TtsSpeed", c); Console.WriteLine($"TTS: Saved speed: {c:F2}x"); }
+            catch (Exception ex) { Console.WriteLine($"ERROR: Error saving TTS speed: {ex.Message}"); }
+        }
+
+        public static double LoadTtsTrimThreshold()
+        {
+            try
+            {
+                var v = GetDouble("TtsTrimThreshold");
+                if (v <= 0) v = 0.003; // default
+                if (v < 0.0005 || v > 0.05) LogSettingError("TtsTrimThreshold", $"OUT OF RANGE (0.0005-0.05, got {v:F4})");
+                return v;
+            }
+            catch (Exception ex) { LogSettingError("TtsTrimThreshold", $"READ FAILED: {ex.Message}"); return 0.003; }
+        }
+        public static void SaveTtsTrimThreshold(double threshold)
+        {
+            try { var c = Math.Max(0.0005, Math.Min(0.05, threshold)); SetDouble("TtsTrimThreshold", c); Console.WriteLine($"TTS: Saved trim threshold: {c:F4}"); }
+            catch (Exception ex) { Console.WriteLine($"ERROR: Error saving TTS trim threshold: {ex.Message}"); }
+        }
+
+        public static int LoadTtsTrimLeaveMs()
+        {
+            try
+            {
+                var v = GetInt("TtsTrimLeaveMs");
+                if (v <= 0) v = 6; // default
+                if (v < 0 || v > 100) LogSettingError("TtsTrimLeaveMs", $"OUT OF RANGE (0-100, got {v})");
+                return v;
+            }
+            catch (Exception ex) { LogSettingError("TtsTrimLeaveMs", $"READ FAILED: {ex.Message}"); return 6; }
+        }
+        public static void SaveTtsTrimLeaveMs(int ms)
+        {
+            try { var c = Math.Max(0, Math.Min(100, ms)); SetInt("TtsTrimLeaveMs", c); Console.WriteLine($"TTS: Saved trim leave ms: {c}"); }
+            catch (Exception ex) { Console.WriteLine($"ERROR: Error saving TTS trim leave ms: {ex.Message}"); }
+        }
+
+        public static int LoadTtsTrimMaxMs()
+        {
+            try
+            {
+                var v = GetInt("TtsTrimMaxMs");
+                if (v <= 0) v = 800; // default
+                if (v < 50 || v > 3000) LogSettingError("TtsTrimMaxMs", $"OUT OF RANGE (50-3000, got {v})");
+                return v;
+            }
+            catch (Exception ex) { LogSettingError("TtsTrimMaxMs", $"READ FAILED: {ex.Message}"); return 800; }
+        }
+        public static void SaveTtsTrimMaxMs(int ms)
+        {
+            try { var c = Math.Max(50, Math.Min(3000, ms)); SetInt("TtsTrimMaxMs", c); Console.WriteLine($"TTS: Saved trim max ms: {c}"); }
+            catch (Exception ex) { Console.WriteLine($"ERROR: Error saving TTS trim max ms: {ex.Message}"); }
+        }
+
+        public static int LoadTtsMinClausePaddingMs()
+        {
+            try
+            {
+                var v = GetInt("TtsMinClausePaddingMs");
+                if (v <= 0) v = 10; // default 10ms
+                if (v < 0 || v > 200) LogSettingError("TtsMinClausePaddingMs", $"OUT OF RANGE (0-200, got {v})");
+                return v;
+            }
+            catch (Exception ex) { LogSettingError("TtsMinClausePaddingMs", $"READ FAILED: {ex.Message}"); return 10; }
+        }
+        public static void SaveTtsMinClausePaddingMs(int ms)
+        {
+            try { var c = Math.Max(0, Math.Min(200, ms)); SetInt("TtsMinClausePaddingMs", c); Console.WriteLine($"TTS: Saved min clause padding: {c}ms"); }
+            catch (Exception ex) { Console.WriteLine($"ERROR: Error saving TTS min clause padding: {ex.Message}"); }
+        }
+
+        public static int LoadTtsIpaServiceTimeoutMs()
+        {
+            try
+            {
+                var v = GetInt("TtsIpaServiceTimeoutMs");
+                if (v <= 0) v = 1500; // default
+                if (v < 200 || v > 5000) LogSettingError("TtsIpaServiceTimeoutMs", $"OUT OF RANGE (200-5000, got {v})");
+                return v;
+            }
+            catch (Exception ex) { LogSettingError("TtsIpaServiceTimeoutMs", $"READ FAILED: {ex.Message}"); return 1500; }
+        }
+        public static void SaveTtsIpaServiceTimeoutMs(int ms)
+        {
+            try { var c = Math.Max(200, Math.Min(5000, ms)); SetInt("TtsIpaServiceTimeoutMs", c); Console.WriteLine($"TTS: Saved IPA service timeout: {c}ms"); }
+            catch (Exception ex) { Console.WriteLine($"ERROR: Error saving IPA service timeout: {ex.Message}"); }
+        }
+
+        public static int LoadTtsIpaOneShotTimeoutMs()
+        {
+            try
+            {
+                var v = GetInt("TtsIpaOneShotTimeoutMs");
+                if (v <= 0) v = 1500; // default
+                if (v < 200 || v > 5000) LogSettingError("TtsIpaOneShotTimeoutMs", $"OUT OF RANGE (200-5000, got {v})");
+                return v;
+            }
+            catch (Exception ex) { LogSettingError("TtsIpaOneShotTimeoutMs", $"READ FAILED: {ex.Message}"); return 1500; }
+        }
+        public static void SaveTtsIpaOneShotTimeoutMs(int ms)
+        {
+            try { var c = Math.Max(200, Math.Min(5000, ms)); SetInt("TtsIpaOneShotTimeoutMs", c); Console.WriteLine($"TTS: Saved IPA one-shot timeout: {c}ms"); }
+            catch (Exception ex) { Console.WriteLine($"ERROR: Error saving IPA one-shot timeout: {ex.Message}"); }
         }
     }
 }

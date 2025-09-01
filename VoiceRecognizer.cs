@@ -67,6 +67,7 @@ namespace Kinectv1
         public static Action<string> OnNameHeard;
         public static Action<string, float> OnSpeakerMatch;
         public static Action<float[]> OnVoiceEmbedding;
+        public static Action<string, float, string> OnSpeakerResolvedForOllama; // NEW: final resolved speaker for dispatch
 
         // Input control flags
         private static bool _microphoneInputEnabled = true;
@@ -86,7 +87,20 @@ namespace Kinectv1
             _healthSnapshotTimer = new Timer(EmitHealthSnapshot, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
         }
 
-        public static void Start(string modelPath, string triggerName = "john")
+        // Load persisted audio mode, then reconcile with current enable flags
+        public static void RefreshAudioMode()
+        {
+            try
+            {
+                _cachedAudioMode = AppSettings.LoadAudioInMode();
+            }
+            catch { _cachedAudioMode = AudioInMode.LocalMic; }
+
+            // Reconcile with live flags so gating matches current UI state
+            UpdateCachedModeFromFlags();
+        }
+
+        public static void Start(string modelPath, string triggerName = "")
         {
             try
             {
@@ -200,57 +214,104 @@ namespace Kinectv1
         {
             if (_waveIn != null) return;
 
-            _waveIn = new WaveInEvent
+            try
             {
-                DeviceNumber = 0,
-                WaveFormat = new WaveFormat(16000, 1)
-            };
-
-            _waveIn.DataAvailable += (s, a) =>
-            {
-                if (_shutdownRequested) return;
-                if (!_microphoneInputEnabled) return;
-
-                // Additional guard: Only process microphone input in LocalMic mode
-                if (_cachedAudioMode != AudioInMode.LocalMic)
+                // Try to use configured input device; fall back to default/first
+                int deviceNumber = 0;
+                try
                 {
-                    return; // Silently skip microphone processing when not in LocalMic mode
-                }
-
-                // If STT pipeline isn't ready, still publish RMS so UI meters work
-                if (_voiceProcessor == null)
-                {
-                    try
+                    var configured = AudioDeviceManager.GetConfiguredInputDevice();
+                    if (configured != null)
                     {
-                        float rms = AudioUtils.CalculateRms(a.Buffer, a.BytesRecorded);
-                        OnRmsLevel?.Invoke(rms);
+                        deviceNumber = configured.DeviceNumber;
+                        Console.WriteLine($"🎤 Using configured mic device #{deviceNumber}: {configured.DeviceName}");
                     }
-                    catch { }
-                    return;
+                    else
+                    {
+                        if (WaveIn.DeviceCount <= 0)
+                        {
+                            Console.WriteLine("❌ No microphone input devices found (WaveIn.DeviceCount == 0)");
+                            return; // Cannot start recording
+                        }
+                        Console.WriteLine("🎤 Using default mic device #0 (no configured device)");
+                        deviceNumber = 0;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"⚠️ Could not resolve configured mic device, defaulting to #0: {ex.Message}");
+                    if (WaveIn.DeviceCount <= 0) return;
+                    deviceNumber = 0;
                 }
 
-                // Process microphone audio directly (synchronously) only if enabled
-                lock (_processingLock)
+                _waveIn = new WaveInEvent
+                {
+                    DeviceNumber = deviceNumber,
+                    WaveFormat = new WaveFormat(16000, 1),
+                    BufferMilliseconds = 20,
+                    NumberOfBuffers = 4
+                };
+
+                _waveIn.DataAvailable += (s, a) =>
                 {
                     if (_shutdownRequested) return;
-                    if (!_isProcessing && _voiceProcessor != null)
+                    if (!_microphoneInputEnabled) return;
+
+                    // Always compute and emit RMS for UI visualization
+                    try
                     {
-                        _isProcessing = true;
-                        try
+                        float rmsForUi = AudioUtils.CalculateRms(a.Buffer, a.BytesRecorded);
+                        OnRmsLevel?.Invoke(rmsForUi);
+                    }
+                    catch { }
+
+                    // Only feed mic audio into the STT pipeline when in LocalMic mode
+                    if (_cachedAudioMode != AudioInMode.LocalMic)
+                    {
+                        return; // Skip recognition but keep UI RMS updates
+                    }
+
+                    // If STT pipeline isn't ready, nothing else to do
+                    if (_voiceProcessor == null || _recognizer == null)
+                    {
+                        return;
+                    }
+
+                    // Non-blocking: enqueue mic audio for background processing to avoid freezing RMS/UI
+                    try
+                    {
+                        var audioCopy = new byte[a.BytesRecorded];
+                        Buffer.BlockCopy(a.Buffer, 0, audioCopy, 0, a.BytesRecorded);
+                        if (!_externalAudioQueue.TryAdd(Tuple.Create(audioCopy, a.BytesRecorded, "Mic")))
                         {
-                            _voiceProcessor.ProcessAudio(a.Buffer, a.BytesRecorded);
+                            Interlocked.Increment(ref _totalAudioDrops);
+                            Telemetry.Counter("counter.queue.drop.mic");
                         }
-                        finally
+                        else
                         {
-                            _isProcessing = false;
+                            Telemetry.Gauge("gauge.queue.depth.mic", _externalAudioQueue.Count);
                         }
                     }
-                }
-            };
+                    catch { }
+                };
 
-            _waveIn.StartRecording();
-            _microphoneRecording = true;
-            Console.WriteLine("🎤 Microphone recording started (RMS ready)");
+                try
+                {
+                    _waveIn.StartRecording();
+                    _microphoneRecording = true;
+                    Console.WriteLine("🎤 Microphone recording started (RMS ready)");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"❌ Failed to start microphone recording: {ex.Message}");
+                    try { _waveIn.Dispose(); } catch { }
+                    _waveIn = null;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ EnsureWaveInInitialized failed: {ex.Message}");
+            }
         }
 
         public static void Stop()
@@ -507,7 +568,7 @@ namespace Kinectv1
                                 processed++;
                             }
                             finally
-                            {
+                            { 
                                 _isProcessing = false;
                             }
                         }
@@ -550,6 +611,9 @@ namespace Kinectv1
         {
             _microphoneInputEnabled = enabled;
             Console.WriteLine($"🎤 Microphone input {(enabled ? "enabled" : "disabled")}" );
+
+            // Reflect current flags into cached mode so STT gating matches UI immediately
+            UpdateCachedModeFromFlags();
             
             if (_waveIn != null)
             {
@@ -574,33 +638,28 @@ namespace Kinectv1
             Console.WriteLine($"🤖 Discord input {(enabled ? "enabled" : "disabled")}");
             
             // Refresh cached audio mode when input settings change
-            RefreshAudioMode();
+            UpdateCachedModeFromFlags();
         }
 
-        /// <summary>
-        /// Refresh the cached audio mode for performance in audio processing loops
-        /// </summary>
-        public static void RefreshAudioMode()
+        // Sync cached audio mode with current enable flags to avoid dependence on persisted settings during runtime
+        private static void UpdateCachedModeFromFlags()
         {
             try
             {
-                _cachedAudioMode = AppSettings.LoadAudioInMode();
+                if (_discordInputEnabled && !_microphoneInputEnabled)
+                    _cachedAudioMode = AudioInMode.DiscordVoice;
+                else if (_microphoneInputEnabled && !_discordInputEnabled)
+                    _cachedAudioMode = AudioInMode.LocalMic;
+                else if (_discordInputEnabled && _microphoneInputEnabled)
+                    _cachedAudioMode = AudioInMode.LocalMic; // prefer mic when both flagged
+                else
+                    _cachedAudioMode = AudioInMode.LocalMic; // safe default for UI RMS
             }
-            catch
-            {
-                _cachedAudioMode = AudioInMode.LocalMic; // Fallback
-            }
+            catch { _cachedAudioMode = AudioInMode.LocalMic; }
         }
 
-        public static bool IsMicrophoneInputEnabled()
-        {
-            return _microphoneInputEnabled;
-        }
-
-        public static bool IsDiscordInputEnabled()
-        {
-            return _discordInputEnabled;
-        }
+        public static bool IsMicrophoneInputEnabled() { return _microphoneInputEnabled; }
+        public static bool IsDiscordInputEnabled() { return _discordInputEnabled; }
 
         /// <summary>
         /// Emit periodic health snapshot for telemetry monitoring

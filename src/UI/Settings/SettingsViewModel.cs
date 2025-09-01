@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using Kinectv1.Settings;
 
 namespace Kinectv1.UI.Settings
 {
@@ -11,10 +12,13 @@ namespace Kinectv1.UI.Settings
     {
         private SettingsCategoryVM _selectedCategory;
         private bool _hasUnsavedChanges;
+        private Kinectv1.Settings.AppSettings _snapshot;
 
         public SettingsViewModel()
         {
             Categories = new ObservableCollection<SettingsCategoryVM>();
+            // Take an initial snapshot from the SettingsService at open
+            try { _snapshot = App.SettingsProvider?.Current; } catch { _snapshot = null; }
             InitializeCategories();
         }
 
@@ -42,51 +46,64 @@ namespace Kinectv1.UI.Settings
                 {
                     _hasUnsavedChanges = value;
                     OnPropertyChanged();
+                    OnPropertyChanged(nameof(IsDirty));
                 }
             }
         }
 
+        // Alias to match requested naming
+        public bool IsDirty
+        {
+            get => HasUnsavedChanges;
+            set => HasUnsavedChanges = value;
+        }
+
+        public Kinectv1.Settings.AppSettings Snapshot
+        {
+            get => _snapshot;
+            private set
+            {
+                if (!Equals(_snapshot, value))
+                {
+                    _snapshot = value;
+                    OnPropertyChanged();
+                }
+            }
+        }
+
+        public void RefreshSnapshotFromService()
+        {
+            try { Snapshot = App.SettingsProvider?.Current; } catch { /* ignore */ }
+        }
+
+        public void LoadDefaultsSnapshot()
+        {
+            try { Snapshot = App.SettingsProvider?.GetDefaults(); } catch { Snapshot = null; }
+        }
+
         private void InitializeCategories()
         {
-            // Add placeholder categories for testing
+            // Use ModelsSettingsView as the editor for General
+            var modelsView = new Kinectv1.ModelsSettingsView();
+
             Categories.Add(new SettingsCategoryVM
             {
                 Name = "General",
-                EditorView = new SettingsEditorView 
-                { 
-                    CategoryName = "General Settings",
-                    Description = "Configure general application settings including theme, startup behavior, and window preferences."
-                }
+                EditorView = modelsView
             });
 
-            Categories.Add(new SettingsCategoryVM
-            {
-                Name = "Audio",
-                EditorView = new SettingsEditorView 
-                { 
-                    CategoryName = "Audio Settings",
-                    Description = "Configure microphone input, Discord integration, and TTS output settings."
-                }
-            });
-
-            Categories.Add(new SettingsCategoryVM
-            {
-                Name = "Recognition",
-                EditorView = new SettingsEditorView 
-                { 
-                    CategoryName = "Voice Recognition",
-                    Description = "Configure Vosk ASR models, recognition thresholds, and speaker identification settings."
-                }
-            });
-
+            // Keep AI Assistant placeholder
             Categories.Add(new SettingsCategoryVM
             {
                 Name = "AI Assistant",
-                EditorView = new SettingsEditorView 
-                { 
-                    CategoryName = "AI Assistant Settings",
-                    Description = "Configure Ollama model selection, conversation context, and response behavior."
-                }
+                EditorView = new Kinectv1.OllamaSettingsView()
+            });
+
+            // Discord settings page
+            Categories.Add(new SettingsCategoryVM
+            {
+                Name = "Discord",
+                EditorView = new Kinectv1.DiscordSettingsView()
             });
 
             // Select first category by default
@@ -98,7 +115,7 @@ namespace Kinectv1.UI.Settings
 
         public void SaveChanges()
         {
-            // TODO: Implement actual settings persistence
+            // Retained for compatibility with window close prompt
             HasUnsavedChanges = false;
         }
 

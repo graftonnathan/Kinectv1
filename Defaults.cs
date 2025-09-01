@@ -318,5 +318,14 @@ namespace Kinectv1
                 "All"
             };
         }
+        
+        /// <summary>
+        /// Face Processing defaults
+        /// </summary>
+        public static class Face
+        {
+            public const string ArcFaceModelPath = @"models\face\arcface_r100.onnx";
+            public const string SpeakerEmbeddingModelPath = @"models\speaker\pyannote_embedding.onnx";
+        }
     }
 }

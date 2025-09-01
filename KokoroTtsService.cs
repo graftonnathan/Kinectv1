@@ -32,32 +32,30 @@ namespace Kinectv1
         private static readonly Dictionary<string, string> _voiceFiles = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private static string _defaultVoiceKey = "af_bella";
 
-        private static float _speed = 1.05f; // slight speed-up to reduce latency
-        private static bool _loggedEspeakMissing = false;
-        private static readonly Dictionary<string, float[]> _voiceBinCache = new Dictionary<string, float[]>(StringComparer.OrdinalIgnoreCase);
-        private static bool _retryingAfterGpuFallback = false;
-
-        // Performance optimizations: cached arrays and pooled objects
+        private static float _speed = 1.05f; // speed multiplier (configurable)
         private static readonly float[] _defaultStyleVector = CreateDefaultStyleVector();
-        private static readonly float[] _silencePadding = new float[(int)Math.Round(24000 * 0.01)]; // 10ms at 24kHz
-        private static readonly List<float> _sharedOutputBuffer = new List<float>(1024 * 1024); // 1M samples pre-allocated
-        
-        // Reusable tensors to reduce allocations in hot paths
+        private static readonly List<float> _sharedOutputBuffer = new List<float>(1024 * 1024);
         private static DenseTensor<float> _reuseStyleTensor = new DenseTensor<float>(new[] { 1, 256 });
         private static DenseTensor<float> _reuseSpeedTensor = new DenseTensor<float>(new[] { 1 });
         private static readonly List<NamedOnnxValue> _reuseInputsList = new List<NamedOnnxValue>(3);
 
-        // IPA cache (LRU 256 entries) for frequent phrases
         private static readonly Dictionary<string, string> _ipaCache = new Dictionary<string, string>();
         private static readonly Queue<string> _ipaCacheKeys = new Queue<string>();
         private static readonly object _ipaCacheLock = new object();
         private const int MaxIpaCacheSize = 256;
 
-        // eSpeak worker thread infrastructure
         private static readonly BlockingCollection<IpaRequest> _ipaQueue = new BlockingCollection<IpaRequest>();
         private static Thread _ipaWorkerThread;
         private static volatile bool _ipaWorkerRunning = false;
         private static readonly object _ipaWorkerLock = new object();
+        private static EspeakIpaNet48 _ipaService;
+        private static bool _loggedEspeakMissing = false;
+        private static readonly Dictionary<string, float[]> _voiceBinCache = new Dictionary<string, float[]>(StringComparer.OrdinalIgnoreCase);
+        private static bool _retryingAfterGpuFallback = false;
+        private static volatile bool _ttsDebug = true; // verbose debug
+
+        private static int _ipaServiceTimeoutMs = 1500;   // configurable
+        private static int _ipaOneShotTimeoutMs = 1500;   // configurable
 
         private class IpaRequest
         {
@@ -66,10 +64,8 @@ namespace Kinectv1
             public CancellationToken CancellationToken { get; set; }
         }
 
-        // Force staying on CUDA EP only (no per-segment CPU retry)
         private const bool EnableCpuSegmentRetry = false;
 
-        // Create default style vector once to avoid repeated Enumerable.Repeat().ToArray()
         private static float[] CreateDefaultStyleVector()
         {
             var vector = new float[256];
@@ -86,19 +82,28 @@ namespace Kinectv1
         [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
         private static extern IntPtr GetModuleHandle(string lpModuleName);
 
-        private static bool HasOrtExport(string exportName)
+        private static void ApplyRuntimeSettings()
         {
             try
             {
-                var h = GetModuleHandle("onnxruntime.dll");
-                if (h == IntPtr.Zero) h = GetModuleHandle("onnxruntime");
-                if (h == IntPtr.Zero) return false;
-                return GetProcAddress(h, exportName) != IntPtr.Zero;
+                // Prefer unified JSON snapshot
+                var snap = Kinectv1.App.SettingsProvider?.Current;
+                if (snap != null && snap.Tts != null)
+                {
+                    _speed = snap.Tts.Speed;
+                    _ipaServiceTimeoutMs = snap.Tts.IpaServiceTimeoutMs;
+                    _ipaOneShotTimeoutMs = snap.Tts.IpaOneShotTimeoutMs;
+                    return;
+                }
+
+                // Fallback to legacy keys
+                _speed = AppSettings.LoadTtsSpeed();
+                _ipaServiceTimeoutMs = AppSettings.LoadTtsIpaServiceTimeoutMs();
+                _ipaOneShotTimeoutMs = AppSettings.LoadTtsIpaOneShotTimeoutMs();
             }
-            catch { return false; }
+            catch { }
         }
 
-        // Preload GPU ORT native DLL from known locations to avoid accidentally loading CPU-only onnxruntime.dll
         private static void PreloadOrtNative()
         {
             try
@@ -106,11 +111,8 @@ namespace Kinectv1
                 var baseDir = AppDomain.CurrentDomain.BaseDirectory;
                 var candidateDirs = new[]
                 {
-                    // Prefer NuGet's native assets first (usually GPU-capable)
                     Path.Combine(baseDir, "runtimes", "win-x64", "native"),
-                    // Then our organized lib folder
                     Path.Combine(baseDir, "lib", "onnxruntime"),
-                    // Finally the application base directory
                     baseDir,
                 };
 
@@ -138,7 +140,6 @@ namespace Kinectv1
                     if (!string.IsNullOrEmpty(selectedWithTrt)) return selectedWithTrt;
                     if (!string.IsNullOrEmpty(selectedWithCuda)) return selectedWithCuda;
 
-                    // Fallback: any onnxruntime.dll we can find
                     foreach (var dir in candidateDirs)
                     {
                         if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) continue;
@@ -168,6 +169,7 @@ namespace Kinectv1
                 if (_initialized) return true;
                 try
                 {
+                    ApplyRuntimeSettings();
                     ResolveModelLocationsFromSettings();
 
                     LoadVocab(Path.Combine(_baseDir, "tokenizer.json"));
@@ -175,23 +177,28 @@ namespace Kinectv1
 
                     if (!File.Exists(_modelPath))
                     {
-                        var error = AppError.TTS("TTS_MODEL_NOT_FOUND", 
+                        var error = AppError.TTS("TTS_MODEL_NOT_FOUND",
                             $"TTS model not found: {_modelPath}",
                             "Verify model path on Diagnostics page or download the Kokoro model.");
                         Console.WriteLine($"[Kokoro] {error.GetDisplayString()}");
                         return false;
                     }
 
-                    // Create session according to settings
-                    var useGpu = AppSettings.LoadTtsUseGpu();
-                    CreateSession(useGpu);
-
-                    // Warm up with a tiny inference to JIT kernels and reduce first-latency
+                    // Prefer JSON execution provider
+                    bool useGpu;
                     try
                     {
-                        var ids = new long[] { 0, 0 }; // pad-only minimal
+                        var exec = Kinectv1.App.SettingsProvider?.Current?.Tts.Execution;
+                        useGpu = (exec == Kinectv1.Settings.TtsExecution.GPU);
+                    }
+                    catch { useGpu = AppSettings.LoadTtsUseGpu(); }
+
+                    CreateSession(useGpu);
+
+                    try
+                    {
+                        var ids = new long[] { 0, 0 };
                         var style = new float[256];
-                        // Build tensors by dimensions then copy values
                         var inputIds = new DenseTensor<long>(new[] { 1, ids.Length });
                         for (int i = 0; i < ids.Length; i++) inputIds[0, i] = ids[i];
                         var styleTensor = new DenseTensor<float>(new[] { 1, 256 });
@@ -212,7 +219,6 @@ namespace Kinectv1
                         Console.WriteLine($"[Kokoro] Warmup skipped: {wex.Message}");
                     }
 
-                    // Warm-up to cut first-call latency
                     try
                     {
                         EnsureIpaService();
@@ -229,7 +235,7 @@ namespace Kinectv1
                 }
                 catch (Exception ex)
                 {
-                    var error = AppError.TTS("TTS_INIT_FAILED", 
+                    var error = AppError.TTS("TTS_INIT_FAILED",
                         $"Kokoro TTS initialization failed: {ex.Message}",
                         "Check model files and GPU settings, or verify model path on Diagnostics page.", ex);
                     Console.WriteLine($"[Kokoro] {error.GetDisplayString()}");
@@ -238,79 +244,11 @@ namespace Kinectv1
             }
         }
 
-        private static string FindTensorRtProviderDir()
-        {
-            try
-            {
-                var baseDir = AppDomain.CurrentDomain.BaseDirectory;
-                var candidates = new List<string>
-                {
-                    Path.Combine(baseDir, "runtimes", "win-x64", "native"),
-                    Path.Combine(baseDir, "lib", "onnxruntime"),
-                    Path.Combine(baseDir, "lib"),
-                    baseDir,
-                };
-                foreach (var dir in candidates)
-                {
-                    try
-                    {
-                        if (!Directory.Exists(dir)) continue;
-                        var trt = Path.Combine(dir, "onnxruntime_providers_tensorrt.dll");
-                        var shared = Path.Combine(dir, "onnxruntime_providers_shared.dll");
-                        if (File.Exists(trt) && File.Exists(shared)) return dir;
-                    }
-                    catch { }
-                }
-                return null;
-            }
-            catch { return null; }
-        }
-
-        private static bool TryPreloadTensorRtProvider(string providerPath)
-        {
-            try
-            {
-                var h = LoadLibrary(providerPath);
-                if (h == IntPtr.Zero) return false;
-                FreeLibrary(h);
-                return true;
-            }
-            catch { return false; }
-        }
-
-        private static void EnsureTensorRtOnPath()
-        {
-            try
-            {
-                // No-op: rely on organized bin/lib layout without mutating PATH at runtime.
-            }
-            catch { }
-        }
-
-        private static bool IsTensorRtProviderAvailable()
-        {
-            try
-            {
-                EnsureTensorRtOnPath();
-                var dir = FindTensorRtProviderDir();
-                if (string.IsNullOrEmpty(dir)) return false;
-                var trtProvider = Path.Combine(dir, "onnxruntime_providers_tensorrt.dll");
-                var shared = Path.Combine(dir, "onnxruntime_providers_shared.dll");
-                if (!(File.Exists(trtProvider) && File.Exists(shared))) return false;
-                // Preflight load to avoid throwing in AppendExecutionProvider_Tensorrt when deps are missing
-                return TryPreloadTensorRtProvider(trtProvider);
-            }
-            catch { return false; }
-        }
-
         private static void CreateSession(bool requestedGpu)
         {
             try { _session?.Dispose(); } catch { }
             _session = null;
-
-            EnsureTensorRtOnPath();
             PreloadOrtNative();
-
             _session = OnnxSessionFactory.Create(_modelPath, requestedGpu, out _usingGpu);
             Console.WriteLine($"[Kokoro] Execution provider: {(_usingGpu ? "GPU" : "CPU")}");
         }
@@ -325,7 +263,13 @@ namespace Kinectv1
                 }
                 try
                 {
-                    var useGpu = AppSettings.LoadTtsUseGpu();
+                    bool useGpu;
+                    try
+                    {
+                        useGpu = (Kinectv1.App.SettingsProvider?.Current?.Tts.Execution == Kinectv1.Settings.TtsExecution.GPU);
+                    }
+                    catch { useGpu = AppSettings.LoadTtsUseGpu(); }
+
                     CreateSession(useGpu);
                     Console.WriteLine($"[Kokoro] Session recreated using {(useGpu && _usingGpu ? "GPU" : "CPU")} ");
                     return true;
@@ -339,7 +283,6 @@ namespace Kinectv1
         }
 
         public static bool IsUsingGpu() => _usingGpu;
-
         public static int GetSampleRate() => _nativeSampleRate;
 
         private static string NormalizeKokoroBaseDir(string folder)
@@ -349,8 +292,6 @@ namespace Kinectv1
                 if (string.IsNullOrWhiteSpace(folder)) return folder;
                 var full = Path.IsPathRooted(folder) ? folder : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, folder);
                 if (!Directory.Exists(full)) return folder;
-
-                // If pointing to the onnx subfolder, normalize to its parent as base dir
                 var name = new DirectoryInfo(full).Name;
                 if (string.Equals(name, "onnx", StringComparison.OrdinalIgnoreCase))
                 {
@@ -366,15 +307,72 @@ namespace Kinectv1
         {
             try
             {
-                // 1) Prefer explicit model folder setting (ttsmodelfolder)
-                var folder = AppSettings.LoadTtsModelFolder();
-                if (!string.IsNullOrWhiteSpace(folder))
+                var snap = Kinectv1.App.SettingsProvider?.Current;
+                if (snap?.Tts != null)
                 {
-                    var baseDir = NormalizeKokoroBaseDir(folder);
+                    var folder = snap.Tts.ModelFolder;
+                    if (!string.IsNullOrWhiteSpace(folder))
+                    {
+                        var baseDir = NormalizeKokoroBaseDir(folder);
+                        if (Directory.Exists(baseDir))
+                        {
+                            _baseDir = baseDir;
+                            var onnxDir = Path.Combine(_baseDir, "onnx");
+                            if (Directory.Exists(onnxDir) && File.Exists(Path.Combine(onnxDir, "model_q8f16.onnx")))
+                                _modelPath = Path.Combine(onnxDir, "model_q8f16.onnx");
+                            else if (File.Exists(Path.Combine(_baseDir, "model_q8f16.onnx")))
+                                _modelPath = Path.Combine(_baseDir, "model_q8f16.onnx");
+                        }
+                    }
+
+                    var cfg = snap.Tts.ModelPath;
+                    if (!string.IsNullOrWhiteSpace(cfg))
+                    {
+                        var fullCfg = Path.IsPathRooted(cfg) ? cfg : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, cfg);
+                        string baseDir = null;
+
+                        if (File.Exists(fullCfg))
+                        {
+                            baseDir = Path.GetDirectoryName(fullCfg);
+                            _modelPath = fullCfg;
+                        }
+                        else if (Directory.Exists(fullCfg))
+                        {
+                            if (File.Exists(Path.Combine(fullCfg, "model_q8f16.onnx")))
+                            {
+                                _modelPath = Path.Combine(fullCfg, "model_q8f16.onnx");
+                                baseDir = Directory.GetParent(fullCfg)?.FullName ?? fullCfg;
+                            }
+                            else if (Directory.Exists(Path.Combine(fullCfg, "onnx")))
+                            {
+                                var onnx = Path.Combine(fullCfg, "onnx", "model_q8f16.onnx");
+                                _modelPath = onnx;
+                                baseDir = fullCfg;
+                            }
+                            else
+                            {
+                                baseDir = fullCfg;
+                                _modelPath = Path.Combine(fullCfg, "onnx", "model_q8f16.onnx");
+                            }
+                        }
+
+                        if (!string.IsNullOrEmpty(baseDir) && Directory.Exists(baseDir))
+                        {
+                            _baseDir = NormalizeKokoroBaseDir(baseDir);
+                        }
+                    }
+
+                    return; // prefer JSON path if present
+                }
+
+                // Legacy fallback
+                var folderLegacy = AppSettings.LoadTtsModelFolder();
+                if (!string.IsNullOrWhiteSpace(folderLegacy))
+                {
+                    var baseDir = NormalizeKokoroBaseDir(folderLegacy);
                     if (Directory.Exists(baseDir))
                     {
                         _baseDir = baseDir;
-                        // Choose model path inside onnx subfolder (or directly under base if provided)
                         var onnxDir = Path.Combine(_baseDir, "onnx");
                         if (Directory.Exists(onnxDir) && File.Exists(Path.Combine(onnxDir, "model_q8f16.onnx")))
                             _modelPath = Path.Combine(onnxDir, "model_q8f16.onnx");
@@ -383,11 +381,10 @@ namespace Kinectv1
                     }
                 }
 
-                // 2) Back-compat: honor TtsModelPath if set (can be file or folder)
-                var cfg = AppSettings.LoadTtsModelPath();
-                if (!string.IsNullOrWhiteSpace(cfg))
+                var cfgLegacy = AppSettings.LoadTtsModelPath();
+                if (!string.IsNullOrWhiteSpace(cfgLegacy))
                 {
-                    var fullCfg = Path.IsPathRooted(cfg) ? cfg : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, cfg);
+                    var fullCfg = Path.IsPathRooted(cfgLegacy) ? cfgLegacy : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, cfgLegacy);
                     string baseDir = null;
 
                     if (File.Exists(fullCfg))
@@ -397,7 +394,6 @@ namespace Kinectv1
                     }
                     else if (Directory.Exists(fullCfg))
                     {
-                        // If cfg is an onnx folder
                         if (File.Exists(Path.Combine(fullCfg, "model_q8f16.onnx")))
                         {
                             _modelPath = Path.Combine(fullCfg, "model_q8f16.onnx");
@@ -411,30 +407,14 @@ namespace Kinectv1
                         }
                         else
                         {
-                            // Treat as base dir and hope default name inside onnx
                             baseDir = fullCfg;
                             _modelPath = Path.Combine(fullCfg, "onnx", "model_q8f16.onnx");
                         }
                     }
 
-                    // If kokoro directory not found, try kokoro-82M
-                    if (string.IsNullOrEmpty(baseDir) || !Directory.Exists(baseDir))
-                    {
-                        var candidate = Path.Combine("models", "tts", "kokoro-82M");
-                        if (Directory.Exists(candidate))
-                        {
-                            baseDir = candidate;
-                            _modelPath = Path.Combine(candidate, "onnx", "model_q8f16.onnx");
-                        }
-                    }
-
-                    // Finalize base dir
                     if (!string.IsNullOrEmpty(baseDir) && Directory.Exists(baseDir))
                     {
-                        // Normalize if it points to onnx
                         _baseDir = NormalizeKokoroBaseDir(baseDir);
-                        // Persist folder for future use (always save base dir, not onnx)
-                        try { AppSettings.SaveTtsModelFolder(_baseDir); } catch { }
                     }
                 }
             }
@@ -448,7 +428,6 @@ namespace Kinectv1
         {
             try
             {
-                // If tokenizer.json missing under provided path and path is under onnx, try parent folder
                 if (!File.Exists(tokenizerPath))
                 {
                     var dirName = Path.GetFileName(Path.GetDirectoryName(tokenizerPath));
@@ -485,7 +464,6 @@ namespace Kinectv1
                 var dir = Path.Combine(_baseDir, "voices");
                 if (!Directory.Exists(dir))
                 {
-                    // If base dir is onnx, look in parent\voices
                     var name = new DirectoryInfo(_baseDir).Name;
                     if (string.Equals(name, "onnx", StringComparison.OrdinalIgnoreCase))
                     {
@@ -519,25 +497,24 @@ namespace Kinectv1
 
         private static IEnumerable<Segment> SplitIntoClauses(string text)
         {
-            // Normalize whitespace and repeated punctuation
             text = Regex.Replace(text, "\\s+", " ").Trim();
             text = Regex.Replace(text, "([!?.,;:]){2,}", "$1");
             if (string.IsNullOrWhiteSpace(text)) yield break;
 
-            // Split on strong and weak punctuation; treat commas/dashes as non-explicit breaks
-            var parts = Regex.Split(text, "([.!?;:,]|�|�)");
+            // Split ONLY on strong end punctuation to avoid extra pauses on commas/semicolons/colons
+            var parts = Regex.Split(text, "([.!?])");
             var buffer = new StringBuilder();
             for (int i = 0; i < parts.Length; i++)
             {
                 var p = parts[i];
                 if (string.IsNullOrEmpty(p)) continue;
-                if (Regex.IsMatch(p, "^[.!?;:,]|�|�$"))
+                if (Regex.IsMatch(p, "^[.!?]$"))
                 {
                     buffer.Append(p);
                     var s = buffer.ToString().Trim();
                     if (!string.IsNullOrEmpty(s))
                     {
-                        bool isStrong = Regex.IsMatch(p, "^[.!?;:]$");
+                        bool isStrong = true; // only strong punctuation reaches here
                         yield return Segment.FromText(s, explicitBreak: isStrong);
                     }
                     buffer.Clear();
@@ -549,6 +526,37 @@ namespace Kinectv1
             }
             var rest = buffer.ToString().Trim();
             if (!string.IsNullOrEmpty(rest)) yield return Segment.FromText(rest, explicitBreak: false);
+        }
+
+        private static float[] TrimLeadingSilence(float[] audio, int sampleRate, float threshold = 0.002f, int maxTrimMs = 150)
+        {
+            try
+            {
+                if (audio == null || audio.Length == 0) return audio;
+                int maxTrim = (int)Math.Round(sampleRate * (maxTrimMs / 1000.0));
+                int start = 0;
+                int scanned = 0;
+                for (int i = 0; i < audio.Length && scanned < maxTrim; i++)
+                {
+                    if (Math.Abs(audio[i]) > threshold)
+                    {
+                        start = i;
+                        break;
+                    }
+                    scanned++;
+                    start = i;
+                }
+                if (start <= 0) return audio;
+                int keep = audio.Length - start;
+                if (keep <= 0) return Array.Empty<float>();
+                var trimmed = new float[keep];
+                Array.Copy(audio, start, trimmed, 0, keep);
+                return trimmed;
+            }
+            catch
+            {
+                return audio;
+            }
         }
 
         private static List<Segment> BuildSegments(string text)
@@ -589,125 +597,63 @@ namespace Kinectv1
             return 0;
         }
 
-        private static string RunEspeak(string text)
+        private static string SanitizeInputText(string text)
         {
-            if (string.IsNullOrWhiteSpace(text)) return null;
-
-            // Sanitize input text before processing
-            text = SanitizeInputText(text);
-            if (string.IsNullOrWhiteSpace(text)) return null;
-
-            // Check cache first
-            if (TryGetCachedIpa(text, out string cachedIpa))
-            {
-                if (_ttsDebug)
-                    Console.WriteLine($"[TTS] Cache hit for: '{text}' -> '{cachedIpa}'");
-                return cachedIpa;
-            }
-
-            // Use worker thread for processing
-            return GetIpaViaWorker(text);
+            if (string.IsNullOrWhiteSpace(text)) return text;
+            text = text.Replace('\u201C', '"').Replace('\u201D', '"');
+            text = text.Replace('\u2018', '\'').Replace('\u2019', '\'');
+            text = text.Replace("–", "-").Replace("—", "-");
+            text = text.Replace("…", "...");
+            text = text.Replace("«", "\"").Replace("»", "\"");
+            text = text.Replace("‚", ",").Replace("„", "\"");
+            text = text.Replace("‹", "'").Replace("›", "'");
+            text = Regex.Replace(text, @"[^\x00-\x7F]+", " ");
+            text = Regex.Replace(text, @"[\x00-\x1F\x7F]", " ");
+            text = Regex.Replace(text, @"\s+", " ").Trim();
+            return text;
         }
 
-        private static string GetIpaViaWorker(string text)
+        private static bool TryGetCachedIpa(string text, out string ipa)
         {
-            try
+            ipa = null;
+            if (string.IsNullOrWhiteSpace(text)) return false;
+            string cacheKey = text.ToLowerInvariant().Trim();
+            lock (_ipaCacheLock)
             {
-                EnsureIpaWorker();
-                
-                var tcs = new TaskCompletionSource<string>();
-                var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5)); // Total timeout
-                
-                var request = new IpaRequest
-                {
-                    Text = text,
-                    Tcs = tcs,
-                    CancellationToken = cts.Token
-                };
-
-                if (!_ipaQueue.TryAdd(request, 100)) // 100ms timeout to add to queue
-                {
-                    Console.WriteLine("[Kokoro] IPA queue full, using fallback");
-                    return GetIpaDirectFallback(text);
-                }
-
-                // Wait for worker to process
-                try
-                {
-                    var result = tcs.Task.GetAwaiter().GetResult();
-                    if (!string.IsNullOrWhiteSpace(result))
-                    {
-                        CacheIpa(text, result);
-                        return result;
-                    }
-                }
-                catch (AggregateException ex)
-                {
-                    Console.WriteLine($"[Kokoro] Worker IPA failed: {ex.InnerException?.Message ?? ex.Message}");
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"[Kokoro] Worker IPA error: {ex.Message}");
-                }
-
-                // Fallback to direct processing
-                return GetIpaDirectFallback(text);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[Kokoro] IPA worker setup failed: {ex.Message}");
-                return GetIpaDirectFallback(text);
+                return _ipaCache.TryGetValue(cacheKey, out ipa);
             }
         }
 
-        private static string GetIpaDirectFallback(string text)
+        private static void CacheIpa(string text, string ipa)
         {
-            // Try the persistent service first with shorter timeout
-            try
+            if (string.IsNullOrWhiteSpace(text) || string.IsNullOrWhiteSpace(ipa)) return;
+            string cacheKey = text.ToLowerInvariant().Trim();
+            lock (_ipaCacheLock)
             {
-                EnsureIpaService();
-                if (_ipaService != null)
+                if (_ipaCache.ContainsKey(cacheKey))
                 {
-                    var timeout = TimeSpan.FromMilliseconds(1500); // 1.5s as per spec
-                    var ipa = _ipaService.GetIpaAsync(text, timeout).GetAwaiter().GetResult();
-                    if (!string.IsNullOrWhiteSpace(ipa))
+                    _ipaCache[cacheKey] = ipa;
+                    return;
+                }
+                if (_ipaCache.Count >= MaxIpaCacheSize)
+                {
+                    if (_ipaCacheKeys.Count > 0)
                     {
-                        var normalized = NormalizeIpa(ipa);
-                        CacheIpa(text, normalized);
-                        return normalized;
+                        string oldestKey = _ipaCacheKeys.Dequeue();
+                        _ipaCache.Remove(oldestKey);
                     }
                 }
+                _ipaCache[cacheKey] = ipa;
+                _ipaCacheKeys.Enqueue(cacheKey);
             }
-            catch (TimeoutException)
-            {
-                Console.WriteLine("[Kokoro] Direct eSpeak timeout, trying one-shot");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[Kokoro] Direct eSpeak error: {ex.Message}");
-            }
-
-            // Final fallback: one-shot process
-            var once = GetIpaOnce(text, timeoutMs: 1500);
-            if (!string.IsNullOrWhiteSpace(once))
-            {
-                var normalized = NormalizeIpa(once);
-                CacheIpa(text, normalized);
-                return normalized;
-            }
-
-            // Ultimate fallback: simple G2P rules
-            return ApplySimpleG2P(text);
         }
 
         private static void EnsureIpaWorker()
         {
             if (_ipaWorkerRunning) return;
-            
             lock (_ipaWorkerLock)
             {
                 if (_ipaWorkerRunning) return;
-                
                 _ipaWorkerRunning = true;
                 _ipaWorkerThread = new Thread(IpaWorkerLoop)
                 {
@@ -715,9 +661,7 @@ namespace Kinectv1
                     Name = "eSpeak-IPA-Worker"
                 };
                 _ipaWorkerThread.Start();
-                
-                if (_ttsDebug)
-                    Console.WriteLine("[TTS] eSpeak IPA worker thread started");
+                if (_ttsDebug) Console.WriteLine("[TTS] eSpeak IPA worker thread started");
             }
         }
 
@@ -729,7 +673,7 @@ namespace Kinectv1
                 {
                     try
                     {
-                        if (_ipaQueue.TryTake(out IpaRequest request, 1000)) // 1s timeout
+                        if (_ipaQueue.TryTake(out IpaRequest request, 1000))
                         {
                             ProcessIpaRequest(request);
                         }
@@ -737,7 +681,7 @@ namespace Kinectv1
                     catch (Exception ex)
                     {
                         Console.WriteLine($"[TTS] IPA worker error: {ex.Message}");
-                        Thread.Sleep(100); // Brief pause on error
+                        Thread.Sleep(100);
                     }
                 }
             }
@@ -751,15 +695,13 @@ namespace Kinectv1
                 {
                     _ipaWorkerRunning = false;
                 }
-                if (_ttsDebug)
-                    Console.WriteLine("[TTS] eSpeak IPA worker thread stopped");
+                if (_ttsDebug) Console.WriteLine("[TTS] eSpeak IPA worker thread stopped");
             }
         }
 
         private static void ProcessIpaRequest(IpaRequest request)
         {
             if (request?.Tcs == null) return;
-            
             try
             {
                 if (request.CancellationToken.IsCancellationRequested)
@@ -767,18 +709,14 @@ namespace Kinectv1
                     request.Tcs.TrySetCanceled();
                     return;
                 }
-
                 EnsureIpaService();
                 if (_ipaService == null)
                 {
                     request.Tcs.TrySetResult(null);
                     return;
                 }
-
-                // Use shorter timeout in worker (1.5s as per spec)
-                var timeout = TimeSpan.FromMilliseconds(1500);
+                var timeout = TimeSpan.FromMilliseconds(Math.Max(200, _ipaServiceTimeoutMs));
                 var ipa = _ipaService.GetIpaAsync(request.Text, timeout).GetAwaiter().GetResult();
-                
                 if (!string.IsNullOrWhiteSpace(ipa))
                 {
                     var normalized = NormalizeIpa(ipa);
@@ -791,7 +729,7 @@ namespace Kinectv1
             }
             catch (TimeoutException)
             {
-                request.Tcs.TrySetResult(null); // Let caller handle fallback
+                request.Tcs.TrySetResult(null);
             }
             catch (Exception ex)
             {
@@ -799,365 +737,22 @@ namespace Kinectv1
             }
         }
 
-        private static string ApplySimpleG2P(string text)
-        {
-            if (string.IsNullOrWhiteSpace(text)) return null;
-            
-            // Simple grapheme-to-phoneme rules as final fallback
-            text = text.ToLowerInvariant();
-            
-            // Basic English G2P mappings
-            var g2pRules = new Dictionary<string, string>
-            {
-                {"ch", "tʃ"}, {"sh", "ʃ"}, {"th", "θ"}, {"ph", "f"},
-                {"ck", "k"}, {"ng", "ŋ"}, {"qu", "kw"},
-                {"a", "æ"}, {"e", "ɛ"}, {"i", "ɪ"}, {"o", "ɒ"}, {"u", "ʌ"},
-                {"b", "b"}, {"c", "k"}, {"d", "d"}, {"f", "f"}, {"g", "g"},
-                {"h", "h"}, {"j", "dʒ"}, {"k", "k"}, {"l", "l"}, {"m", "m"},
-                {"n", "n"}, {"p", "p"}, {"r", "r"}, {"s", "s"}, {"t", "t"},
-                {"v", "v"}, {"w", "w"}, {"x", "ks"}, {"y", "j"}, {"z", "z"}
-            };
-            
-            var result = text;
-            foreach (var rule in g2pRules)
-            {
-                result = result.Replace(rule.Key, rule.Value + " ");
-            }
-            
-            result = Regex.Replace(result, @"\s+", " ").Trim();
-            
-            if (_ttsDebug)
-                Console.WriteLine($"[TTS] Simple G2P fallback: '{text}' -> '{result}'");
-                
-            return result;
-        }
-
-        private static IEnumerable<string> GetEspeakCandidates()
-        {
-            var candidates = new List<string>();
-            try
-            {
-                var baseDir = AppDomain.CurrentDomain.BaseDirectory;
-                var localDir = Path.Combine(baseDir, "models", "tts", "Espeak NG");
-                var localNg = Path.Combine(localDir, "espeak-ng.exe");
-                var localClassic = Path.Combine(localDir, "espeak.exe");
-                if (File.Exists(localNg)) candidates.Add(localNg);
-                if (File.Exists(localClassic)) candidates.Add(localClassic);
-            }
-            catch { }
-            candidates.Add("espeak-ng.exe");
-            candidates.Add("espeak.exe");
-            return candidates;
-        }
-
         private static string NormalizeIpa(string ipa)
         {
             if (string.IsNullOrWhiteSpace(ipa)) return ipa;
-            // Clean spacing and remove slashes, keep UTF-8 IPA intact
             ipa = ipa.Replace("/", " ");
             ipa = Regex.Replace(ipa, "\\s+", " ").Trim();
-            
-            // Filter out mojibake characters that shouldn't appear in IPA
             ipa = Regex.Replace(ipa, @"[Γòö├¬]", " ");
-            ipa = Regex.Replace(ipa, @"\\x[0-9a-fA-F]{2}", " "); // Remove hex escape sequences
+            ipa = Regex.Replace(ipa, @"\\x[0-9a-fA-F]{2}", " ");
             ipa = Regex.Replace(ipa, "\\s+", " ").Trim();
-            
             return ipa;
         }
-
-        private static string SanitizeInputText(string text)
-        {
-            if (string.IsNullOrWhiteSpace(text)) return text;
-            
-            // Normalize smart quotes and punctuation to ASCII
-            text = text.Replace('\u201C', '"').Replace('\u201D', '"'); // “ ” -> "
-            text = text.Replace('\u2018', '\'').Replace('\u2019', '\''); // ‘ ’ -> '
-            text = text.Replace("–", "-").Replace("—", "-");
-            text = text.Replace("…", "...");
-            
-            // Normalize other Unicode punctuation to ASCII equivalents
-            text = text.Replace("«", "\"").Replace("»", "\"");
-            text = text.Replace("‚", ",").Replace("„", "\"");
-            text = text.Replace("‹", "'").Replace("›", "'");
-            
-            // Remove or replace problematic Unicode characters
-            text = Regex.Replace(text, @"[^\x00-\x7F]+", " "); // Replace non-ASCII with space
-            text = Regex.Replace(text, @"[\x00-\x1F\x7F]", " "); // Replace control chars with space
-            text = Regex.Replace(text, @"\s+", " ").Trim(); // Normalize whitespace
-            
-            return text;
-        }
-
-        private static bool TryGetCachedIpa(string text, out string ipa)
-        {
-            ipa = null;
-            if (string.IsNullOrWhiteSpace(text)) return false;
-            
-            string cacheKey = text.ToLowerInvariant().Trim();
-            lock (_ipaCacheLock)
-            {
-                return _ipaCache.TryGetValue(cacheKey, out ipa);
-            }
-        }
-
-        private static void CacheIpa(string text, string ipa)
-        {
-            if (string.IsNullOrWhiteSpace(text) || string.IsNullOrWhiteSpace(ipa)) return;
-            
-            string cacheKey = text.ToLowerInvariant().Trim();
-            lock (_ipaCacheLock)
-            {
-                // Implement LRU eviction
-                if (_ipaCache.ContainsKey(cacheKey))
-                {
-                    _ipaCache[cacheKey] = ipa; // Update existing
-                    return;
-                }
-                
-                // Add new entry
-                if (_ipaCache.Count >= MaxIpaCacheSize)
-                {
-                    // Remove oldest entry
-                    if (_ipaCacheKeys.Count > 0)
-                    {
-                        string oldestKey = _ipaCacheKeys.Dequeue();
-                        _ipaCache.Remove(oldestKey);
-                    }
-                }
-                
-                _ipaCache[cacheKey] = ipa;
-                _ipaCacheKeys.Enqueue(cacheKey);
-            }
-        }
-
-        private static long[] MapIpaToIds(string ipa, int maxLen)
-        {
-            if (string.IsNullOrWhiteSpace(ipa)) return null;
-
-            var symbols = new List<string>();
-            foreach (var ch in ipa)
-            {
-                if (char.IsWhiteSpace(ch)) continue;
-                symbols.Add(ch.ToString());
-            }
-
-            var innerIds = new List<long>(symbols.Count);
-            var unknown = new HashSet<string>();
-            foreach (var s in symbols)
-            {
-                int id;
-                if (_vocab.TryGetValue(s, out id))
-                {
-                    innerIds.Add(id);
-                }
-                else
-                {
-                    unknown.Add(s);
-                }
-            }
-
-            if (unknown.Count > 0)
-            {
-                Console.WriteLine($"[Kokoro] Unknown IPA symbols ({unknown.Count}): {string.Join(" ", unknown.Take(15))}");
-            }
-
-            if (innerIds.Count == 0) return null;
-
-            int maxInner = Math.Max(0, maxLen - 2);
-            if (innerIds.Count > maxInner)
-            {
-                innerIds.RemoveRange(maxInner, innerIds.Count - maxInner);
-            }
-
-            var ids = new long[innerIds.Count + 2];
-            ids[0] = 0; // pad
-            for (int i = 0; i < innerIds.Count; i++) ids[i + 1] = innerIds[i];
-            ids[ids.Length - 1] = 0; // pad
-
-            Console.WriteLine($"[Kokoro] Token ids: inner={innerIds.Count}, total={ids.Length}");
-            return ids;
-        }
-
-        private static float[] LoadStyleVectorAt(string path, int innerTokenCount)
-        {
-            try
-            {
-                if (string.IsNullOrEmpty(path) || !File.Exists(path)) return null;
-
-                if (!_voiceBinCache.TryGetValue(path, out var floats))
-                {
-                    var bytes = File.ReadAllBytes(path);
-                    if (bytes.Length < 256 * 4) return null;
-                    floats = new float[bytes.Length / 4];
-                    Buffer.BlockCopy(bytes, 0, floats, 0, bytes.Length);
-                    _voiceBinCache[path] = floats;
-                }
-
-                int vectorCount = floats.Length / 256;
-                if (vectorCount <= 0) return null;
-                int idx = Math.Min(Math.Max(0, innerTokenCount), vectorCount - 1);
-                var style = new float[256];
-                Array.Copy(floats, idx * 256, style, 0, 256);
-                return style;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[Kokoro] LoadStyleVectorAt failed: {ex.Message}");
-                return null;
-            }
-        }
-
-        private static bool TryRunModelOnSession(InferenceSession session, DenseTensor<long> inputIds, DenseTensor<float> styleTensor, DenseTensor<float> speedTensor, out float[] audio)
-        {
-            audio = null;
-            try
-            {
-                // Reuse inputs list to reduce allocations
-                lock (_reuseInputsList)
-                {
-                    _reuseInputsList.Clear();
-                    _reuseInputsList.Add(NamedOnnxValue.CreateFromTensor("input_ids", inputIds));
-                    _reuseInputsList.Add(NamedOnnxValue.CreateFromTensor("style", styleTensor));
-                    _reuseInputsList.Add(NamedOnnxValue.CreateFromTensor("speed", speedTensor));
-
-                    using var results = session.Run(_reuseInputsList);
-                    var first = results.First().Value as Tensor<float>;
-                    if (first == null) return false;
-
-                    if (first.Rank == 2)
-                    {
-                        int n = first.Dimensions[1];
-                        audio = new float[n];
-                        for (int i = 0; i < n; i++) audio[i] = first[0, i];
-                    }
-                    else
-                    {
-                        audio = first.ToArray();
-                    }
-                    return true;
-                }
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        private static bool TryRunModel(DenseTensor<long> inputIds, DenseTensor<float> styleTensor, DenseTensor<float> speedTensor, out float[] audio)
-        {
-            // Use the main session (GPU if enabled)
-            try
-            {
-                return TryRunModelOnSession(_session, inputIds, styleTensor, speedTensor, out audio);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[Kokoro] Inference error: {ex.Message}");
-                audio = null;
-                return false;
-            }
-        }
-
-        private static void EnsureCpuSession()
-        {
-            if (_cpuSession != null) return;
-            lock (_cpuLock)
-            {
-                if (_cpuSession != null) return;
-                try
-                {
-                    var so = new SessionOptions { GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_EXTENDED };
-                    try { so.AppendExecutionProvider_CPU(0); } catch { }
-                    _cpuSession = new InferenceSession(_modelPath, so);
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"[Kokoro] Failed to create CPU fallback session: {ex.Message}");
-                }
-            }
-        }
-
-        private static void DisposeCpuSession()
-        {
-            try { _cpuSession?.Dispose(); } catch { }
-            _cpuSession = null;
-        }
-
-        private static void FallbackToCpu()
-        {
-            // Legacy full-session fallback (kept for hard failures). Prefer per-segment CPU retry instead.
-            try
-            {
-                CreateSession(false);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[Kokoro] CPU fallback failed: {ex.Message}");
-            }
-        }
-
-        private static bool IsDegenerateAudio(float[] audio)
-        {
-            if (audio == null || audio.Length == 0) return true;
-            int nonZero = 0;
-            for (int i = 0; i < audio.Length; i++)
-            {
-                var s = audio[i];
-                if (float.IsNaN(s) || float.IsInfinity(s)) return true;
-                if (Math.Abs(s) > 1e-9f) nonZero++;
-            }
-            // Treat as degenerate only if ALL samples are effectively zero
-            return nonZero == 0;
-        }
-
-        private static float[] TrimTrailingSilence(float[] audio, int sampleRate, float threshold = 0.002f, int leaveMs = 10, int maxTrimMs = 600)
-        {
-            try
-            {
-                if (audio == null || audio.Length == 0) return audio;
-                int leave = (int)Math.Round(sampleRate * (leaveMs / 1000.0));
-                int maxTrim = (int)Math.Round(sampleRate * (maxTrimMs / 1000.0));
-
-                int end = audio.Length - 1;
-                int trimmed = 0;
-
-                // Scan from end until we hit a sample above threshold, but cap max trim
-                for (int i = end; i >= 0 && trimmed < maxTrim; i--)
-                {
-                    if (Math.Abs(audio[i]) > threshold)
-                    {
-                        int desiredEnd = Math.Min(audio.Length - 1, i + leave);
-                        if (desiredEnd < audio.Length - 1)
-                        {
-                            Array.Resize(ref audio, desiredEnd + 1);
-                        }
-                        return audio;
-                    }
-                    trimmed++;
-                }
-
-                // All tail within threshold up to cap; leave minimal padding
-                int keep = Math.Min(audio.Length, Math.Max(leave, audio.Length - maxTrim + leave));
-                if (keep < audio.Length)
-                {
-                    Array.Resize(ref audio, keep);
-                }
-                return audio;
-            }
-            catch
-            {
-                return audio; // fail-safe: return original
-            }
-        }
-
-        private static EspeakIpaNet48 _ipaService;
 
         private static void EnsureIpaService()
         {
             if (_ipaService != null) return;
             try
             {
-                // Prefer local espeak-ng bundled under models/tts/Espeak NG, else fallback to PATH
                 string exe = null;
                 var baseDir = AppDomain.CurrentDomain.BaseDirectory;
                 var localDir = Path.Combine(baseDir, "models", "tts", "Espeak NG");
@@ -1174,8 +769,6 @@ namespace Kinectv1
                 }
 
                 _ipaService = new EspeakIpaNet48(exe, "en-us");
-
-                // Warm-up (non-blocking best-effort)
                 try { _ = _ipaService.GetIpaAsync(".", TimeSpan.FromMilliseconds(800)); } catch { }
             }
             catch (Exception ex)
@@ -1188,7 +781,6 @@ namespace Kinectv1
             }
         }
 
-        // One-shot fallback to guarantee progress if hot process wedges
         private static string GetIpaOnce(string text, int timeoutMs = 2000)
         {
             try
@@ -1229,26 +821,295 @@ namespace Kinectv1
             catch { return null; }
         }
 
-        // Debug console flags for TTS/IPA
-        private static volatile bool _ttsDebug = true; // toggle verbose debug
+        private static string RunEspeak(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return null;
+            text = SanitizeInputText(text);
+            if (string.IsNullOrWhiteSpace(text)) return null;
+            if (TryGetCachedIpa(text, out string cachedIpa))
+            {
+                if (_ttsDebug) Console.WriteLine($"[TTS] Cache hit for: '{text}' -> '{cachedIpa}'");
+                return cachedIpa;
+            }
+            return GetIpaViaWorker(text);
+        }
+
+        private static string GetIpaViaWorker(string text)
+        {
+            try
+            {
+                EnsureIpaWorker();
+                var tcs = new TaskCompletionSource<string>();
+                var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(Math.Max(200, _ipaServiceTimeoutMs)));
+                var request = new IpaRequest { Text = text, Tcs = tcs, CancellationToken = cts.Token };
+                if (!_ipaQueue.TryAdd(request, 100))
+                {
+                    Console.WriteLine("[Kokoro] IPA queue full, using fallback");
+                    return GetIpaDirectFallback(text);
+                }
+                try
+                {
+                    var result = tcs.Task.GetAwaiter().GetResult();
+                    if (!string.IsNullOrWhiteSpace(result))
+                    {
+                        CacheIpa(text, result);
+                        return result;
+                    }
+                }
+                catch (AggregateException ex)
+                {
+                    Console.WriteLine($"[Kokoro] Worker IPA failed: {ex.InnerException?.Message ?? ex.Message}");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[Kokoro] Worker IPA error: {ex.Message}");
+                }
+                return GetIpaDirectFallback(text);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Kokoro] IPA worker setup failed: {ex.Message}");
+                return GetIpaDirectFallback(text);
+            }
+        }
+
+        private static string GetIpaDirectFallback(string text)
+        {
+            try
+            {
+                EnsureIpaService();
+                if (_ipaService != null)
+                {
+                    var timeout = TimeSpan.FromMilliseconds(Math.Max(200, _ipaServiceTimeoutMs));
+                    var ipa = _ipaService.GetIpaAsync(text, timeout).GetAwaiter().GetResult();
+                    if (!string.IsNullOrWhiteSpace(ipa))
+                    {
+                        var normalized = NormalizeIpa(ipa);
+                        CacheIpa(text, normalized);
+                        return normalized;
+                    }
+                }
+            }
+            catch (TimeoutException)
+            {
+                Console.WriteLine("[Kokoro] Direct eSpeak timeout, trying one-shot");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Kokoro] Direct eSpeak error: {ex.Message}");
+            }
+
+            var once = GetIpaOnce(text, timeoutMs: Math.Max(200, _ipaOneShotTimeoutMs));
+            if (!string.IsNullOrWhiteSpace(once))
+            {
+                var normalized = NormalizeIpa(once);
+                CacheIpa(text, normalized);
+                return normalized;
+            }
+
+            // Disable Simple G2P fallback to avoid poor pronunciation/gibberish
+            return null;
+        }
+
+        private static long[] MapIpaToIds(string ipa, int maxLen)
+        {
+            if (string.IsNullOrWhiteSpace(ipa)) return null;
+            var symbols = new List<string>();
+            foreach (var ch in ipa)
+            {
+                if (char.IsWhiteSpace(ch)) continue;
+                symbols.Add(ch.ToString());
+            }
+            var innerIds = new List<long>(symbols.Count);
+            var unknown = new HashSet<string>();
+            foreach (var s in symbols)
+            {
+                int id;
+                if (_vocab.TryGetValue(s, out id)) innerIds.Add(id); else unknown.Add(s);
+            }
+            if (unknown.Count > 0)
+            {
+                Console.WriteLine($"[Kokoro] Unknown IPA symbols ({unknown.Count}): {string.Join(" ", unknown.Take(15))}");
+            }
+            if (innerIds.Count == 0) return null;
+            int maxInner = Math.Max(0, maxLen - 2);
+            if (innerIds.Count > maxInner)
+            {
+                innerIds.RemoveRange(maxInner, innerIds.Count - maxInner);
+            }
+            var ids = new long[innerIds.Count + 2];
+            ids[0] = 0;
+            for (int i = 0; i < innerIds.Count; i++) ids[i + 1] = innerIds[i];
+            ids[ids.Length - 1] = 0;
+            Console.WriteLine($"[Kokoro] Token ids: inner={innerIds.Count}, total={ids.Length}");
+            return ids;
+        }
+
+        private static float[] LoadStyleVectorAt(string path, int innerTokenCount)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(path) || !File.Exists(path)) return null;
+                if (!_voiceBinCache.TryGetValue(path, out var floats))
+                {
+                    var bytes = File.ReadAllBytes(path);
+                    if (bytes.Length < 256 * 4) return null;
+                    floats = new float[bytes.Length / 4];
+                    Buffer.BlockCopy(bytes, 0, floats, 0, bytes.Length);
+                    _voiceBinCache[path] = floats;
+                }
+                int vectorCount = floats.Length / 256;
+                if (vectorCount <= 0) return null;
+                // Restore dynamic selection based on innerTokenCount
+                int idx = Math.Min(Math.Max(0, innerTokenCount), vectorCount - 1);
+                var style = new float[256];
+                Array.Copy(floats, idx * 256, style, 0, 256);
+                return style;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Kokoro] LoadStyleVectorAt failed: {ex.Message}");
+                return null;
+            }
+        }
+
+        private static bool TryRunModelOnSession(InferenceSession session, DenseTensor<long> inputIds, DenseTensor<float> styleTensor, DenseTensor<float> speedTensor, out float[] audio)
+        {
+            audio = null;
+            try
+            {
+                lock (_reuseInputsList)
+                {
+                    _reuseInputsList.Clear();
+                    _reuseInputsList.Add(NamedOnnxValue.CreateFromTensor("input_ids", inputIds));
+                    _reuseInputsList.Add(NamedOnnxValue.CreateFromTensor("style", styleTensor));
+                    _reuseInputsList.Add(NamedOnnxValue.CreateFromTensor("speed", speedTensor));
+
+                    using var results = session.Run(_reuseInputsList);
+                    var first = results.First().Value as Tensor<float>;
+                    if (first == null) return false;
+                    if (first.Rank == 2)
+                    {
+                        int n = first.Dimensions[1];
+                        audio = new float[n];
+                        for (int i = 0; i < n; i++) audio[i] = first[0, i];
+                    }
+                    else
+                    {
+                        audio = first.ToArray();
+                    }
+                    return true;
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool TryRunModel(DenseTensor<long> inputIds, DenseTensor<float> styleTensor, DenseTensor<float> speedTensor, out float[] audio)
+        {
+            try
+            {
+                return TryRunModelOnSession(_session, inputIds, styleTensor, speedTensor, out audio);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Kokoro] Inference error: {ex.Message}");
+                audio = null;
+                return false;
+            }
+        }
+
+        private static void EnsureCpuSession()
+        {
+            if (_cpuSession != null) return;
+            lock (_cpuLock)
+            {
+                if (_cpuSession != null) return;
+                try
+                {
+                    var so = new SessionOptions { GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_EXTENDED };
+                    try { so.AppendExecutionProvider_CPU(0); } catch { }
+                    _cpuSession = new InferenceSession(_modelPath, so);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[Kokoro] Failed to create CPU fallback session: {ex.Message}");
+                }
+            }
+        }
+
+        private static void DisposeCpuSession()
+        {
+            try { _cpuSession?.Dispose(); } catch { }
+            _cpuSession = null;
+        }
+
+        private static bool IsDegenerateAudio(float[] audio)
+        {
+            if (audio == null || audio.Length == 0) return true;
+            int nonZero = 0;
+            for (int i = 0; i < audio.Length; i++)
+            {
+                var s = audio[i];
+                if (float.IsNaN(s) || float.IsInfinity(s)) return true;
+                if (Math.Abs(s) > 1e-9f) nonZero++;
+            }
+            return nonZero == 0;
+        }
+
+        private static float[] TrimTrailingSilence(float[] audio, int sampleRate, float threshold = 0.002f, int leaveMs = 10, int maxTrimMs = 600)
+        {
+            try
+            {
+                if (audio == null || audio.Length == 0) return audio;
+                int leave = (int)Math.Round(sampleRate * (leaveMs / 1000.0));
+                int maxTrim = (int)Math.Round(sampleRate * (maxTrimMs / 1000.0));
+                int end = audio.Length - 1;
+                int trimmed = 0;
+                for (int i = end; i >= 0 && trimmed < maxTrim; i--)
+                {
+                    if (Math.Abs(audio[i]) > threshold)
+                    {
+                        int desiredEnd = Math.Min(audio.Length - 1, i + leave);
+                        if (desiredEnd < audio.Length - 1)
+                        {
+                            Array.Resize(ref audio, desiredEnd + 1);
+                        }
+                        return audio;
+                    }
+                    trimmed++;
+                }
+                int keep = Math.Min(audio.Length, Math.Max(leave, audio.Length - maxTrim + leave));
+                if (keep < audio.Length)
+                {
+                    Array.Resize(ref audio, keep);
+                }
+                return audio;
+            }
+            catch
+            {
+                return audio;
+            }
+        }
 
         public static float[] GenerateAudio(string text, string voiceKey)
         {
             using (var scope = Telemetry.LatencyScope("tts_generate", emitEvent: true))
             {
-                if (!_initialized && !Initialize()) 
-                {
-                    Telemetry.Counter("tts.initialization_failures");
-                    return Array.Empty<float>();
-                }
-                if (string.IsNullOrWhiteSpace(text)) 
-                {
-                    Telemetry.Counter("tts.empty_text");
-                    return Array.Empty<float>();
-                }
-                
+                ApplyRuntimeSettings();
+                if (!_initialized && !Initialize()) { Telemetry.Counter("tts.initialization_failures"); return Array.Empty<float>(); }
+                if (string.IsNullOrWhiteSpace(text)) { Telemetry.Counter("tts.empty_text"); return Array.Empty<float>(); }
                 Telemetry.Counter("tts.generate_requests");
                 var vk = (!string.IsNullOrWhiteSpace(voiceKey) && _voiceFiles.ContainsKey(voiceKey)) ? voiceKey : _defaultVoiceKey;
+
+                // Snapshot JSON tunables once per Generate call
+                var snap = Kinectv1.App.SettingsProvider?.Current?.Tts;
+                float trimThr = (float)(snap?.TrimThreshold ?? AppSettings.LoadTtsTrimThreshold());
+                int trimLeave = snap?.TrimLeaveMs ?? AppSettings.LoadTtsTrimLeaveMs();
+                int trimMax = snap?.TrimMaxMs ?? AppSettings.LoadTtsTrimMaxMs();
+                int padMsSnap = snap?.MinClausePaddingMs ?? AppSettings.LoadTtsMinClausePaddingMs();
 
                 var segments = BuildSegments(text);
                 var output = new List<float>();
@@ -1262,17 +1123,13 @@ namespace Kinectv1
                         int samples = (int)Math.Round((_nativeSampleRate / 1000.0) * ms);
                         if (samples > 0)
                         {
-                            // Use ArrayPool for break silence instead of new allocation
                             var silence = ArrayPool<float>.Shared.Rent(samples);
                             try
                             {
                                 Array.Clear(silence, 0, samples);
                                 for (int i = 0; i < samples; i++) output.Add(silence[i]);
                             }
-                            finally
-                            {
-                                ArrayPool<float>.Shared.Return(silence);
-                            }
+                            finally { ArrayPool<float>.Shared.Return(silence); }
                         }
                         continue;
                     }
@@ -1283,31 +1140,18 @@ namespace Kinectv1
                     segmentCount++;
                     EnsureIpaService();
                     var ipa = RunEspeak(sentence);
-                    if (string.IsNullOrWhiteSpace(ipa)) 
-                    {
-                        Telemetry.Counter("tts.espeak_failures");
-                        continue;
-                    }
+                    if (string.IsNullOrWhiteSpace(ipa)) { Telemetry.Counter("tts.espeak_failures"); continue; }
 
                     var ids = MapIpaToIds(ipa, 512);
-                    if (ids == null || ids.Length < 2) 
-                    {
-                        Telemetry.Counter("tts.mapping_failures");
-                        continue;
-                    }
+                    if (ids == null || ids.Length < 2) { Telemetry.Counter("tts.mapping_failures"); continue; }
 
                     int innerTokenCount = Math.Max(0, ids.Length - 2);
                     var style = LoadStyleVectorAt(_voiceFiles.ContainsKey(vk) ? _voiceFiles[vk] : null, innerTokenCount) ?? _defaultStyleVector;
 
-                    // Build tensors by dimensions then copy values - use reusable tensors to reduce allocations
                     var inputIds = new DenseTensor<long>(new[] { 1, ids.Length });
                     for (int i = 0; i < ids.Length; i++) inputIds[0, i] = ids[i];
-                    
-                    // Reuse cached style tensor instead of creating new one
                     for (int i = 0; i < 256; i++) _reuseStyleTensor[0, i] = style[i];
-                    
-                    // Reuse cached speed tensor instead of creating new one
-                    _reuseSpeedTensor[0] = _speed;
+                    _reuseSpeedTensor[0] = (snap?.Speed ?? AppSettings.LoadTtsSpeed());
 
                     float[] audio = null;
                     bool ok = TryRunModel(inputIds, _reuseStyleTensor, _reuseSpeedTensor, out audio);
@@ -1323,22 +1167,25 @@ namespace Kinectv1
                         }
                     }
 
-                    if (!ok || audio == null || audio.Length == 0) 
+                    if (!ok || audio == null || audio.Length == 0)
                     {
                         Telemetry.Counter("tts.generation_failures");
                         continue;
                     }
 
-                    // Reduce punctuation pause by trimming tail silence
-                    audio = TrimTrailingSilence(audio, _nativeSampleRate, threshold: 0.003f, leaveMs: 6, maxTrimMs: 800);
+                    // Trim both leading (to reduce punctuation gap) and trailing silence
+                    audio = TrimLeadingSilence(audio, _nativeSampleRate, trimThr, Math.Min(200, trimMax));
+                    audio = TrimTrailingSilence(audio, _nativeSampleRate, trimThr, trimLeave, trimMax);
 
                     output.AddRange(audio);
 
-                    // Shorter minimal pad (~10ms) only for non-explicit breaks
                     if (!seg.HasExplicitBreak)
                     {
-                        // Use pre-allocated silence padding instead of new allocation
-                        output.AddRange(_silencePadding);
+                        int samples = (int)Math.Round((_nativeSampleRate / 1000.0) * padMsSnap);
+                        if (samples > 0)
+                        {
+                            for (int i = 0; i < samples; i++) output.Add(0f);
+                        }
                     }
                 }
 
@@ -1355,16 +1202,23 @@ namespace Kinectv1
 
         public static IEnumerable<float[]> GenerateAudioSegments(string text, string voiceKey, CancellationToken cancellationToken)
         {
+            ApplyRuntimeSettings();
             if (!_initialized && !Initialize()) yield break;
             if (string.IsNullOrWhiteSpace(text)) yield break;
             var vk = (!string.IsNullOrWhiteSpace(voiceKey) && _voiceFiles.ContainsKey(voiceKey)) ? voiceKey : _defaultVoiceKey;
 
-            cancellationToken.ThrowIfCancellationRequested();
+            var snap = Kinectv1.App.SettingsProvider?.Current?.Tts;
+            float trimThr = (float)(snap?.TrimThreshold ?? AppSettings.LoadTtsTrimThreshold());
+            int trimLeave = snap?.TrimLeaveMs ?? AppSettings.LoadTtsTrimLeaveMs();
+            int trimMax = snap?.TrimMaxMs ?? AppSettings.LoadTtsTrimMaxMs();
+            int padMsSnap = snap?.MinClausePaddingMs ?? AppSettings.LoadTtsMinClausePaddingMs();
+
+            if (cancellationToken.IsCancellationRequested) yield break;
             var segments = BuildSegments(text);
 
             foreach (var seg in segments)
             {
-                cancellationToken.ThrowIfCancellationRequested();
+                if (cancellationToken.IsCancellationRequested) yield break;
 
                 if (seg.IsBreak)
                 {
@@ -1372,7 +1226,6 @@ namespace Kinectv1
                     int samples = (int)Math.Round((_nativeSampleRate / 1000.0) * ms);
                     if (samples > 0)
                     {
-                        // Use ArrayPool for break silence instead of new allocation
                         var silence = ArrayPool<float>.Shared.Rent(samples);
                         try
                         {
@@ -1381,10 +1234,7 @@ namespace Kinectv1
                             Array.Copy(silence, result, samples);
                             yield return result;
                         }
-                        finally
-                        {
-                            ArrayPool<float>.Shared.Return(silence);
-                        }
+                        finally { ArrayPool<float>.Shared.Return(silence); }
                     }
                     else
                     {
@@ -1396,13 +1246,11 @@ namespace Kinectv1
                 var sentence = seg.Text;
                 if (string.IsNullOrWhiteSpace(sentence)) continue;
 
-                cancellationToken.ThrowIfCancellationRequested();
+                if (cancellationToken.IsCancellationRequested) yield break;
 
                 EnsureIpaService();
                 var ipa = RunEspeak(sentence);
                 if (string.IsNullOrWhiteSpace(ipa)) continue;
-
-                cancellationToken.ThrowIfCancellationRequested();
 
                 var ids = MapIpaToIds(ipa, 512);
                 if (ids == null || ids.Length < 2) continue;
@@ -1410,17 +1258,12 @@ namespace Kinectv1
                 int innerTokenCount = Math.Max(0, ids.Length - 2);
                 var style = LoadStyleVectorAt(_voiceFiles.ContainsKey(vk) ? _voiceFiles[vk] : null, innerTokenCount) ?? _defaultStyleVector;
 
-                // Build tensors by dimensions then copy values - use reusable tensors to reduce allocations
                 var inputIds = new DenseTensor<long>(new[] { 1, ids.Length });
                 for (int i = 0; i < ids.Length; i++) inputIds[0, i] = ids[i];
-                
-                // Reuse cached style tensor instead of creating new one
                 for (int i = 0; i < 256; i++) _reuseStyleTensor[0, i] = style[i];
-                
-                // Reuse cached speed tensor instead of creating new one
-                _reuseSpeedTensor[0] = _speed;
+                _reuseSpeedTensor[0] = (snap?.Speed ?? AppSettings.LoadTtsSpeed());
 
-                cancellationToken.ThrowIfCancellationRequested();
+                if (cancellationToken.IsCancellationRequested) yield break;
 
                 float[] audio = null;
                 bool ok = TryRunModel(inputIds, _reuseStyleTensor, _reuseSpeedTensor, out audio);
@@ -1436,26 +1279,29 @@ namespace Kinectv1
                     }
                 }
 
-                cancellationToken.ThrowIfCancellationRequested();
+                if (cancellationToken.IsCancellationRequested) yield break;
 
-                if (!ok || audio == null || audio.Length == 0) 
+                if (!ok || audio == null || audio.Length == 0)
                 {
                     Telemetry.Counter("tts.generation_failures");
                     continue;
                 }
 
-                // Reduce punctuation pause by trimming tail silence
-                audio = TrimTrailingSilence(audio, _nativeSampleRate, threshold: 0.003f, leaveMs: 6, maxTrimMs: 800);
+                // Trim both leading and trailing silence per segment
+                audio = TrimLeadingSilence(audio, _nativeSampleRate, trimThr, Math.Min(200, trimMax));
+                audio = TrimTrailingSilence(audio, _nativeSampleRate, trimThr, trimLeave, trimMax);
 
                 yield return audio;
 
-                // Shorter minimal pad (~10ms) only for non-explicit breaks
                 if (!seg.HasExplicitBreak)
                 {
-                    // Return a copy of pre-allocated silence padding
-                    var padding = new float[_silencePadding.Length];
-                    Array.Copy(_silencePadding, padding, _silencePadding.Length);
-                    yield return padding;
+                    int samples = (int)Math.Round((_nativeSampleRate / 1000.0) * padMsSnap);
+                    if (samples > 0)
+                    {
+                        var padding = new float[samples];
+                        // zeros by default
+                        yield return padding;
+                    }
                 }
             }
         }
@@ -1473,17 +1319,15 @@ namespace Kinectv1
 
         public static void Dispose()
         {
-            // Stop IPA worker thread
             lock (_ipaWorkerLock)
             {
                 _ipaWorkerRunning = false;
             }
-            
             try
             {
                 if (_ipaWorkerThread != null && _ipaWorkerThread.IsAlive)
                 {
-                    if (!_ipaWorkerThread.Join(2000)) // Wait up to 2 seconds
+                    if (!_ipaWorkerThread.Join(2000))
                     {
                         Console.WriteLine("[TTS] IPA worker thread did not stop gracefully");
                     }
@@ -1499,7 +1343,6 @@ namespace Kinectv1
             try { _session?.Dispose(); } catch { }
             _session = null;
             try { DisposeCpuSession(); } catch { }
-            
             try { _ipaQueue?.Dispose(); } catch { }
         }
     }
