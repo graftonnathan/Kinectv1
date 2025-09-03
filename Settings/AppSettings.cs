@@ -6,7 +6,8 @@ namespace Kinectv1.Settings
         AudioSettings Audio,
         TtsSettings Tts,
         VadSettings Vad,
-        OllamaSettings Ollama
+        OllamaSettings Ollama,
+        DiscordSettings Discord
     );
 
     public sealed record AudioSettings(double VoiceThreshold, int VadThreshold, int BufferSize);
@@ -37,6 +38,7 @@ namespace Kinectv1.Settings
 
     // New: Ollama settings section persisted in JSON settings pipeline
     public sealed record OllamaSettings(
+        string Provider, // "Ollama" | "LMStudio"
         bool Enabled,
         string Model,
         bool MemoryEnabled,
@@ -44,6 +46,15 @@ namespace Kinectv1.Settings
         int MaxSystemMessages,
         int ConversationTimeoutMinutes,
         string ConversationHistoryPath,
-        string SystemPromptPath
+        string SystemPromptPath,
+        bool OutputThink // when false, <think>..</think> is replaced with "thinking"
+    );
+
+    // New: Discord settings for bot configuration
+    public sealed record DiscordSettings(
+        bool Enabled,
+        string Prefix,
+        bool AutoJoinVoice,
+        string Token
     );
 }

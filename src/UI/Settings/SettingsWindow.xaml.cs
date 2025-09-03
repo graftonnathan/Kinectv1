@@ -155,10 +155,11 @@ namespace Kinectv1.UI.Settings
                 IpaServiceTimeoutMs: ipaServiceTimeoutMs,
                 IpaOneShotTimeoutMs: ipaOneShotTimeoutMs
             );
-            // Preserve existing Ollama snapshot during this editor's save
+            // Preserve existing Ollama & Discord snapshots during this editor's save
             var current = _svc?.Current;
-            var ollama = current?.Ollama ?? new global::Kinectv1.Settings.OllamaSettings(false, string.Empty, true, 10, 5, 30, "history", string.Empty);
-            return new global::Kinectv1.Settings.AppSettings(audio, tts, vad, ollama);
+            var ollama = current?.Ollama ?? new global::Kinectv1.Settings.OllamaSettings("Ollama", false, string.Empty, true, 10, 5, 30, "history", string.Empty, false);
+            var discord = current?.Discord ?? new global::Kinectv1.Settings.DiscordSettings(false, "!", false, string.Empty);
+            return new global::Kinectv1.Settings.AppSettings(audio, tts, vad, ollama, discord);
         }
 
         private void Verify_Click(object sender, RoutedEventArgs e)

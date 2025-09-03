@@ -619,7 +619,7 @@ namespace Kinectv1
         }
 
         /// <summary>
-        /// Initialize settings on application startup - loads from App.config (no Settings.Default)
+        /// Initialize settings on application startup - loads from App.config (no Settings.settings)
         /// </summary>
         public static void InitializeSettingsOnStartup()
         {
@@ -2758,7 +2758,19 @@ namespace Kinectv1
         public static void SaveTtsIpaOneShotTimeoutMs(int ms)
         {
             try { var c = Math.Max(200, Math.Min(5000, ms)); SetInt("TtsIpaOneShotTimeoutMs", c); Console.WriteLine($"TTS: Saved IPA one-shot timeout: {c}ms"); }
-            catch (Exception ex) { Console.WriteLine($"ERROR: Error saving IPA one-shot timeout: {ex.Message}"); }
+            catch (Exception ex) { Console.WriteLine($"ERROR: Error saving TTS IPA one-shot timeout: {ex.Message}"); }
+        }
+
+        // ===== New: OutputThink policy (persisted in App.config for legacy callers) =====
+        public static bool LoadOllamaOutputThink()
+        {
+            try { return GetBool("OllamaOutputThink", false); }
+            catch (Exception ex) { LogSettingError("OllamaOutputThink", $"READ FAILED: {ex.Message}"); return false; }
+        }
+        public static void SaveOllamaOutputThink(bool outputThink)
+        {
+            try { SetBool("OllamaOutputThink", outputThink); Console.WriteLine($"Ollama: OutputThink = {outputThink}"); }
+            catch (Exception ex) { Console.WriteLine($"ERROR: Error saving Ollama OutputThink: {ex.Message}"); }
         }
     }
 }

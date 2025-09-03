@@ -440,8 +440,20 @@ namespace Kinectv1.Discord
                         return;
                     }
                     
-                    // Wait for voice state to clear
-                    await Task.Delay(750);
+                    // Fix 3: Confirm null-state via event (up to 3s)
+                    var clearedTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    Task Handler(SocketUser u, SocketVoiceState before, SocketVoiceState after)
+                    {
+                        if (u.Id == self.Id && after.VoiceChannel == null)
+                            clearedTcs.TrySetResult(true);
+                        return Task.CompletedTask;
+                    }
+                    Context.Client.UserVoiceStateUpdated += Handler;
+                    try { await Task.WhenAny(clearedTcs.Task, Task.Delay(3000)); }
+                    finally { Context.Client.UserVoiceStateUpdated -= Handler; }
+                    // Guild-level safety null
+                    try { await self.ModifyAsync(x => x.Channel = null); } catch { }
+                    await Task.Delay(250);
                 }
 
                 await DiscordNetBotManager.OnVoiceChannelLeft();

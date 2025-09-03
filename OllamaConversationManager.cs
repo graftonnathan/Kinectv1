@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System.Text.RegularExpressions;
+using Kinectv1.Llm;
 
 namespace Kinectv1
 {
@@ -36,9 +37,13 @@ namespace Kinectv1
         private static bool _initialized;
         private static HttpClient _httpClient;
         private static string _baseUrl = "http://127.0.0.1:11434"; // default Ollama endpoint
+        private static string _lmStudioBaseUrl = "http://127.0.0.1:1234"; // default LM Studio endpoint
         private static string _defaultModel = "llama3.1:8b";
         private static string _systemPrompt = "";
         private static DateTime _lastSystemPromptLoad = DateTime.MinValue;
+
+        // Router & clients
+        private static LlmRouter _router;
 
         // --- Conversation persistence (minimal) ---
         private class ConversationMessage
@@ -139,7 +144,7 @@ namespace Kinectv1
 
                     // Use most recent N items
                     var maxPerSpeaker = AppSettings.LoadOllamaMaxMessagesPerSpeaker();
-                    var start = Math.Max(0, list.Count - Math.Max(1, maxPerSpeaker));
+                    var start = Math.Max(0, list.Count - Max(1, maxPerSpeaker));
                     var sb = new StringBuilder();
                     for (int i = start; i < list.Count; i++)
                     {
@@ -184,14 +189,40 @@ namespace Kinectv1
                 // Remove inline labels like "..., Timestamp: \"2025-...\"" or without quotes
                 t = Regex.Replace(
                     t,
-                    @"(?i)\b(time\s*stamp|timestamp)\s*:\s*[""']?\d{4}-\d{2}-\d{2}T[^\s""']+[""']?",
+                    @"(?i)\b(time\s*stamp|timestamp)\s*:\s*[\""]?\d{4}-\d{2}-\d{2}T[^\s\""]+[\""]?",
                     string.Empty);
+
+                // Optionally strip <think> blocks based on setting
+                t = ApplyThinkPolicy(t);
 
                 // Collapse whitespace
                 t = Regex.Replace(t, @"\s+", " ").Trim();
                 return t;
             }
             catch { return CleanAssistantPrefix(text); }
+        }
+
+        private static string ApplyThinkPolicy(string text)
+        {
+            try
+            {
+                // If OutputThink is true, preserve content; otherwise, remove <think> blocks entirely.
+                var show = false;
+                try
+                {
+                    // Prefer JSON snapshot if available
+                    var snap = App.SettingsProvider?.Current;
+                    show = snap?.Ollama?.OutputThink ?? false;
+                }
+                catch { }
+                if (!show)
+                {
+                    // Remove any <think>...</think> (multi-line) completely
+                    text = Regex.Replace(text, @"(?is)<\s*think\s*>.*?<\s*/\s*think\s*>", string.Empty);
+                }
+                return text;
+            }
+            catch { return text; }
         }
 
         // --------------- Public API expected by the app ---------------
@@ -208,6 +239,20 @@ namespace Kinectv1
                 svc.Save(curr => curr with { Ollama = curr.Ollama with { Enabled = enabled } });
             }
             catch { AppSettings.SaveOllamaEnabled(enabled); }
+        }
+
+        public static void SetProvider(string provider)
+        {
+            try
+            {
+                EnsureRouterInitialized();
+                var p = string.Equals(provider, "LMStudio", StringComparison.OrdinalIgnoreCase) ? LlmProvider.LMStudio : LlmProvider.Ollama;
+                _router.SwitchTo(p);
+            }
+            catch (Exception ex)
+            {
+                OnError?.Invoke($"SetProvider failed: {ex.Message}");
+            }
         }
 
         public static async Task<bool> TestConnectionAsync(CancellationToken ct = default)
@@ -234,21 +279,49 @@ namespace Kinectv1
             try
             {
                 InitializeIfNeeded();
-                using var req = new HttpRequestMessage(HttpMethod.Get, $"{_baseUrl}/api/tags");
-                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                cts.CancelAfter(TimeSpan.FromSeconds(6));
-                var resp = await _httpClient.SendAsync(req, cts.Token).ConfigureAwait(false);
-                var json = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
 
-                // Expected format: { "models": [ { "name": "model:tag", ... }, ... ] }
-                var root = JObject.Parse(json);
-                var arr = root["models"] as JArray;
-                if (arr != null)
+                // Determine provider from settings
+                var provider = "Ollama";
+                try { provider = App.SettingsProvider?.Current?.Ollama?.Provider ?? "Ollama"; } catch { }
+
+                if (string.Equals(provider, "LMStudio", StringComparison.OrdinalIgnoreCase))
                 {
-                    foreach (var m in arr)
+                    using var req = new HttpRequestMessage(HttpMethod.Get, $"{_lmStudioBaseUrl}/v1/models");
+                    using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    cts.CancelAfter(TimeSpan.FromSeconds(6));
+                    var resp = await _httpClient.SendAsync(req, cts.Token).ConfigureAwait(false);
+                    var json = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+
+                    // Expected OpenAI schema: { "data": [ {"id": "model-id"}, ... ] }
+                    var root = JObject.Parse(json);
+                    var arr = root["data"] as JArray;
+                    if (arr != null)
                     {
-                        var name = m?["name"]?.ToString();
-                        if (!string.IsNullOrWhiteSpace(name)) list.Add(name);
+                        foreach (var m in arr)
+                        {
+                            var id = m?["id"]?.ToString();
+                            if (!string.IsNullOrWhiteSpace(id)) list.Add(id);
+                        }
+                    }
+                }
+                else
+                {
+                    using var req = new HttpRequestMessage(HttpMethod.Get, $"{_baseUrl}/api/tags");
+                    using var cts2 = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    cts2.CancelAfter(TimeSpan.FromSeconds(6));
+                    var resp2 = await _httpClient.SendAsync(req, cts2.Token).ConfigureAwait(false);
+                    var json2 = await resp2.Content.ReadAsStringAsync().ConfigureAwait(false);
+
+                    // Expected format: { "models": [ { "name": "model:tag", ... }, ... ] }
+                    var root2 = JObject.Parse(json2);
+                    var arr2 = root2["models"] as JArray;
+                    if (arr2 != null)
+                    {
+                        foreach (var m in arr2)
+                        {
+                            var name = m?["name"]?.ToString();
+                            if (!string.IsNullOrWhiteSpace(name)) list.Add(name);
+                        }
                     }
                 }
             }
@@ -294,6 +367,7 @@ namespace Kinectv1
                 }
 
                 InitializeIfNeeded();
+                EnsureRouterInitialized();
 
                 // Load model from settings each call in case user changed it in UI
                 var model = AppSettings.LoadOllamaModel();
@@ -322,40 +396,29 @@ namespace Kinectv1
 
                 // Build history block if memory enabled
                 var historyBlock = BuildHistoryBlock(normalizedSpeaker);
-                var userPrompt = BuildUserPrompt(normalizedSpeaker, transcription, system, historyBlock);
+                // Build user prompt WITHOUT embedding the system prompt; system is passed separately to router
+                var userPrompt = BuildUserPrompt(normalizedSpeaker, transcription, null, historyBlock);
 
                 OnPromptSent?.Invoke(userPrompt);
 
                 // Persist user message
                 AppendConversation(normalizedSpeaker, "user", transcription);
 
-                // Use /api/generate (simpler) with stream=false
-                var payload = new
+                string fullText;
+                try
                 {
-                    model = effectiveModel,
-                    prompt = userPrompt,
-                    stream = false
-                };
-                var json = JsonConvert.SerializeObject(payload);
-                using var req = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/api/generate")
+                    fullText = await _router.ChatOnceAsync(system, userPrompt).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
                 {
-                    Content = new StringContent(json, Encoding.UTF8, "application/json")
-                };
+                    // Provider switched or cancelled; do not report error
+                    return;
+                }
 
-                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                cts.CancelAfter(TimeSpan.FromSeconds(60));
-                var resp = await _httpClient.SendAsync(req, cts.Token).ConfigureAwait(false);
-                var body = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+                if (string.IsNullOrWhiteSpace(fullText))
+                    fullText = "(no response)";
 
-                // Typical response: { "model":"...", "created_at":"...", "response":"...", "done":true, ... }
-                var text = ExtractTextFromGenerate(body);
-                if (string.IsNullOrWhiteSpace(text))
-                    text = ExtractTextFromChat(body); // fallback if server routed to chat
-
-                if (string.IsNullOrWhiteSpace(text))
-                    text = "(no response)";
-
-                var cleaned = SanitizeAssistantText(text);
+                var cleaned = SanitizeAssistantText(fullText);
 
                 // Persist assistant response
                 AppendConversation(normalizedSpeaker, "assistant", cleaned);
@@ -408,6 +471,34 @@ namespace Kinectv1
                 // _baseUrl = AppSettings.LoadOllamaBaseUrl(); // (doesn't exist in your repo)
 
                 _initialized = true;
+            }
+        }
+
+        private static void EnsureRouterInitialized()
+        {
+            if (_router != null) return;
+            lock (_lock)
+            {
+                if (_router != null) return;
+
+                // Create clients with lazy model getter (reads latest from JSON pipeline)
+                string GetModel() {
+                    try { return App.SettingsProvider?.Current?.Ollama?.Model ?? AppSettings.LoadOllamaModel() ?? _defaultModel; }
+                    catch { return _defaultModel; }
+                }
+
+                var ollamaClient = new Kinectv1.Llm.OllamaClient("http://127.0.0.1:11434", apiKey: null, getModel: GetModel);
+                var lmClient = new Kinectv1.Llm.LmStudioClient("http://127.0.0.1:1234", apiKey: "lm-studio", getModel: GetModel);
+
+                var start = LlmProvider.Ollama;
+                try
+                {
+                    var prov = App.SettingsProvider?.Current?.Ollama?.Provider;
+                    if (string.Equals(prov, "LMStudio", StringComparison.OrdinalIgnoreCase)) start = LlmProvider.LMStudio;
+                }
+                catch { }
+
+                _router = new LlmRouter(ollamaClient, lmClient, start);
             }
         }
 
@@ -496,5 +587,8 @@ namespace Kinectv1
             }
             catch { return ""; }
         }
+
+        // local helper to avoid System.Math call in tight loop above
+        private static int Max(int a, int b) => a > b ? a : b;
     }
 }

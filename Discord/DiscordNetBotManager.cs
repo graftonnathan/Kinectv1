@@ -90,54 +90,12 @@ namespace Kinectv1.Discord
         private static long _totalTtsDrops = 0;
 
         // Voice join handshake state management (4006 prevention)
-        private static readonly ConcurrentDictionary<ulong, VoiceJoinHandshake> _voiceHandshakes = new ConcurrentDictionary<ulong, VoiceJoinHandshake>();
-        
+        // Handshake cache removed; using standard Discord.Net connect flow
+
         /// <summary>
         /// Voice join handshake state for preventing 4006 errors
         /// </summary>
-        private class VoiceJoinHandshake
-        {
-            public TaskCompletionSource<string> SessionIdTcs { get; set; }
-            public TaskCompletionSource<(string token, string endpoint)> ServerTcs { get; set; }
-            public DateTime StartTime { get; set; }
-            public int AttemptCount { get; set; }
-            public ulong GuildId { get; set; }
-            public ulong ChannelId { get; set; }
-            public string ChannelName { get; set; }
-            public CancellationTokenSource CancellationToken { get; set; }
-            
-            public VoiceJoinHandshake(ulong guildId, ulong channelId, string channelName)
-            {
-                SessionIdTcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
-                ServerTcs = new TaskCompletionSource<(string, string)>(TaskCreationOptions.RunContinuationsAsynchronously);
-                StartTime = DateTime.UtcNow;
-                AttemptCount = 0;
-                GuildId = guildId;
-                ChannelId = channelId;
-                ChannelName = channelName;
-                CancellationToken = new CancellationTokenSource();
-            }
-            
-            public void Cancel()
-            {
-                try
-                {
-                    CancellationToken?.Cancel();
-                    SessionIdTcs?.TrySetCanceled();
-                    ServerTcs?.TrySetCanceled();
-                }
-                catch { /* ignore */ }
-            }
-            
-            public void Dispose()
-            {
-                try
-                {
-                    CancellationToken?.Dispose();
-                }
-                catch { /* ignore */ }
-            }
-        }
+        private class VoiceJoinHandshake { }
 
         /// <summary>
         /// Enhanced Discord.Net bot shutdown with proper blocking pattern for application exit
@@ -258,17 +216,6 @@ namespace Kinectv1.Discord
                 _currentAudioClient = null;
                 _currentChannelId = null;
                 _currentChannelName = null;
-
-                // Cancel and clear any pending voice handshakes
-                try
-                {
-                    foreach (var kv in _voiceHandshakes)
-                    {
-                        try { kv.Value.Cancel(); kv.Value.Dispose(); } catch { }
-                    }
-                    _voiceHandshakes.Clear();
-                }
-                catch { }
             }
         }
 
@@ -332,17 +279,6 @@ namespace Kinectv1.Discord
                 _currentAudioClient = null;
                 _currentChannelId = null;
                 _currentChannelName = null;
-
-                // Cancel and clear any pending voice handshakes
-                try
-                {
-                    foreach (var kv in _voiceHandshakes)
-                    {
-                        try { kv.Value.Cancel(); kv.Value.Dispose(); } catch { }
-                    }
-                    _voiceHandshakes.Clear();
-                }
-                catch { }
             }
         }
 
@@ -619,6 +555,27 @@ namespace Kinectv1.Discord
                 _currentChannelId = null;
                 _currentChannelName = null;
                 
+                // Fix 4: Safety clear at gateway level if still in a voice channel
+                try
+                {
+                    // Iterate guilds to find any lingering voice state for the bot and clear it
+                    var meGlobal = _client?.CurrentUser;
+                    foreach (var g in _client?.Guilds ?? Enumerable.Empty<SocketGuild>())
+                    {
+                        var me = g.CurrentUser;
+                        if (me != null && meGlobal != null && me.Id == meGlobal.Id && me.VoiceChannel != null)
+                        {
+                            Console.WriteLine($"🧹 Safety clear: guild={g.Id} channel=null for lingering voice state ({me.VoiceChannel.Name})");
+                            await me.ModifyAsync(p => p.Channel = null);
+                            await Task.Delay(200);
+                        }
+                    }
+                 }
+                 catch (Exception clearEx)
+                 {
+                     Console.WriteLine($"⚠️ Safety clear warning: {clearEx.Message}");
+                 }
+
                 OnBotStatusChanged?.Invoke("Connected");
                 Console.WriteLine($"?? Left voice channel: {channelName}");
             }
@@ -664,196 +621,73 @@ namespace Kinectv1.Discord
         public static async Task<IAudioClient> JoinVoiceAsync(IVoiceChannel voiceChannel, int maxRetries = 3)
         {
             if (voiceChannel == null) throw new ArgumentNullException(nameof(voiceChannel));
-            
-            var guild = voiceChannel.Guild;
+
             var guildId = voiceChannel.Guild.Id;
-            var channelId = voiceChannel.Id;
             var channelName = voiceChannel.Name;
-            
-            Console.WriteLine($"🎯 JoinVoiceAsync: Starting enhanced voice join for {channelName} (guild {guildId})");
-            
-            // Telemetry: Start timing the join operation
+
+            Console.WriteLine($"🎯 JoinVoiceAsync: Standard Discord.Net connect to {channelName} (guild {guildId})");
             var joinTimer = Stopwatch.StartNew();
 
-            // NEW: Try Discord.Net's native ConnectAsync first with a 15s timeout. If it succeeds, skip custom handshake.
+            // Small pre-clean if we somehow still have an audio client
             try
             {
-                Console.WriteLine("🎯 Direct ConnectAsync attempt (15s timeout) before handshake...");
-                var connectTask = voiceChannel.ConnectAsync(selfDeaf: false, selfMute: false);
-                var completed = await Task.WhenAny(connectTask, Task.Delay(TimeSpan.FromSeconds(15)));
-                if (completed == connectTask)
+                if (_currentAudioClient != null)
                 {
-                    var audioClient = await connectTask;
-                    if (audioClient != null)
-                    {
-                        joinTimer.Stop();
-                        Console.WriteLine($"✅ Direct ConnectAsync succeeded in {joinTimer.ElapsedMilliseconds}ms, state: {audioClient.ConnectionState}");
-                        Telemetry.Timer("timer.discord.voice.join.ms", joinTimer.ElapsedMilliseconds);
-                        Telemetry.Gauge("gauge.discord.voice.connected", 1);
-                        Telemetry.Counter("discord.voice.join.success");
-                        return audioClient;
-                    }
-                    Console.WriteLine("⚠️ Direct ConnectAsync returned null, falling back to handshake flow...");
-                }
-                else
-                {
-                    Console.WriteLine("⚠️ Direct ConnectAsync timed out after 15s, falling back to handshake flow...");
+                    try { await _currentAudioClient.StopAsync(); } catch { }
+                    try { _currentAudioClient.Dispose(); } catch { }
+                    _currentAudioClient = null;
                 }
             }
-            catch (HttpException httpEx) when (httpEx.DiscordCode.HasValue && (int)httpEx.DiscordCode.Value == 4006)
-            {
-                Console.WriteLine($"❌ 4006 during direct ConnectAsync: {httpEx.Message} - will retry via handshake flow");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"❌ Direct ConnectAsync failed: {ex.GetType().Name}: {ex.Message} - will try handshake flow");
-            }
-            
-            for (int attempt = 1; attempt <= maxRetries; attempt++)
+            catch { }
+
+            for (int attempt = 1; attempt <= Math.Max(1, maxRetries); attempt++)
             {
                 try
                 {
-                    Console.WriteLine($"🎯 JoinVoiceAsync: Attempt {attempt}/{maxRetries}");
-                    
-                    // Clean up any existing handshake for this guild
-                    if (_voiceHandshakes.TryRemove(guildId, out var existingHandshake))
-                    {
-                        existingHandshake.Cancel();
-                        existingHandshake.Dispose();
-                        Console.WriteLine($"🎯 Cleaned up existing handshake for guild {guildId}");
-                    }
-                    
-                    // Create new handshake state
-                    var handshake = new VoiceJoinHandshake(guildId, channelId, channelName);
-                    handshake.AttemptCount = attempt;
-                    _voiceHandshakes[guildId] = handshake;
-                    
-                    Console.WriteLine($"🎯 Created handshake state for attempt {attempt}");
-                    
-                    // Start the handshake timer for timeout
-                    var handshakeTimer = Stopwatch.StartNew();
-                    
-                    // Step 1: Request voice channel join (this triggers VOICE_STATE_UPDATE and VOICE_SERVER_UPDATE)
-                    Console.WriteLine($"🎯 Step 1: Requesting voice channel join...");
-                    // IGuild doesn't expose CurrentUser; resolve via SocketGuild
-                    var socketGuild = _client?.GetGuild(guildId);
-                    var currentUser = socketGuild?.CurrentUser;
-                    if (currentUser == null)
-                        throw new InvalidOperationException("Could not resolve current bot user for guild");
-                    await currentUser.ModifyAsync(x => x.Channel = new Optional<IVoiceChannel>(voiceChannel));
-                    
-                    // Step 2: Wait for both sessionId and server info with timeout
-                    Console.WriteLine($"🎯 Step 2: Waiting for handshake completion (sessionId + server info)...");
-                    
-                    var handshakeTimeout = TimeSpan.FromSeconds(15); // 15 second timeout for handshake
-                    var timeoutTask = Task.Delay(handshakeTimeout, handshake.CancellationToken.Token);
-                    var bothReady = Task.WhenAll(handshake.SessionIdTcs.Task, handshake.ServerTcs.Task);
-                    
-                    var completedTask = await Task.WhenAny(bothReady, timeoutTask);
-                    
-                    if (completedTask == timeoutTask)
-                    {
-                        handshakeTimer.Stop();
-                        Console.WriteLine($"⚠️ Handshake timeout after {handshakeTimer.ElapsedMilliseconds}ms on attempt {attempt}");
-                        Telemetry.Counter("discord.voice.handshake.timeout");
-                        
-                        if (attempt == maxRetries)
-                        {
-                            throw new TimeoutException($"Voice handshake timed out after {handshakeTimeout.TotalSeconds} seconds on final attempt");
-                        }
-                        
-                        // Exponential backoff: 0.5s, 1s, 2s
-                        var backoffMs = (int)(500 * Math.Pow(2, attempt - 1));
-                        Console.WriteLine($"🎯 Backing off {backoffMs}ms before retry...");
-                        await Task.Delay(backoffMs);
-                        continue;
-                    }
-                    
-                    // Both sessionId and server info received
-                    handshakeTimer.Stop();
-                    var sessionId = await handshake.SessionIdTcs.Task;
-                    var (token, endpoint) = await handshake.ServerTcs.Task;
-                    
-                    Console.WriteLine($"✅ Handshake: got Session + Server in {handshakeTimer.ElapsedMilliseconds}ms");
-                    Console.WriteLine($"   SessionId: {MaskSessionId(sessionId)}");
-                    Console.WriteLine($"   Endpoint: {MaskEndpoint(endpoint)}");
-                    Console.WriteLine($"   Token: {MaskToken(token)}");
-                    
-                    // Step 3: Now call ConnectAsync with the properly prepared session
-                    Console.WriteLine($"🎯 Step 3: Calling ConnectAsync with prepared session...");
-                    var connectTimer = Stopwatch.StartNew();
-                    
-                    var audioClient = await voiceChannel.ConnectAsync(selfDeaf: false, selfMute: false);
-                    connectTimer.Stop();
-                    
+                    Console.WriteLine($"🎯 ConnectAsync attempt {attempt}/{maxRetries}...");
+
+                    var connectTask = voiceChannel.ConnectAsync(selfDeaf: false, selfMute: false);
+                    var completed = await Task.WhenAny(connectTask, Task.Delay(TimeSpan.FromSeconds(20)));
+                    if (completed != connectTask)
+                        throw new TimeoutException("ConnectAsync timed out after 20 seconds");
+
+                    var audioClient = await connectTask;
                     if (audioClient == null)
-                    {
                         throw new InvalidOperationException("ConnectAsync returned null audio client");
-                    }
-                    
-                    Console.WriteLine($"✅ ConnectAsync completed in {connectTimer.ElapsedMilliseconds}ms, state: {audioClient.ConnectionState}");
-                    
-                    // Success! Clean up and record metrics
-                    _voiceHandshakes.TryRemove(guildId, out _);
-                    handshake.Dispose();
-                    
-                    joinTimer.Stop();
+
+                    // Small settle delay
+                    await Task.Delay(300);
+
+                    Console.WriteLine($"✅ ConnectAsync succeeded in {joinTimer.ElapsedMilliseconds}ms, state: {audioClient.ConnectionState}");
                     Telemetry.Timer("timer.discord.voice.join.ms", joinTimer.ElapsedMilliseconds);
                     Telemetry.Gauge("gauge.discord.voice.connected", 1);
                     Telemetry.Counter("discord.voice.join.success");
-                    
-                    Console.WriteLine($"🎉 Voice join SUCCESS in {joinTimer.ElapsedMilliseconds}ms total (attempt {attempt})");
+
                     return audioClient;
                 }
                 catch (HttpException httpEx) when (httpEx.DiscordCode.HasValue && (int)httpEx.DiscordCode.Value == 4006)
                 {
-                    Console.WriteLine($"❌ 4006 'Session is no longer valid' on attempt {attempt}: {httpEx.Message}");
-                    Telemetry.Counter("counter.discord.voice.join.4006");
-                    
-                    // Clean up
-                    if (_voiceHandshakes.TryRemove(guildId, out var failedHandshake))
-                    {
-                        failedHandshake.Cancel();
-                        failedHandshake.Dispose();
-                    }
-                    
-                    if (attempt == maxRetries)
-                    {
-                        throw new InvalidOperationException($"Voice join failed with 4006 errors on all {maxRetries} attempts", httpEx);
-                    }
-                    
-                    // Exponential backoff for 4006 errors: 0.5s, 1s, 2s
-                    var backoffMs = (int)(500 * Math.Pow(2, attempt - 1));
-                    Console.WriteLine($"🔄 4006 retry backoff: {backoffMs}ms before attempt {attempt + 1}");
+                    Console.WriteLine($"❌ 4006 on ConnectAsync attempt {attempt}: {httpEx.Message}");
+                    if (attempt == maxRetries) throw;
+                    var backoffMs = 500 * attempt;
+                    await Task.Delay(backoffMs);
+                }
+                catch (TimeoutException tex)
+                {
+                    Console.WriteLine($"⚠️ ConnectAsync timeout on attempt {attempt}: {tex.Message}");
+                    if (attempt == maxRetries) throw;
+                    var backoffMs = 500 * attempt;
                     await Task.Delay(backoffMs);
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"❌ Voice join attempt {attempt} failed: {ex.GetType().Name}: {ex.Message}");
-                    
-                    // Clean up on any error
-                    if (_voiceHandshakes.TryRemove(guildId, out var failedHandshake))
-                    {
-                        failedHandshake.Cancel();
-                        failedHandshake.Dispose();
-                    }
-                    
-                    if (attempt == maxRetries)
-                    {
-                        joinTimer.Stop();
-                        Telemetry.Counter("discord.voice.join.failed");
-                        Telemetry.Gauge("gauge.discord.voice.connected", 0);
-                        throw;
-                    }
-                    
-                    // Backoff for general errors too
-                    var backoffMs = (int)(500 * Math.Pow(2, attempt - 1));
-                    Console.WriteLine($"🔄 General error backoff: {backoffMs}ms before attempt {attempt + 1}");
+                    Console.WriteLine($"❌ ConnectAsync failed on attempt {attempt}: {ex.GetType().Name}: {ex.Message}");
+                    if (attempt == maxRetries) throw;
+                    var backoffMs = 500 * attempt;
                     await Task.Delay(backoffMs);
                 }
             }
-            
-            // Should never reach here due to throws above, but just in case
+
             joinTimer.Stop();
             Telemetry.Counter("discord.voice.join.failed");
             Telemetry.Gauge("gauge.discord.voice.connected", 0);
@@ -1166,17 +1000,7 @@ namespace Kinectv1.Discord
                 var timingMs = DateTime.UtcNow.ToString("HH:mm:ss.fff");
                 Console.WriteLine($"[{timingMs}] SELF VoiceState: {before.VoiceChannel?.Name} -> {after.VoiceChannel?.Name} | session={after.VoiceSessionId ?? "None"}");
                 
-                // Handle voice join handshake: provide sessionId when we get one
-                if (!string.IsNullOrEmpty(after.VoiceSessionId) && after.VoiceChannel != null)
-                {
-                    var guildId = ((SocketGuildChannel)after.VoiceChannel).Guild.Id;
-                    if (_voiceHandshakes.TryGetValue(guildId, out var handshake))
-                    {
-                        Console.WriteLine($"[{timingMs}] Handshake: Got sessionId '{MaskSessionId(after.VoiceSessionId)}' for guild {guildId}");
-                        handshake.SessionIdTcs.TrySetResult(after.VoiceSessionId);
-                        Telemetry.Counter("discord.voice.handshake.session_received");
-                    }
-                }
+                // No handshake resolution needed in standard path
             }
             return Task.CompletedTask;
         }
@@ -1186,12 +1010,7 @@ namespace Kinectv1.Discord
             var timingMs = DateTime.UtcNow.ToString("HH:mm:ss.fff");
             Console.WriteLine($"[{timingMs}] VoiceServer: guild={voiceServer.Guild.Id} endpoint={MaskEndpoint(voiceServer.Endpoint)} token={MaskToken(voiceServer.Token)}");
             
-            if (_voiceHandshakes.TryGetValue(voiceServer.Guild.Id, out var handshake))
-            {
-                Console.WriteLine($"[{timingMs}] Handshake: Got server info for guild {voiceServer.Guild.Id}");
-                handshake.ServerTcs.TrySetResult((voiceServer.Token, voiceServer.Endpoint));
-                Telemetry.Counter("discord.voice.handshake.server_received");
-            }
+            // Standard path: no custom handshake; keep log only
             
             return Task.CompletedTask;
         }

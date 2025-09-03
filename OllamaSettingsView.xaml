@@ -152,8 +152,21 @@
                     <ColumnDefinition Width="220"/>
                     <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
-                <TextBlock Text="Enable Ollama" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
+                <TextBlock Text="Enable LLM" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
                 <CheckBox x:Name="OllamaEnabledCheckBox" Grid.Column="1" Style="{StaticResource ThemedCheckBoxStyle}"/>
+            </Grid>
+
+            <!-- Provider selection row -->
+            <Grid Margin="0,0,0,8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="220"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="Provider" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
+                <ComboBox x:Name="ProviderComboBox" Grid.Column="1" Style="{StaticResource ThemedComboBoxStyle}" IsEditable="False">
+                    <ComboBoxItem Content="Ollama"/>
+                    <ComboBoxItem Content="LMStudio"/>
+                </ComboBox>
             </Grid>
 
             <!-- Model selection row: editable ComboBox + Refresh -->
@@ -226,6 +239,16 @@
                 <TextBlock Text="System Prompt Path" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
                 <TextBox x:Name="SystemPromptPathTextBox" Grid.Column="1" Style="{StaticResource ThemedTextBoxStyle}"/>
                 <Button Grid.Column="2" Content="Browse..." Margin="8,0,0,0" Style="{StaticResource ThemedButtonStyle}" Click="BrowseSystemPromptButton_Click"/>
+            </Grid>
+
+            <!-- AI Assistant: Output think policy -->
+            <Grid Margin="0,0,0,8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="220"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="Output &lt;think&gt; blocks" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
+                <CheckBox x:Name="OllamaOutputThinkCheckBox" Grid.Column="1" Style="{StaticResource ThemedCheckBoxStyle}"/>
             </Grid>
 
             <TextBlock x:Name="StatusText" Foreground="{DynamicResource TextSecondary}"/>

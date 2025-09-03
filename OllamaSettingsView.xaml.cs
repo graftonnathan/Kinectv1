@@ -30,6 +30,22 @@ namespace Kinectv1
                     OllamaService.SetDefaultModel(sel);
                 }
             };
+
+            // Provider change (runtime switch with cancel)
+            if (ProviderComboBox != null)
+            {
+                ProviderComboBox.SelectionChanged += (s, e) =>
+                {
+                    try
+                    {
+                        var item = ProviderComboBox.SelectedItem as ComboBoxItem;
+                        var provider = item?.Content?.ToString() ?? "Ollama";
+                        App.SettingsProvider?.Save(curr => curr with { Ollama = curr.Ollama with { Provider = provider } });
+                        OllamaService.SetProvider(provider); // cancel in-flight and switch
+                    }
+                    catch (Exception ex) { Console.WriteLine($"Provider switch failed: {ex.Message}"); }
+                };
+            }
         }
 
         private void LoadValues()
@@ -37,7 +53,19 @@ namespace Kinectv1
             try
             {
                 OllamaEnabledCheckBox.IsChecked = AppSettings.LoadOllamaEnabled();
-                var model = AppSettings.LoadOllamaModel() ?? string.Empty;
+                // Provider
+                var provider = App.SettingsProvider?.Current?.Ollama?.Provider ?? "Ollama";
+                foreach (var it in ProviderComboBox.Items)
+                {
+                    if (it is ComboBoxItem cbi && string.Equals(cbi.Content?.ToString(), provider, StringComparison.OrdinalIgnoreCase))
+                    {
+                        ProviderComboBox.SelectedItem = cbi;
+                        break;
+                    }
+                }
+
+                // Read current model from JSON settings snapshot for persistence per docs
+                var model = App.SettingsProvider?.Current?.Ollama?.Model ?? string.Empty;
                 OllamaModelComboBox.ItemsSource = null; // set later by refresh
                 OllamaModelComboBox.Text = model; // fallback visual until list loads
                 OllamaMemoryEnabledCheckBox.IsChecked = AppSettings.LoadOllamaMemoryEnabled();
@@ -46,6 +74,11 @@ namespace Kinectv1
                 ConversationTimeoutTextBox.Text = AppSettings.LoadOllamaConversationTimeoutMinutes().ToString();
                 HistoryPathTextBox.Text = AppSettings.LoadConversationHistoryPath() ?? string.Empty;
                 SystemPromptPathTextBox.Text = AppSettings.LoadSystemPromptPath() ?? string.Empty;
+
+                // Output think
+                var outputThink = App.SettingsProvider?.Current?.Ollama?.OutputThink ?? AppSettings.LoadOllamaOutputThink();
+                OllamaOutputThinkCheckBox.IsChecked = outputThink;
+
                 Status("Settings loaded.");
             }
             catch (Exception ex)
@@ -73,8 +106,8 @@ namespace Kinectv1
                 names.Sort(StringComparer.OrdinalIgnoreCase);
                 OllamaModelComboBox.ItemsSource = names;
 
-                // Select current model if present
-                var current = AppSettings.LoadOllamaModel();
+                // Select current model from JSON snapshot if present
+                var current = App.SettingsProvider?.Current?.Ollama?.Model;
                 if (!string.IsNullOrWhiteSpace(current))
                 {
                     var match = names.FirstOrDefault(n => string.Equals(n, current, StringComparison.OrdinalIgnoreCase));
@@ -103,6 +136,11 @@ namespace Kinectv1
                 var enabled = OllamaEnabledCheckBox.IsChecked == true;
                 try { App.SettingsProvider?.Save(curr => curr with { Ollama = curr.Ollama with { Enabled = enabled } }); } catch { AppSettings.SaveOllamaEnabled(enabled); }
 
+                // Provider
+                var provider = (ProviderComboBox.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "Ollama";
+                try { App.SettingsProvider?.Save(curr => curr with { Ollama = curr.Ollama with { Provider = provider } }); } catch { }
+                OllamaService.SetProvider(provider);
+
                 var model = (OllamaModelComboBox.SelectedItem?.ToString()) ?? (OllamaModelComboBox.Text ?? string.Empty);
                 try { App.SettingsProvider?.Save(curr => curr with { Ollama = curr.Ollama with { Model = model } }); } catch { AppSettings.SaveOllamaModel(model); }
                 if (!string.IsNullOrWhiteSpace(model))
@@ -120,6 +158,11 @@ namespace Kinectv1
 
                 try { App.SettingsProvider?.Save(curr => curr with { Ollama = curr.Ollama with { ConversationHistoryPath = HistoryPathTextBox.Text ?? string.Empty } }); } catch { AppSettings.SaveConversationHistoryPath(HistoryPathTextBox.Text ?? string.Empty); }
                 try { App.SettingsProvider?.Save(curr => curr with { Ollama = curr.Ollama with { SystemPromptPath = SystemPromptPathTextBox.Text ?? string.Empty } }); } catch { AppSettings.SaveSystemPromptPath(SystemPromptPathTextBox.Text ?? string.Empty); }
+
+                // Output think
+                var outputThink = OllamaOutputThinkCheckBox.IsChecked == true;
+                try { App.SettingsProvider?.Save(curr => curr with { Ollama = curr.Ollama with { OutputThink = outputThink } }); } catch { }
+                AppSettings.SaveOllamaOutputThink(outputThink);
 
                 Status("Settings saved.");
             }

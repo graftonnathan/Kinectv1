@@ -127,6 +127,7 @@ namespace Kinectv1.Settings
             var defaultsObj = JObject.Parse(defaultsJson);
             changed |= BackfillTts(composite, defaultsObj);
             changed |= BackfillOllama(composite, defaultsObj);
+            changed |= BackfillDiscord(composite, defaultsObj);
 
             if (changed)
             {
@@ -220,14 +221,15 @@ namespace Kinectv1.Settings
             MergeInto("tts", "Tts");
             MergeInto("vad", "Vad");
             MergeInto("ollama", "Ollama");
+            MergeInto("discord", "Discord");
             return changed;
         }
 
         private static bool BackfillTts(JObject composite, JObject defaults)
         {
             bool changed = false;
-            var tts = composite?["tts"] as JObject;
-            var dTts = defaults?["tts"] as JObject;
+            var tts = composite?[(string)"tts"] as JObject;
+            var dTts = defaults?[(string)"tts"] as JObject;
             if (tts == null || dTts == null) return changed;
 
             void Ensure(string name, Func<JToken, bool> invalid)
@@ -266,8 +268,8 @@ namespace Kinectv1.Settings
         private static bool BackfillOllama(JObject composite, JObject defaults)
         {
             bool changed = false;
-            var ol = composite?["ollama"] as JObject;
-            var dOl = defaults?["ollama"] as JObject;
+            var ol = composite?[(string)"ollama"] as JObject;
+            var dOl = defaults?[(string)"ollama"] as JObject;
             if (dOl == null)
                 return changed;
             if (ol == null)
@@ -306,6 +308,7 @@ namespace Kinectv1.Settings
                 }
             }
 
+            EnsureString("provider");
             EnsureBool("enabled");
             EnsureString("model");
             EnsureBool("memoryEnabled");
@@ -314,7 +317,48 @@ namespace Kinectv1.Settings
             EnsureInt("conversationTimeoutMinutes");
             EnsureString("conversationHistoryPath");
             EnsureString("systemPromptPath");
+            EnsureBool("outputThink");
 
+            return changed;
+        }
+
+        // New: Ensure Discord section present
+        private static bool BackfillDiscord(JObject composite, JObject defaults)
+        {
+            bool changed = false;
+            var dc = composite?[(string)"discord"] as JObject;
+            var dDc = defaults?[(string)"discord"] as JObject;
+            if (dDc == null) return changed;
+            if (dc == null)
+            {
+                composite["discord"] = dDc.DeepClone();
+                return true;
+            }
+
+            void EnsureString(string name)
+            {
+                var tok = dc[name];
+                if (tok == null || tok.Type != JTokenType.String)
+                {
+                    dc[name] = dDc[name]?.DeepClone();
+                    changed = true;
+                }
+            }
+
+            void EnsureBool(string name)
+            {
+                var tok = dc[name];
+                if (tok == null || tok.Type != JTokenType.Boolean)
+                {
+                    dc[name] = dDc[name]?.DeepClone();
+                    changed = true;
+                }
+            }
+
+            EnsureBool("enabled");
+            EnsureString("prefix");
+            EnsureBool("autoJoinVoice");
+            EnsureString("token");
             return changed;
         }
 
@@ -378,6 +422,13 @@ namespace Kinectv1.Settings
             // Ollama validation
             if (s.Ollama == null)
                 throw new InvalidDataException("ollama section missing");
+            if (string.IsNullOrWhiteSpace(s.Ollama.Provider))
+                throw new InvalidDataException("ollama.provider required (Ollama|LMStudio)");
+            var prov = s.Ollama.Provider.Trim();
+            if (!string.Equals(prov, "Ollama", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(prov, "LMStudio", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("ollama.provider must be 'Ollama' or 'LMStudio'");
+
             if (s.Ollama.Enabled)
             {
                 // Model must be set when enabled
@@ -388,6 +439,18 @@ namespace Kinectv1.Settings
                 throw new InvalidDataException("ollama max message counts must be >= 0");
             if (s.Ollama.ConversationTimeoutMinutes < 0)
                 throw new InvalidDataException("ollama.conversationTimeoutMinutes must be >= 0");
+            // OutputThink is a boolean and needs no additional range validation
+
+            // Discord validation
+            if (s.Discord == null)
+                throw new InvalidDataException("discord section missing");
+            if (s.Discord.Enabled)
+            {
+                if (string.IsNullOrWhiteSpace(s.Discord.Prefix))
+                    throw new InvalidDataException("discord.prefix required when discord.enabled");
+                if (string.IsNullOrWhiteSpace(s.Discord.Token) || s.Discord.Token.Length < 24)
+                    throw new InvalidDataException("discord.token appears invalid or missing when discord.enabled");
+            }
         }
     }
 }

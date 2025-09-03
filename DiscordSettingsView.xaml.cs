@@ -11,22 +11,34 @@ namespace Kinectv1
             InitializeComponent();
             LoadValues();
 
-            BotEnabledCheckBox.Checked += (s, e) => AppSettings.SaveDiscordBotEnabled(true);
-            BotEnabledCheckBox.Unchecked += (s, e) => AppSettings.SaveDiscordBotEnabled(false);
-            AutoJoinCheckBox.Checked += (s, e) => AppSettings.SaveDiscordAutoJoinVoice(true);
-            AutoJoinCheckBox.Unchecked += (s, e) => AppSettings.SaveDiscordAutoJoinVoice(false);
+            // Immediate persistence through JSON pipeline for toggles
+            BotEnabledCheckBox.Checked += (s, e) => SaveSnapshot(enabled: true);
+            BotEnabledCheckBox.Unchecked += (s, e) => SaveSnapshot(enabled: false);
+            AutoJoinCheckBox.Checked += (s, e) => SaveSnapshot(autoJoin: true);
+            AutoJoinCheckBox.Unchecked += (s, e) => SaveSnapshot(autoJoin: false);
         }
 
         private void LoadValues()
         {
             try
             {
-                BotEnabledCheckBox.IsChecked = AppSettings.LoadDiscordBotEnabled();
-                PrefixTextBox.Text = AppSettings.LoadDiscordBotPrefix() ?? string.Empty;
-                AutoJoinCheckBox.IsChecked = AppSettings.LoadDiscordAutoJoinVoice();
-                // Token is sensitive; do not show actual value; indicate presence only
-                var token = AppSettings.LoadDiscordBotToken();
-                if (!string.IsNullOrEmpty(token)) TokenBox.Password = new string('•', 8);
+                var snap = App.SettingsProvider?.Current;
+                var dc = snap?.Discord;
+                if (dc != null)
+                {
+                    BotEnabledCheckBox.IsChecked = dc.Enabled;
+                    PrefixTextBox.Text = dc.Prefix ?? "!";
+                    AutoJoinCheckBox.IsChecked = dc.AutoJoinVoice;
+                    // Token is sensitive; mask if present
+                    if (!string.IsNullOrEmpty(dc.Token)) TokenBox.Password = new string('•', 8);
+                }
+                else
+                {
+                    BotEnabledCheckBox.IsChecked = false;
+                    PrefixTextBox.Text = "!";
+                    AutoJoinCheckBox.IsChecked = false;
+                    TokenBox.Password = string.Empty;
+                }
                 Status("Settings loaded.");
             }
             catch (Exception ex)
@@ -39,24 +51,46 @@ namespace Kinectv1
         {
             try
             {
-                AppSettings.SaveDiscordBotEnabled(BotEnabledCheckBox.IsChecked == true);
+                var enabled = BotEnabledCheckBox.IsChecked == true;
+                var prefix = string.IsNullOrWhiteSpace(PrefixTextBox.Text) ? "!" : PrefixTextBox.Text.Trim();
+                var auto = AutoJoinCheckBox.IsChecked == true;
 
-                var pwd = TokenBox.Password ?? string.Empty;
-                // Save when a non-empty value is present (we avoid writing bullets placeholder)
-                if (!string.IsNullOrWhiteSpace(pwd) && pwd.Trim('•').Length == pwd.Length)
+                // Only persist token if user typed a real value (not bullets)
+                var tokenInput = TokenBox.Password ?? string.Empty;
+                string tokenToSave = null;
+                if (!string.IsNullOrWhiteSpace(tokenInput) && tokenInput.Trim('•').Length == tokenInput.Length)
                 {
-                    AppSettings.SaveDiscordBotToken(pwd.Trim());
+                    tokenToSave = tokenInput.Trim();
                 }
 
-                var prefix = string.IsNullOrWhiteSpace(PrefixTextBox.Text) ? "!" : PrefixTextBox.Text.Trim();
-                AppSettings.SaveDiscordBotPrefix(prefix);
-                AppSettings.SaveDiscordAutoJoinVoice(AutoJoinCheckBox.IsChecked == true);
-
+                SaveSnapshot(enabled: enabled, prefix: prefix, autoJoin: auto, token: tokenToSave);
                 Status("Settings saved.");
             }
             catch (Exception ex)
             {
                 Status($"Error saving settings: {ex.Message}", true);
+            }
+        }
+
+        private void SaveSnapshot(bool? enabled = null, string prefix = null, bool? autoJoin = null, string token = null)
+        {
+            try
+            {
+                App.SettingsProvider?.Save(curr =>
+                {
+                    var dc = curr.Discord;
+                    var next = new Kinectv1.Settings.DiscordSettings(
+                        Enabled: enabled ?? dc.Enabled,
+                        Prefix: prefix ?? dc.Prefix ?? "!",
+                        AutoJoinVoice: autoJoin ?? dc.AutoJoinVoice,
+                        Token: token ?? dc.Token
+                    );
+                    return new Kinectv1.Settings.AppSettings(curr.Audio, curr.Tts, curr.Vad, curr.Ollama, next);
+                });
+            }
+            catch (Exception ex)
+            {
+                Status($"Error saving snapshot: {ex.Message}", true);
             }
         }
 

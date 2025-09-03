@@ -20,6 +20,7 @@
   },
   "vad": { "threshold": 50 },
   "ollama": {
+    "provider": "Ollama",
     "enabled": false,
     "model": "",
     "memoryEnabled": true,
@@ -27,6 +28,13 @@
     "maxSystemMessages": 5,
     "conversationTimeoutMinutes": 30,
     "conversationHistoryPath": "history",
-    "systemPromptPath": ""
+    "systemPromptPath": "",
+    "outputThink": false
+  },
+  "discord": {
+    "enabled": false,
+    "prefix": "!",
+    "autoJoinVoice": false,
+    "token": ""
   }
 }
