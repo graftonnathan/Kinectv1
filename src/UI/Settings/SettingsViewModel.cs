@@ -106,6 +106,13 @@ namespace Kinectv1.UI.Settings
                 EditorView = new Kinectv1.DiscordSettingsView()
             });
 
+            // Mumble settings page
+            Categories.Add(new SettingsCategoryVM
+            {
+                Name = "Mumble",
+                EditorView = new Kinectv1.MumbleSettingsView()
+            });
+
             // Select first category by default
             if (Categories.Count > 0)
             {

@@ -832,7 +832,7 @@ namespace Kinectv1.Discord
 
             var currentSpeaker = speakerRefId ?? AppSettings.LoadTtsSpeaker();
 
-            // 1) TTS: float[] at 22050 Hz, mono
+            // 1) TTS: float[] at 24,000 Hz (Kokoro native), mono
             var audioFloatData = await CoquiTtsService.GenerateAudioDataAsync(text, currentSpeaker);
             ct.ThrowIfCancellationRequested();
             if (audioFloatData == null || audioFloatData.Length == 0)
@@ -841,14 +841,14 @@ namespace Kinectv1.Discord
                 return false;
             }
 
-            // 2) Convert float [-1..1] -> PCM16 bytes @ 22050 mono
+            // 2) Convert float [-1..1] -> PCM16 bytes at Kokoro's native rate (mono)
             float gain = Math.Max(0f, (float)AppSettings.LoadDiscordTtsVolume());
             byte[] pcm22050 = FloatsToPcm16(audioFloatData, gain);
 
             // 3) Resample to 48000 Hz, 2 channels (Discord.Net handles Opus)
             int totalWritten = 0;
             using (var srcStream = new MemoryStream(pcm22050, writable: false))
-            using (var srcProvider = new RawSourceWaveStream(srcStream, new WaveFormat(22050, 16, 1)))
+            using (var srcProvider = new RawSourceWaveStream(srcStream, new WaveFormat(KokoroTtsService.GetSampleRate(), 16, 1)))
             using (var resampler = new MediaFoundationResampler(srcProvider, new WaveFormat(48000, 16, 2)) { ResamplerQuality = 60 })
              {
                  // Avoid speaking state races across utterances

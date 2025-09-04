@@ -36,5 +36,23 @@
     "prefix": "!",
     "autoJoinVoice": false,
     "token": ""
+  },
+  "mumble": {
+    "enabled": false,
+    "autoConnect": false,
+    "host": "localhost",
+    "port": 64738,
+    "username": "Kinectv1",
+    "serverPassword": "",
+    "channel": "/",
+    "channelPassword": "",
+    "validateTls": true,
+    "selfMute": true,
+    "selfDeaf": true,
+    "opusBitrate": 32000,
+    "vadThreshold": 25,
+    "reconnectBackoffMs": 2000,
+    "textCommandsEnabled": true,
+    "tlsValidate": "Strict"
   }
 }

@@ -75,8 +75,8 @@ namespace Kinectv1
                 HistoryPathTextBox.Text = AppSettings.LoadConversationHistoryPath() ?? string.Empty;
                 SystemPromptPathTextBox.Text = AppSettings.LoadSystemPromptPath() ?? string.Empty;
 
-                // Output think
-                var outputThink = App.SettingsProvider?.Current?.Ollama?.OutputThink ?? AppSettings.LoadOllamaOutputThink();
+                // Output think from snapshot
+                var outputThink = App.SettingsProvider?.Current?.Ollama?.OutputThink ?? false;
                 OllamaOutputThinkCheckBox.IsChecked = outputThink;
 
                 Status("Settings loaded.");
@@ -162,7 +162,6 @@ namespace Kinectv1
                 // Output think
                 var outputThink = OllamaOutputThinkCheckBox.IsChecked == true;
                 try { App.SettingsProvider?.Save(curr => curr with { Ollama = curr.Ollama with { OutputThink = outputThink } }); } catch { }
-                AppSettings.SaveOllamaOutputThink(outputThink);
 
                 Status("Settings saved.");
             }

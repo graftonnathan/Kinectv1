@@ -646,14 +646,20 @@ namespace Kinectv1
         {
             try
             {
+                // Respect explicit single-choice flags first
                 if (_discordInputEnabled && !_microphoneInputEnabled)
+                {
                     _cachedAudioMode = AudioInMode.DiscordVoice;
+                }
                 else if (_microphoneInputEnabled && !_discordInputEnabled)
+                {
                     _cachedAudioMode = AudioInMode.LocalMic;
-                else if (_discordInputEnabled && _microphoneInputEnabled)
-                    _cachedAudioMode = AudioInMode.LocalMic; // prefer mic when both flagged
+                }
                 else
-                    _cachedAudioMode = AudioInMode.LocalMic; // safe default for UI RMS
+                {
+                    // Fallback to persisted selection (supports third-party modes like Mumble/SystemLoopback)
+                    _cachedAudioMode = AppSettings.LoadAudioInMode();
+                }
             }
             catch { _cachedAudioMode = AudioInMode.LocalMic; }
         }

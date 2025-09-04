@@ -7,7 +7,8 @@ namespace Kinectv1.Settings
         TtsSettings Tts,
         VadSettings Vad,
         OllamaSettings Ollama,
-        DiscordSettings Discord
+        DiscordSettings Discord,
+        MumbleSettings Mumble
     );
 
     public sealed record AudioSettings(double VoiceThreshold, int VadThreshold, int BufferSize);
@@ -56,5 +57,27 @@ namespace Kinectv1.Settings
         string Prefix,
         bool AutoJoinVoice,
         string Token
+    );
+
+    public enum MumbleTlsValidate { Strict, AcceptSelfSigned, Off }
+
+    // New: Mumble settings for client configuration
+    public sealed record MumbleSettings(
+        bool Enabled,
+        bool AutoConnect,
+        string Host,
+        int Port,
+        string Username,
+        string ServerPassword,
+        string Channel,
+        string ChannelPassword,
+        bool ValidateTls,
+        bool SelfMute,
+        bool SelfDeaf,
+        int OpusBitrate,
+        int VadThreshold,
+        int ReconnectBackoffMs,
+        bool TextCommandsEnabled,
+        MumbleTlsValidate TlsValidate = MumbleTlsValidate.Strict
     );
 }

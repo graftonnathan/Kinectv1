@@ -105,13 +105,15 @@ namespace Kinectv1.UI.Settings
             var editor = _viewModel?.SelectedCategory?.EditorView as Kinectv1.ModelsSettingsView;
             if (editor == null) throw new InvalidOperationException("Settings editor not available");
 
+            var current = _svc?.Current ?? throw new InvalidOperationException("Settings snapshot unavailable");
+
             // TTS
             bool ttsEnabled = editor.TtsEnabledCheckBox.IsChecked ?? false;
             string ttsModel = editor.TtsModelPathTextBox.Text ?? string.Empty;
             string ttsFolder = editor.TtsModelFolderTextBox.Text ?? string.Empty;
             string ttsVocoder = editor.TtsVocoderPathTextBox.Text ?? string.Empty;
-            string speaker = editor.TtsVoiceComboBox.SelectedItem?.ToString() ?? string.Empty;
-            string execTag = (editor.ExecutionModeComboBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "CPU";
+            string speaker = editor.TtsVoiceComboBox.SelectedItem?.ToString() ?? current.Tts.Speaker;
+            string execTag = (editor.ExecutionModeComboBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? current.Tts.Execution.ToString();
             var exec = string.Equals(execTag, "GPU", StringComparison.OrdinalIgnoreCase) ? global::Kinectv1.Settings.TtsExecution.GPU : global::Kinectv1.Settings.TtsExecution.CPU;
 
             // Audio (strict parse; fail fast)
@@ -122,17 +124,17 @@ namespace Kinectv1.UI.Settings
             // VAD
             int vadThreshold = int.Parse(editor.VadThresholdTextBox.Text, CultureInfo.InvariantCulture);
 
-            // New TTS UI fields pulled from the editor controls / AppSettings live values
-            string outputDevice = AppSettings.LoadTtsOutputDevice();
-            double localVolume = AppSettings.LoadLocalTtsVolume();
-            double discordVolume = AppSettings.LoadDiscordTtsVolume();
-            float speed = AppSettings.LoadTtsSpeed();
-            double trimThreshold = AppSettings.LoadTtsTrimThreshold();
-            int trimLeaveMs = AppSettings.LoadTtsTrimLeaveMs();
-            int trimMaxMs = AppSettings.LoadTtsTrimMaxMs();
-            int minClausePaddingMs = AppSettings.LoadTtsMinClausePaddingMs();
-            int ipaServiceTimeoutMs = AppSettings.LoadTtsIpaServiceTimeoutMs();
-            int ipaOneShotTimeoutMs = AppSettings.LoadTtsIpaOneShotTimeoutMs();
+            // Extended TTS fields from snapshot (persist unchanged here)
+            string outputDevice = current.Tts.OutputDevice;
+            double localVolume = current.Tts.LocalVolume;
+            double discordVolume = current.Tts.DiscordVolume;
+            float speed = current.Tts.Speed;
+            double trimThreshold = current.Tts.TrimThreshold;
+            int trimLeaveMs = current.Tts.TrimLeaveMs;
+            int trimMaxMs = current.Tts.TrimMaxMs;
+            int minClausePaddingMs = current.Tts.MinClausePaddingMs;
+            int ipaServiceTimeoutMs = current.Tts.IpaServiceTimeoutMs;
+            int ipaOneShotTimeoutMs = current.Tts.IpaOneShotTimeoutMs;
 
             var audio = new global::Kinectv1.Settings.AudioSettings(voiceThreshold, audioVadThreshold, bufferSize);
             var vad = new global::Kinectv1.Settings.VadSettings(vadThreshold);
@@ -155,11 +157,11 @@ namespace Kinectv1.UI.Settings
                 IpaServiceTimeoutMs: ipaServiceTimeoutMs,
                 IpaOneShotTimeoutMs: ipaOneShotTimeoutMs
             );
-            // Preserve existing Ollama & Discord snapshots during this editor's save
-            var current = _svc?.Current;
-            var ollama = current?.Ollama ?? new global::Kinectv1.Settings.OllamaSettings("Ollama", false, string.Empty, true, 10, 5, 30, "history", string.Empty, false);
-            var discord = current?.Discord ?? new global::Kinectv1.Settings.DiscordSettings(false, "!", false, string.Empty);
-            return new global::Kinectv1.Settings.AppSettings(audio, tts, vad, ollama, discord);
+            // Preserve existing Ollama, Discord, Mumble snapshots while updating this editor's sections
+            var ollama = current.Ollama;
+            var discord = current.Discord;
+            var mumble = current.Mumble;
+            return new global::Kinectv1.Settings.AppSettings(audio, tts, vad, ollama, discord, mumble);
         }
 
         private void Verify_Click(object sender, RoutedEventArgs e)

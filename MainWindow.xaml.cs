@@ -12,6 +12,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 using Kinectv1.Discord;
+using Kinectv1.Mumble; // added
 
 namespace Kinectv1
 {
@@ -27,8 +28,10 @@ namespace Kinectv1
         // Latest-wins UI update mechanism to prevent update queue buildup
         private volatile float _latestRmsValue = 0f;
         private volatile float _latestDiscordRmsValue = 0f;
+        private volatile float _latestMumbleRmsValue = 0f; // NEW: Latest Mumble RMS value
         private volatile int _rmsUpdatePending = 0; // 0 = no update pending, 1 = update pending
         private volatile int _discordRmsUpdatePending = 0;
+        private volatile int _mumbleRmsUpdatePending = 0; // NEW: Update pending flag for Mumble RMS
 
         // ENHANCED DOUBLE REGISTRATION PREVENTION - Discord initialization protection
         private static int _discordInitInProgress = 0; // 0 = not in progress, 1 = in progress
@@ -36,6 +39,7 @@ namespace Kinectv1
         // Audio input settings
         private bool _isMicrophoneInputEnabled = true;
         private bool _isDiscordInputEnabled = true;
+        private bool _isMumbleInputEnabled = false; // new: UI state mirror (future input)
         private AudioInMode _currentAudioMode = AudioInMode.LocalMic;
         private bool _updatingAudioMode = false;
 
@@ -124,6 +128,15 @@ namespace Kinectv1
                 {
                     Console.WriteLine($"Could not hook VoiceRecognizer events: {ex.Message}");
                 }
+
+                // Hook Mumble events (Phase 1 placeholders)
+                try
+                {
+                    MumbleClientManager.OnRmsLevel += UpdateMumbleRmsLevel;
+                    MumbleClientManager.OnStatusChanged += status => { try { Console.WriteLine($"[Mumble] {status}"); } catch { } };
+                    MumbleClientManager.OnError += err => { try { Console.WriteLine($"[Mumble][Error] {err}"); } catch { } };
+                }
+                catch { }
 
                 try
                 {
@@ -443,11 +456,10 @@ namespace Kinectv1
 
         private float _smoothedRms = 0f; // Initialize baseline RMS immediately
         private float _smoothedDiscordRms = 0f; // Initialize baseline Discord RMS immediately
-
-        // Volume control fields
         private double _localTtsVolume = 1.0; // 100%
         private double _discordTtsVolume = 1.0; // 100%
 
+        // RMS Update logic
         private void UpdateRmsLevel(float rawRms)
         {
             try
@@ -603,6 +615,45 @@ namespace Kinectv1
             }
         }
 
+        // Add this method inside the MainWindow class near other RMS update methods
+        private void UpdateMumbleRmsLevel(float rawRms)
+        {
+            if (_isClosing) return; // Prevent UI updates during shutdown
+
+            _latestMumbleRmsValue = rawRms;
+            if (Interlocked.CompareExchange(ref _mumbleRmsUpdatePending, 1, 0) == 0)
+            {
+                try
+                {
+                    Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        try
+                        {
+                            if (_isClosing) return;
+                            var currentRms = _latestMumbleRmsValue;
+
+                            var bar = this.FindName("MumbleRmsBar") as ProgressBar;
+                            var text = this.FindName("MumbleRmsText") as TextBlock;
+                            if (bar != null && text != null && _isMumbleInputEnabled)
+                            {
+                                _smoothedDiscordRms = 0.7f * _smoothedDiscordRms + 0.3f * currentRms; // reuse smoother
+                                var scaled = Math.Min(100, Math.Max(0, (_smoothedDiscordRms / 1000.0f) * 100));
+                                bar.Value = scaled;
+                                text.Text = $"RMS: {_smoothedDiscordRms:F1} ({scaled:F0}%)";
+                            }
+                        }
+                        finally
+                        {
+                            Interlocked.Exchange(ref _mumbleRmsUpdatePending, 0);
+                        }
+                    }), DispatcherPriority.Background);
+                }
+                catch
+                {
+                    Interlocked.Exchange(ref _mumbleRmsUpdatePending, 0);
+                }
+            }
+        }
         // Button Event Handlers and settings tab handler
         private void OpenSettingsButton_Click(object sender, RoutedEventArgs e)
         {
@@ -651,6 +702,20 @@ namespace Kinectv1
         {
             if (_updatingAudioMode) return;
             // Prevent invalid "none selected"; revert to current mode
+            ApplyAudioMode(_currentAudioMode);
+        }
+
+        private void MumbleInputEnabledCheckBox_Checked(object sender, RoutedEventArgs e)
+        {
+            if (_updatingAudioMode) return;
+            PersistAudioMode(AudioInMode.MumbleVoice);
+            ApplyAudioMode(AudioInMode.MumbleVoice);
+        }
+
+        private void MumbleInputEnabledCheckBox_Unchecked(object sender, RoutedEventArgs e)
+        {
+            if (_updatingAudioMode) return;
+            // Prevent none-selected; revert to persisted/current mode
             ApplyAudioMode(_currentAudioMode);
         }
 
@@ -922,6 +987,7 @@ namespace Kinectv1
             }
         }
 
+        // ENHANCED: Centralized audio mode application with disconnect logic
         private void ApplyAudioMode(AudioInMode mode)
         {
             _updatingAudioMode = true;
@@ -930,16 +996,92 @@ namespace Kinectv1
                 _currentAudioMode = mode;
                 _isMicrophoneInputEnabled = (mode == AudioInMode.LocalMic);
                 _isDiscordInputEnabled = (mode == AudioInMode.DiscordVoice);
+                _isMumbleInputEnabled = (mode == AudioInMode.MumbleVoice);
 
                 // Reflect in UI (single-selection behavior)
                 if (MicInputEnabledCheckBox != null)
                     MicInputEnabledCheckBox.IsChecked = _isMicrophoneInputEnabled;
                 if (DiscordInputEnabledCheckBox != null)
                     DiscordInputEnabledCheckBox.IsChecked = _isDiscordInputEnabled;
+                try
+                {
+                    var mumbleCb = this.FindName("MumbleInputEnabledCheckBox") as CheckBox;
+                    if (mumbleCb != null) mumbleCb.IsChecked = _isMumbleInputEnabled;
+                }
+                catch { }
 
-                // Apply to recognizer
+                // Enforce disconnect-on-switch policy
+                if (_isDiscordInputEnabled)
+                {
+                    // Ensure Mumble is disconnected
+                    _ = Task.Run(async () => { try { await MumbleClientManager.DisconnectAsync(); } catch { } });
+                }
+                else if (_isMumbleInputEnabled)
+                {
+                    // Ensure Discord is disconnected
+                    _ = Task.Run(async () => { try { await DiscordNetBotManager.LeaveAllVoiceAsync(); } catch { } });
+
+                    // Persist selection intent: mark Mumble enabled in settings (persistent)
+                    try
+                    {
+                        App.SettingsProvider?.Save(curr =>
+                        {
+                            var mb = curr.Mumble;
+                            var next = new Kinectv1.Settings.MumbleSettings(
+                                Enabled: true,
+                                AutoConnect: mb.AutoConnect,
+                                Host: mb.Host,
+                                Port: mb.Port,
+                                Username: mb.Username,
+                                ServerPassword: mb.ServerPassword,
+                                Channel: mb.Channel,
+                                ChannelPassword: mb.ChannelPassword,
+                                ValidateTls: mb.ValidateTls,
+                                SelfMute: mb.SelfMute,
+                                SelfDeaf: mb.SelfDeaf,
+                                OpusBitrate: mb.OpusBitrate,
+                                VadThreshold: mb.VadThreshold,
+                                ReconnectBackoffMs: mb.ReconnectBackoffMs,
+                                TextCommandsEnabled: mb.TextCommandsEnabled
+                            );
+                            return new Kinectv1.Settings.AppSettings(curr.Audio, curr.Tts, curr.Vad, curr.Ollama, curr.Discord, next);
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Persist Mumble enable failed: {ex.Message}");
+                    }
+
+                    // Connect to Mumble using settings
+                    var snap = App.SettingsProvider?.Current;
+                    var mb2 = snap?.Mumble;
+                    if (mb2 != null)
+                    {
+                        Console.WriteLine($"[Mumble] Auto-connect on mode select -> {mb2.Host}:{mb2.Port} as {mb2.Username}");
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                await MumbleClientManager.StartAsync();
+                                await MumbleClientManager.ConnectAsync(
+                                    mb2.Host, mb2.Port, mb2.Username, mb2.ServerPassword,
+                                    mb2.Channel, mb2.ChannelPassword, mb2.ValidateTls,
+                                    mb2.SelfMute, mb2.SelfDeaf);
+                            }
+                            catch (Exception ex) { Console.WriteLine($"Mumble connect failed: {ex.Message}"); }
+                        });
+                    }
+                }
+                else
+                {
+                    // Mic mode: disconnect both remote sources
+                    _ = Task.Run(async () => { try { await DiscordNetBotManager.LeaveAllVoiceAsync(); } catch { } try { await MumbleClientManager.DisconnectAsync(); } catch { } });
+                }
+
+                // Apply to recognizer (mumble not implemented yet)
                 try { VoiceRecognizer.SetMicrophoneInputEnabled(_isMicrophoneInputEnabled); } catch { }
                 try { VoiceRecognizer.SetDiscordInputEnabled(_isDiscordInputEnabled); } catch { }
+                // Mumble gating to be added in Phase 2 when ingest lands
             }
             finally
             {

@@ -1,5 +1,4 @@
 using System;
-using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.Net.Http;
@@ -25,7 +24,7 @@ namespace Kinectv1.Llm
             _getModel = getModel ?? (() => "Meta-Llama-3.1-8B-Instruct-Q4_K_M");
         }
 
-        public async IAsyncEnumerable<string> ChatStreamAsync(string system, string user, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+        public async IAsyncEnumerable<string> ChatStreamAsync(string system, string user, CancellationToken ct = default)
         {
             var reqObj = new
             {

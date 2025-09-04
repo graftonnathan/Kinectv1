@@ -85,7 +85,11 @@ namespace Kinectv1
                         AutoJoinVoice: autoJoin ?? dc.AutoJoinVoice,
                         Token: token ?? dc.Token
                     );
-                    return new Kinectv1.Settings.AppSettings(curr.Audio, curr.Tts, curr.Vad, curr.Ollama, next);
+
+                    // Carry through existing Mumble settings (required by AppSettings ctor)
+                    var mumble = curr.Mumble;
+
+                    return new Kinectv1.Settings.AppSettings(curr.Audio, curr.Tts, curr.Vad, curr.Ollama, next, mumble);
                 });
             }
             catch (Exception ex)

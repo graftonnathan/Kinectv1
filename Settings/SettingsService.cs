@@ -128,6 +128,7 @@ namespace Kinectv1.Settings
             changed |= BackfillTts(composite, defaultsObj);
             changed |= BackfillOllama(composite, defaultsObj);
             changed |= BackfillDiscord(composite, defaultsObj);
+            changed |= BackfillMumble(composite, defaultsObj);
 
             if (changed)
             {
@@ -222,6 +223,7 @@ namespace Kinectv1.Settings
             MergeInto("vad", "Vad");
             MergeInto("ollama", "Ollama");
             MergeInto("discord", "Discord");
+            MergeInto("mumble", "Mumble");
             return changed;
         }
 
@@ -362,6 +364,66 @@ namespace Kinectv1.Settings
             return changed;
         }
 
+        // New: Ensure Mumble section present
+        private static bool BackfillMumble(JObject composite, JObject defaults)
+        {
+            bool changed = false;
+            var mb = composite?[(string)"mumble"] as JObject;
+            var dMb = defaults?[(string)"mumble"] as JObject;
+            if (dMb == null) return changed;
+            if (mb == null)
+            {
+                composite["mumble"] = dMb.DeepClone();
+                return true;
+            }
+
+            void EnsureString(string name)
+            {
+                var tok = mb[name];
+                if (tok == null || tok.Type != JTokenType.String)
+                {
+                    mb[name] = dMb[name]?.DeepClone();
+                    changed = true;
+                }
+            }
+            void EnsureInt(string name)
+            {
+                var tok = mb[name];
+                if (tok == null || tok.Type != JTokenType.Integer)
+                {
+                    mb[name] = dMb[name]?.DeepClone();
+                    changed = true;
+                }
+            }
+            void EnsureBool(string name)
+            {
+                var tok = mb[name];
+                if (tok == null || tok.Type != JTokenType.Boolean)
+                {
+                    mb[name] = dMb[name]?.DeepClone();
+                    changed = true;
+                }
+            }
+
+            EnsureBool("enabled");
+            EnsureBool("autoConnect");
+            EnsureString("host");
+            EnsureInt("port");
+            EnsureString("username");
+            EnsureString("serverPassword");
+            EnsureString("channel");
+            EnsureString("channelPassword");
+            EnsureBool("validateTls");
+            EnsureBool("selfMute");
+            EnsureBool("selfDeaf");
+            EnsureInt("opusBitrate");
+            EnsureInt("vadThreshold");
+            EnsureInt("reconnectBackoffMs");
+            EnsureBool("textCommandsEnabled");
+
+            return changed;
+        }
+
         private string ReadEmbeddedDefaultJson()
         {
             var asm = typeof(SettingsService).Assembly;
@@ -450,6 +512,25 @@ namespace Kinectv1.Settings
                     throw new InvalidDataException("discord.prefix required when discord.enabled");
                 if (string.IsNullOrWhiteSpace(s.Discord.Token) || s.Discord.Token.Length < 24)
                     throw new InvalidDataException("discord.token appears invalid or missing when discord.enabled");
+            }
+
+            // Mumble validation
+            if (s.Mumble == null)
+                throw new InvalidDataException("mumble section missing");
+            if (s.Mumble.Enabled)
+            {
+                if (string.IsNullOrWhiteSpace(s.Mumble.Host))
+                    throw new InvalidDataException("mumble.host required when mumble.enabled");
+                if (s.Mumble.Port <= 0 || s.Mumble.Port > 65535)
+                    throw new InvalidDataException("mumble.port must be 1..65535");
+                if (string.IsNullOrWhiteSpace(s.Mumble.Username))
+                    throw new InvalidDataException("mumble.username required when mumble.enabled");
+                if (s.Mumble.OpusBitrate < 6000 || s.Mumble.OpusBitrate > 96000)
+                    throw new InvalidDataException("mumble.opusBitrate must be 6000..96000");
+                if (s.Mumble.VadThreshold < 1 || s.Mumble.VadThreshold > 10000)
+                    throw new InvalidDataException("mumble.vadThreshold must be 1..10000");
+                if (s.Mumble.ReconnectBackoffMs < 0 || s.Mumble.ReconnectBackoffMs > 60000)
+                    throw new InvalidDataException("mumble.reconnectBackoffMs must be 0..60000");
             }
         }
     }
