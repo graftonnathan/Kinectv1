@@ -98,6 +98,9 @@ namespace Kinectv1.Mumble
                     try { _adapter.JoinChannelPath(channel); } catch (Exception ex) { OnError?.Invoke($"Join channel error: {ex.Message}"); }
                 }
 
+                // Apply self mute/deaf settings now that we are connected
+                try { _adapter.TryApplySelfState(selfMute, selfDeaf); } catch { }
+
                 _isConnected = true;
                 OnStatusChanged?.Invoke($"Connected to {host}:{port} as {username}");
                 return true;
