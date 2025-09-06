@@ -337,8 +337,9 @@ namespace Kinectv1
                 var conv = LoadConversationHistoryPath();
                 if (string.IsNullOrWhiteSpace(conv)) { SaveConversationHistoryPath(Defaults.Ollama.ConversationHistoryPath); }
 
-                var speaker = LoadTtsSpeaker();
-                if (string.IsNullOrWhiteSpace(speaker)) { SaveTtsSpeaker("em_alex"); }
+                // Do NOT set a default TTS speaker; Settings JSON is the source of truth.
+                // var speaker = LoadTtsSpeaker();
+                // if (string.IsNullOrWhiteSpace(speaker)) { SaveTtsSpeaker("em_alex"); }
 
                 var ttsFolder = LoadTtsModelFolder();
                 if (string.IsNullOrWhiteSpace(ttsFolder)) { SaveTtsModelFolder(Defaults.Tts.TtsModelFolder); }
@@ -1629,17 +1630,15 @@ namespace Kinectv1
                 var speaker = GetString("TtsSpeaker");
                 if (string.IsNullOrWhiteSpace(speaker))
                 {
-                    // Default to Kokoro's English male voice if not set
-                    speaker = "em_alex";
-                    SetString("TtsSpeaker", speaker);
+                    LogSettingError("TtsSpeaker", "EMPTY");
+                    return null;
                 }
-                // No numeric validation: Kokoro uses named voice keys like 'em_alex'
                 return speaker;
             }
             catch (Exception ex)
             {
                 LogSettingError("TtsSpeaker", $"READ FAILED: {ex.Message}");
-                return "em_alex";
+                return null;
             }
         }
 

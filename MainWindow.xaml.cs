@@ -456,6 +456,7 @@ namespace Kinectv1
 
         private float _smoothedRms = 0f; // Initialize baseline RMS immediately
         private float _smoothedDiscordRms = 0f; // Initialize baseline Discord RMS immediately
+        private float _smoothedMumbleRms = 0f; // Initialize baseline Mumble RMS
         private double _localTtsVolume = 1.0; // 100%
         private double _discordTtsVolume = 1.0; // 100%
 
@@ -636,10 +637,12 @@ namespace Kinectv1
                             var text = this.FindName("MumbleRmsText") as TextBlock;
                             if (bar != null && text != null && _isMumbleInputEnabled)
                             {
-                                _smoothedDiscordRms = 0.7f * _smoothedDiscordRms + 0.3f * currentRms; // reuse smoother
-                                var scaled = Math.Min(100, Math.Max(0, (_smoothedDiscordRms / 1000.0f) * 100));
+                                // Mumble meter emits peak 0..1; normalize and smooth separately from Discord
+                                var norm = Math.Max(0f, Math.Min(1f, currentRms));
+                                _smoothedMumbleRms = 0.7f * _smoothedMumbleRms + 0.3f * norm;
+                                var scaled = _smoothedMumbleRms * 100f;
                                 bar.Value = scaled;
-                                text.Text = $"RMS: {_smoothedDiscordRms:F1} ({scaled:F0}%)";
+                                text.Text = $"RMS: {_smoothedMumbleRms:F2} ({scaled:F0}%)";
                             }
                         }
                         finally
@@ -927,7 +930,8 @@ namespace Kinectv1
                 if (!AppSettings.LoadTtsEnabled())
                     return;
 
-                var voice = AppSettings.LoadTtsSpeaker();
+                // Prefer JSON settings snapshot speaker to avoid stale legacy speaker (e.g., 'em_alex')
+                var voice = App.SettingsProvider?.Current?.Tts?.Speaker;
                 var speakLocal = _isMicrophoneInputEnabled;      // Local output when mic mode is active
                 var speakDiscord = _isDiscordInputEnabled;       // Discord output when discord mode is active
 
@@ -1024,10 +1028,10 @@ namespace Kinectv1
                     // Persist selection intent: mark Mumble enabled in settings (persistent)
                     try
                     {
-                        App.SettingsProvider?.Save(curr =>
+                        var svc = App.SettingsProvider; var curr = svc?.Current; if (svc != null && curr != null)
                         {
                             var mb = curr.Mumble;
-                            var next = new Kinectv1.Settings.MumbleSettings(
+                            var nextMb = new Kinectv1.Settings.MumbleSettings(
                                 Enabled: true,
                                 AutoConnect: mb.AutoConnect,
                                 Host: mb.Host,
@@ -1044,8 +1048,9 @@ namespace Kinectv1
                                 ReconnectBackoffMs: mb.ReconnectBackoffMs,
                                 TextCommandsEnabled: mb.TextCommandsEnabled
                             );
-                            return new Kinectv1.Settings.AppSettings(curr.Audio, curr.Tts, curr.Vad, curr.Ollama, curr.Discord, next);
-                        });
+                            var next = new Kinectv1.Settings.AppSettings(curr.Audio, curr.Tts, curr.Vad, curr.Ollama, curr.Discord, nextMb);
+                            svc.Save(next);
+                        }
                     }
                     catch (Exception ex)
                     {

@@ -16,6 +16,7 @@ namespace Kinectv1.UI.Settings
         private SettingsViewModel _viewModel;
         private SettingsService _svc => App.SettingsProvider;
         private Kinectv1.ModelsSettingsView _attachedEditor;
+        private bool _suppressDirty; // prevent dirty flag during programmatic updates
 
         public SettingsWindow()
         {
@@ -30,6 +31,7 @@ namespace Kinectv1.UI.Settings
         {
             try
             {
+                _suppressDirty = true;
                 var snapshot = _svc?.Current;
                 if (snapshot != null)
                 {
@@ -58,13 +60,20 @@ namespace Kinectv1.UI.Settings
                         editor.AudioVoiceThresholdTextBox.Text = snapshot.Audio.VoiceThreshold.ToString(CultureInfo.InvariantCulture);
                         editor.AudioVadThresholdTextBox.Text = snapshot.Audio.VadThreshold.ToString(CultureInfo.InvariantCulture);
                         editor.AudioBufferSizeTextBox.Text = snapshot.Audio.BufferSize.ToString(CultureInfo.InvariantCulture);
+                        // New: Speaker match min score
+                        if (editor.SpeakerMatchThresholdTextBox != null)
+                        {
+                            editor.SpeakerMatchThresholdTextBox.Text = snapshot.Audio.SpeakerMatchMinScore.ToString(CultureInfo.InvariantCulture);
+                        }
 
                         // VAD
                         editor.VadThresholdTextBox.Text = snapshot.Vad.Threshold.ToString(CultureInfo.InvariantCulture);
                     }
                 }
+                _viewModel.HasUnsavedChanges = false; // initial load is clean
             }
             catch { /* ignore to avoid blocking window load */ }
+            finally { _suppressDirty = false; }
         }
 
         private void CategoriesTreeView_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
@@ -120,6 +129,11 @@ namespace Kinectv1.UI.Settings
             double voiceThreshold = double.Parse(editor.AudioVoiceThresholdTextBox.Text, CultureInfo.InvariantCulture);
             int audioVadThreshold = int.Parse(editor.AudioVadThresholdTextBox.Text, CultureInfo.InvariantCulture);
             int bufferSize = int.Parse(editor.AudioBufferSizeTextBox.Text, CultureInfo.InvariantCulture);
+            double speakerMatchMin = 0.6;
+            if (editor.SpeakerMatchThresholdTextBox != null && !string.IsNullOrWhiteSpace(editor.SpeakerMatchThresholdTextBox.Text))
+            {
+                speakerMatchMin = double.Parse(editor.SpeakerMatchThresholdTextBox.Text, CultureInfo.InvariantCulture);
+            }
 
             // VAD
             int vadThreshold = int.Parse(editor.VadThresholdTextBox.Text, CultureInfo.InvariantCulture);
@@ -136,7 +150,7 @@ namespace Kinectv1.UI.Settings
             int ipaServiceTimeoutMs = current.Tts.IpaServiceTimeoutMs;
             int ipaOneShotTimeoutMs = current.Tts.IpaOneShotTimeoutMs;
 
-            var audio = new global::Kinectv1.Settings.AudioSettings(voiceThreshold, audioVadThreshold, bufferSize);
+            var audio = new global::Kinectv1.Settings.AudioSettings(voiceThreshold, audioVadThreshold, bufferSize, speakerMatchMin);
             var vad = new global::Kinectv1.Settings.VadSettings(vadThreshold);
 
             var tts = new global::Kinectv1.Settings.TtsSettings(
@@ -169,7 +183,7 @@ namespace Kinectv1.UI.Settings
             try
             {
                 var candidate = BuildFromUI();
-                SettingsValidation.ValidateOrThrow(candidate);
+                SettingsService.ValidateOrThrow(candidate);
                 MessageBox.Show("Settings are valid.", "Verify", MessageBoxButton.OK, MessageBoxImage.Information);
             }
             catch (Exception ex)
@@ -183,10 +197,10 @@ namespace Kinectv1.UI.Settings
             try
             {
                 var candidate = BuildFromUI();
-                SettingsValidation.ValidateOrThrow(candidate);
-                _svc.Save(_ => candidate);
+                SettingsService.ValidateOrThrow(candidate);
+                _svc.Save(candidate);
                 _viewModel.RefreshSnapshotFromService();
-                _viewModel.HasUnsavedChanges = false;
+                _viewModel.HasUnsavedChanges = false; // saved -> clean
                 MessageBox.Show("Settings saved.", "Save", MessageBoxButton.OK, MessageBoxImage.Information);
             }
             catch (Exception ex)
@@ -199,7 +213,8 @@ namespace Kinectv1.UI.Settings
         {
             try
             {
-                var defaults = _svc.GetDefaults();
+                _suppressDirty = true;
+                var defaults = _svc.GetDefaultsEffective();
                 var editor = _viewModel?.SelectedCategory?.EditorView as Kinectv1.ModelsSettingsView;
                 if (editor != null)
                 {
@@ -225,15 +240,21 @@ namespace Kinectv1.UI.Settings
                     editor.AudioVoiceThresholdTextBox.Text = defaults.Audio.VoiceThreshold.ToString(CultureInfo.InvariantCulture);
                     editor.AudioVadThresholdTextBox.Text = defaults.Audio.VadThreshold.ToString(CultureInfo.InvariantCulture);
                     editor.AudioBufferSizeTextBox.Text = defaults.Audio.BufferSize.ToString(CultureInfo.InvariantCulture);
+                    if (editor.SpeakerMatchThresholdTextBox != null)
+                        editor.SpeakerMatchThresholdTextBox.Text = defaults.Audio.SpeakerMatchMinScore.ToString(CultureInfo.InvariantCulture);
 
                     // VAD
                     editor.VadThresholdTextBox.Text = defaults.Vad.Threshold.ToString(CultureInfo.InvariantCulture);
                 }
-                _viewModel.HasUnsavedChanges = true;
             }
             catch (Exception ex)
             {
                 MessageBox.Show(ex.Message, "Defaults Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                _suppressDirty = false;
+                _viewModel.HasUnsavedChanges = true; // applying defaults is a user change
             }
         }
 
@@ -241,6 +262,7 @@ namespace Kinectv1.UI.Settings
         {
             try
             {
+                _suppressDirty = true;
                 var snapshot = _svc.Reload();
                 var editor = _viewModel?.SelectedCategory?.EditorView as Kinectv1.ModelsSettingsView;
                 if (editor != null)
@@ -267,17 +289,20 @@ namespace Kinectv1.UI.Settings
                     editor.AudioVoiceThresholdTextBox.Text = snapshot.Audio.VoiceThreshold.ToString(CultureInfo.InvariantCulture);
                     editor.AudioVadThresholdTextBox.Text = snapshot.Audio.VadThreshold.ToString(CultureInfo.InvariantCulture);
                     editor.AudioBufferSizeTextBox.Text = snapshot.Audio.BufferSize.ToString(CultureInfo.InvariantCulture);
+                    if (editor.SpeakerMatchThresholdTextBox != null)
+                        editor.SpeakerMatchThresholdTextBox.Text = snapshot.Audio.SpeakerMatchMinScore.ToString(CultureInfo.InvariantCulture);
 
                     // VAD
                     editor.VadThresholdTextBox.Text = snapshot.Vad.Threshold.ToString(CultureInfo.InvariantCulture);
                 }
                 _viewModel.RefreshSnapshotFromService();
-                _viewModel.HasUnsavedChanges = false;
+                _viewModel.HasUnsavedChanges = false; // reload -> clean
             }
             catch (Exception ex)
             {
                 MessageBox.Show(ex.Message, "Reload Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
+            finally { _suppressDirty = false; }
         }
 
         private void AttachDirtyHandlersToCurrentEditor()
@@ -299,6 +324,8 @@ namespace Kinectv1.UI.Settings
                 _attachedEditor.AudioVadThresholdTextBox.TextChanged -= OnEditorDirty;
                 _attachedEditor.AudioBufferSizeTextBox.TextChanged -= OnEditorDirty;
                 _attachedEditor.VadThresholdTextBox.TextChanged -= OnEditorDirty;
+                if (_attachedEditor.SpeakerMatchThresholdTextBox != null)
+                    _attachedEditor.SpeakerMatchThresholdTextBox.TextChanged -= OnEditorDirty;
             }
 
             _attachedEditor = _viewModel?.SelectedCategory?.EditorView as Kinectv1.ModelsSettingsView;
@@ -318,16 +345,20 @@ namespace Kinectv1.UI.Settings
                 _attachedEditor.AudioVadThresholdTextBox.TextChanged += OnEditorDirty;
                 _attachedEditor.AudioBufferSizeTextBox.TextChanged += OnEditorDirty;
                 _attachedEditor.VadThresholdTextBox.TextChanged += OnEditorDirty;
+                if (_attachedEditor.SpeakerMatchThresholdTextBox != null)
+                    _attachedEditor.SpeakerMatchThresholdTextBox.TextChanged += OnEditorDirty;
             }
         }
 
         private void OnEditorDirty(object sender, EventArgs e)
         {
+            if (_suppressDirty) return;
             if (_viewModel != null) _viewModel.HasUnsavedChanges = true;
         }
 
         private void OnEditorDirtySelection(object sender, SelectionChangedEventArgs e)
         {
+            if (_suppressDirty) return;
             if (_viewModel != null) _viewModel.HasUnsavedChanges = true;
         }
     }

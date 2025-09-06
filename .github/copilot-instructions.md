@@ -6,7 +6,7 @@
 - When editing, output unified diff only.
 - Every code change requires a comprehensive check of each call, class, helper involved as to maintain function.
 - When other systems are involved, ask to refactor the affected system to support the code change.
-- DO **NOT** CREATE FALL BACK HARDCODED SETTINGS. LET THE PROGRAM FAIL. WE ARE DEBUGGING!!
-- DO **NOT** create shortcut code to solve issues. Write out the full function, build and debug.
-- SETTINGS should follow /logs/SETTINGS_SAVE_PIPELINE.md
+- DO **NOT** CREATE FALL BACK HARDCODED SETTINGS.
+- DO **NOT** create shortcut code to solve issues.
+- SETTINGS should follow /docs/settings.md
 - **ALL** added settings should be persistant

@@ -213,31 +213,25 @@ namespace Kinectv1
 
         /// <summary>
         /// Reset settings to defaults
+        /// Reset settings to embedded defaults via SettingsService (no hardcoded values).
         /// </summary>
         public void ResetToDefaults()
         {
-            _currentSettings.Clear();
-            
-            // Set reasonable defaults
-            SetSetting("TtsEnabled", true);
-            SetSetting("DiscordBotEnabled", false);
-            SetSetting("OllamaEnabled", true);
-            SetSetting("TelemetryEnabled", false);
-            SetSetting("VoiceConfidenceThreshold", 0.5f);
-            SetSetting("VoiceActivityThreshold", 300f);
-            SetSetting("DiscordVoiceActivityThreshold", 25f);
-            SetSetting("SttInputDevice", "Default");
-            SetSetting("TtsOutputDevice", "Default");
-            SetSetting("TtsSpeaker", "em_alex");
-            SetSetting("TtsUseGpu", false);
-            SetSetting("LocalTtsVolume", 0.8);
-            SetSetting("DiscordTtsVolume", 0.8);
-            SetSetting("DarkMode", false);
-            SetSetting("FaceThreshold", 0.6f);
-            SetSetting("AudioInMode", "LocalMic");
-            SetSetting("AppScenario", "Local");
-
-            Console.WriteLine("Settings reset to defaults");
+            try
+            {
+                var svc = App.SettingsProvider as Kinectv1.Settings.SettingsService ?? new Kinectv1.Settings.SettingsService();
+                var defaults = svc.GetDefaults();
+                // Save full snapshot, replacing current user overrides with embedded defaults
+                svc.Save(defaults);
+                Console.WriteLine("Settings reset to embedded defaults (SettingsService)");
+                // Refresh local cache from AppSettings after reset
+                LoadCurrentSettings();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"ERROR: Failed to reset to defaults via SettingsService: {ex.Message}");
+                throw;
+            }
         }
 
         /// <summary>

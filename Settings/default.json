@@ -1,5 +1,10 @@
 {
-  "audio": { "voiceThreshold": 0.2, "vadThreshold": 50, "bufferSize": 7 },
+  "audio": {
+    "voiceThreshold": 0.2,
+    "vadThreshold": 50,
+    "bufferSize": 7,
+    "speakerMatchMinScore": 0.6
+  },
   "tts": {
     "enabled": true,
     "speaker": "af_aoede",

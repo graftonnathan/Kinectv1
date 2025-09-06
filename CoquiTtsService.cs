@@ -61,7 +61,19 @@ namespace Kinectv1
                 cancellationToken.ThrowIfCancellationRequested();
                 OnTtsSpeakingStarted?.Invoke(text);
 
-                var voiceKey = speakerName ?? _currentSpeaker ?? AppSettings.LoadTtsSpeaker();
+                // SETTINGS PIPELINE: require JSON snapshot speaker unless explicitly provided
+                var voiceKey = speakerName ?? App.SettingsProvider?.Current?.Tts?.Speaker;
+                if (string.IsNullOrWhiteSpace(voiceKey))
+                {
+                    OnTtsError?.Invoke("TTS speaker not configured (Settings ? Models). Save settings to persist Speaker.");
+                    return false;
+                }
+                var available = KokoroTtsService.GetVoices();
+                if (available == null || !available.Contains(voiceKey))
+                {
+                    OnTtsError?.Invoke($"TTS speaker '{voiceKey}' not found in voices folder. Configure a valid voice in Settings.");
+                    return false;
+                }
 
                 // Generate audio using KokoroTtsService without registering CT with Task.Run to avoid CTS disposal races
                 var audio = await Task.Run(() => KokoroTtsService.GenerateAudio(text, voiceKey));
@@ -105,7 +117,20 @@ namespace Kinectv1
                 }
 
                 Telemetry.Counter("coqui_tts.generate_requests");
-                var voiceKey = speakerName ?? _currentSpeaker ?? AppSettings.LoadTtsSpeaker();
+                // SETTINGS PIPELINE: require JSON snapshot speaker unless explicitly provided
+                var voiceKey = speakerName ?? App.SettingsProvider?.Current?.Tts?.Speaker;
+                if (string.IsNullOrWhiteSpace(voiceKey))
+                {
+                    OnTtsError?.Invoke("TTS speaker not configured (Settings ? Models). Save settings to persist Speaker.");
+                    return Array.Empty<float>();
+                }
+                var available = KokoroTtsService.GetVoices();
+                if (available == null || !available.Contains(voiceKey))
+                {
+                    OnTtsError?.Invoke($"TTS speaker '{voiceKey}' not found in voices folder. Configure a valid voice in Settings.");
+                    return Array.Empty<float>();
+                }
+
                 return await Task.Run(() => KokoroTtsService.GenerateAudio(text, voiceKey));
             }
         }
@@ -247,7 +272,19 @@ namespace Kinectv1
                 ct.ThrowIfCancellationRequested();
                 OnTtsSpeakingStarted?.Invoke(text);
 
-                var voiceKey = speakerName ?? _currentSpeaker ?? AppSettings.LoadTtsSpeaker();
+                // SETTINGS PIPELINE: require JSON snapshot speaker unless explicitly provided
+                var voiceKey = speakerName ?? App.SettingsProvider?.Current?.Tts?.Speaker;
+                if (string.IsNullOrWhiteSpace(voiceKey))
+                {
+                    OnTtsError?.Invoke("TTS speaker not configured (Settings ? Models). Save settings to persist Speaker.");
+                    return false;
+                }
+                var available = KokoroTtsService.GetVoices();
+                if (available == null || !available.Contains(voiceKey))
+                {
+                    OnTtsError?.Invoke($"TTS speaker '{voiceKey}' not found in voices folder. Configure a valid voice in Settings.");
+                    return false;
+                }
 
                 // Get a pull-based enumerator for segments
                 using var enumerator = KokoroTtsService.GenerateAudioSegments(text, voiceKey, ct).GetEnumerator();

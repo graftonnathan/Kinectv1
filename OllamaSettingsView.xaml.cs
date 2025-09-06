@@ -26,7 +26,17 @@ namespace Kinectv1
                 if (!string.IsNullOrWhiteSpace(sel))
                 {
                     // Persist via JSON settings pipeline and update live model immediately
-                    try { App.SettingsProvider?.Save(curr => curr with { Ollama = curr.Ollama with { Model = sel } }); } catch { }
+                    try
+                    {
+                        var svc = App.SettingsProvider;
+                        var curr = svc?.Current;
+                        if (svc != null && curr != null)
+                        {
+                            var next = curr with { Ollama = curr.Ollama with { Model = sel } };
+                            svc.Save(next);
+                        }
+                    }
+                    catch { }
                     OllamaService.SetDefaultModel(sel);
                 }
             };
@@ -40,7 +50,13 @@ namespace Kinectv1
                     {
                         var item = ProviderComboBox.SelectedItem as ComboBoxItem;
                         var provider = item?.Content?.ToString() ?? "Ollama";
-                        App.SettingsProvider?.Save(curr => curr with { Ollama = curr.Ollama with { Provider = provider } });
+                        var svc = App.SettingsProvider;
+                        var curr = svc?.Current;
+                        if (svc != null && curr != null)
+                        {
+                            var next = curr with { Ollama = curr.Ollama with { Provider = provider } };
+                            svc.Save(next);
+                        }
                         OllamaService.SetProvider(provider); // cancel in-flight and switch
                     }
                     catch (Exception ex) { Console.WriteLine($"Provider switch failed: {ex.Message}"); }
@@ -134,34 +150,50 @@ namespace Kinectv1
             try
             {
                 var enabled = OllamaEnabledCheckBox.IsChecked == true;
-                try { App.SettingsProvider?.Save(curr => curr with { Ollama = curr.Ollama with { Enabled = enabled } }); } catch { AppSettings.SaveOllamaEnabled(enabled); }
+                try
+                {
+                    var svc = App.SettingsProvider; var curr = svc?.Current; if (svc != null && curr != null) { var next = curr with { Ollama = curr.Ollama with { Enabled = enabled } }; svc.Save(next); }
+                }
+                catch { AppSettings.SaveOllamaEnabled(enabled); }
 
                 // Provider
                 var provider = (ProviderComboBox.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "Ollama";
-                try { App.SettingsProvider?.Save(curr => curr with { Ollama = curr.Ollama with { Provider = provider } }); } catch { }
+                try
+                {
+                    var svc = App.SettingsProvider; var curr = svc?.Current; if (svc != null && curr != null) { var next = curr with { Ollama = curr.Ollama with { Provider = provider } }; svc.Save(next); }
+                }
+                catch { }
                 OllamaService.SetProvider(provider);
 
                 var model = (OllamaModelComboBox.SelectedItem?.ToString()) ?? (OllamaModelComboBox.Text ?? string.Empty);
-                try { App.SettingsProvider?.Save(curr => curr with { Ollama = curr.Ollama with { Model = model } }); } catch { AppSettings.SaveOllamaModel(model); }
+                try
+                {
+                    var svc = App.SettingsProvider; var curr = svc?.Current; if (svc != null && curr != null) { var next = curr with { Ollama = curr.Ollama with { Model = model } }; svc.Save(next); }
+                }
+                catch { AppSettings.SaveOllamaModel(model); }
                 if (!string.IsNullOrWhiteSpace(model))
                     OllamaModelComboBox.SelectedItem = model;
 
                 var memEnabled = OllamaMemoryEnabledCheckBox.IsChecked == true;
-                try { App.SettingsProvider?.Save(curr => curr with { Ollama = curr.Ollama with { MemoryEnabled = memEnabled } }); } catch { AppSettings.SaveOllamaMemoryEnabled(memEnabled); }
+                try
+                {
+                    var svc = App.SettingsProvider; var curr = svc?.Current; if (svc != null && curr != null) { var next = curr with { Ollama = curr.Ollama with { MemoryEnabled = memEnabled } }; svc.Save(next); }
+                }
+                catch { AppSettings.SaveOllamaMemoryEnabled(memEnabled); }
 
                 if (int.TryParse(MaxMsgsPerSpeakerTextBox.Text, out var maxPerSpeaker))
-                    try { App.SettingsProvider?.Save(curr => curr with { Ollama = curr.Ollama with { MaxMessagesPerSpeaker = maxPerSpeaker } }); } catch { AppSettings.SaveOllamaMaxMessagesPerSpeaker(maxPerSpeaker); }
+                    try { var svc = App.SettingsProvider; var curr = svc?.Current; if (svc != null && curr != null) { var next = curr with { Ollama = curr.Ollama with { MaxMessagesPerSpeaker = maxPerSpeaker } }; svc.Save(next); } } catch { AppSettings.SaveOllamaMaxMessagesPerSpeaker(maxPerSpeaker); }
                 if (int.TryParse(MaxSystemMsgsTextBox.Text, out var maxSys))
-                    try { App.SettingsProvider?.Save(curr => curr with { Ollama = curr.Ollama with { MaxSystemMessages = maxSys } }); } catch { AppSettings.SaveOllamaMaxSystemMessages(maxSys); }
+                    try { var svc = App.SettingsProvider; var curr = svc?.Current; if (svc != null && curr != null) { var next = curr with { Ollama = curr.Ollama with { MaxSystemMessages = maxSys } }; svc.Save(next); } } catch { AppSettings.SaveOllamaMaxSystemMessages(maxSys); }
                 if (int.TryParse(ConversationTimeoutTextBox.Text, out var timeoutMin))
-                    try { App.SettingsProvider?.Save(curr => curr with { Ollama = curr.Ollama with { ConversationTimeoutMinutes = timeoutMin } }); } catch { AppSettings.SaveOllamaConversationTimeoutMinutes(timeoutMin); }
+                    try { var svc = App.SettingsProvider; var curr = svc?.Current; if (svc != null && curr != null) { var next = curr with { Ollama = curr.Ollama with { ConversationTimeoutMinutes = timeoutMin } }; svc.Save(next); } } catch { AppSettings.SaveOllamaConversationTimeoutMinutes(timeoutMin); }
 
-                try { App.SettingsProvider?.Save(curr => curr with { Ollama = curr.Ollama with { ConversationHistoryPath = HistoryPathTextBox.Text ?? string.Empty } }); } catch { AppSettings.SaveConversationHistoryPath(HistoryPathTextBox.Text ?? string.Empty); }
-                try { App.SettingsProvider?.Save(curr => curr with { Ollama = curr.Ollama with { SystemPromptPath = SystemPromptPathTextBox.Text ?? string.Empty } }); } catch { AppSettings.SaveSystemPromptPath(SystemPromptPathTextBox.Text ?? string.Empty); }
+                try { var svc = App.SettingsProvider; var curr = svc?.Current; if (svc != null && curr != null) { var next = curr with { Ollama = curr.Ollama with { ConversationHistoryPath = HistoryPathTextBox.Text ?? string.Empty } }; svc.Save(next); } } catch { AppSettings.SaveConversationHistoryPath(HistoryPathTextBox.Text ?? string.Empty); }
+                try { var svc = App.SettingsProvider; var curr = svc?.Current; if (svc != null && curr != null) { var next = curr with { Ollama = curr.Ollama with { SystemPromptPath = SystemPromptPathTextBox.Text ?? string.Empty } }; svc.Save(next); } } catch { AppSettings.SaveSystemPromptPath(SystemPromptPathTextBox.Text ?? string.Empty); }
 
                 // Output think
                 var outputThink = OllamaOutputThinkCheckBox.IsChecked == true;
-                try { App.SettingsProvider?.Save(curr => curr with { Ollama = curr.Ollama with { OutputThink = outputThink } }); } catch { }
+                try { var svc = App.SettingsProvider; var curr = svc?.Current; if (svc != null && curr != null) { var next = curr with { Ollama = curr.Ollama with { OutputThink = outputThink } }; svc.Save(next); } } catch { }
 
                 Status("Settings saved.");
             }

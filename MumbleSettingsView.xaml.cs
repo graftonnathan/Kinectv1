@@ -97,33 +97,36 @@ namespace Kinectv1
         {
             try
             {
-                App.SettingsProvider?.Save(curr =>
+                var svc = App.SettingsProvider; var curr = svc?.Current; if (svc == null || curr == null) return;
+                var mb = curr.Mumble;
+                bool IsMasked(string s)
                 {
-                    var mb = curr.Mumble;
-                    // Only accept real password changes (not bullets)
-                    var serverPwToSave = (!string.IsNullOrWhiteSpace(serverPassword) && serverPassword.Trim('•').Length == serverPassword.Length) ? serverPassword : mb.ServerPassword;
-                    var channelPwToSave = (!string.IsNullOrWhiteSpace(channelPassword) && channelPassword.Trim('•').Length == channelPassword.Length) ? channelPassword : mb.ChannelPassword;
+                    if (s == null) return false;
+                    return s.IndexOf('?') >= 0 || s.IndexOf('?') >= 0 || s.IndexOf('?') >= 0;
+                }
+                var serverPwToSave = (serverPassword == null) ? mb.ServerPassword : (IsMasked(serverPassword) ? mb.ServerPassword : serverPassword);
+                var channelPwToSave = (channelPassword == null) ? mb.ChannelPassword : (IsMasked(channelPassword) ? mb.ChannelPassword : channelPassword);
 
-                    var next = new Kinectv1.Settings.MumbleSettings(
-                        Enabled: enabled ?? mb.Enabled,
-                        AutoConnect: autoConnect ?? mb.AutoConnect,
-                        Host: host ?? mb.Host,
-                        Port: port ?? mb.Port,
-                        Username: username ?? mb.Username,
-                        ServerPassword: serverPwToSave,
-                        Channel: channel ?? mb.Channel,
-                        ChannelPassword: channelPwToSave,
-                        ValidateTls: validateTls ?? mb.ValidateTls,
-                        SelfMute: selfMute ?? mb.SelfMute,
-                        SelfDeaf: selfDeaf ?? mb.SelfDeaf,
-                        OpusBitrate: opusBitrate ?? mb.OpusBitrate,
-                        VadThreshold: vadThreshold ?? mb.VadThreshold,
-                        ReconnectBackoffMs: reconnectBackoffMs ?? mb.ReconnectBackoffMs,
-                        TextCommandsEnabled: textCommands ?? mb.TextCommandsEnabled
-                    );
+                var nextMb = new Kinectv1.Settings.MumbleSettings(
+                    Enabled: enabled ?? mb.Enabled,
+                    AutoConnect: autoConnect ?? mb.AutoConnect,
+                    Host: host ?? mb.Host,
+                    Port: port ?? mb.Port,
+                    Username: username ?? mb.Username,
+                    ServerPassword: serverPwToSave,
+                    Channel: channel ?? mb.Channel,
+                    ChannelPassword: channelPwToSave,
+                    ValidateTls: validateTls ?? mb.ValidateTls,
+                    SelfMute: selfMute ?? mb.SelfMute,
+                    SelfDeaf: selfDeaf ?? mb.SelfDeaf,
+                    OpusBitrate: opusBitrate ?? mb.OpusBitrate,
+                    VadThreshold: vadThreshold ?? mb.VadThreshold,
+                    ReconnectBackoffMs: reconnectBackoffMs ?? mb.ReconnectBackoffMs,
+                    TextCommandsEnabled: textCommands ?? mb.TextCommandsEnabled
+                );
 
-                    return new Kinectv1.Settings.AppSettings(curr.Audio, curr.Tts, curr.Vad, curr.Ollama, curr.Discord, next);
-                });
+                var next = new Kinectv1.Settings.AppSettings(curr.Audio, curr.Tts, curr.Vad, curr.Ollama, curr.Discord, nextMb);
+                svc.Save(next);
             }
             catch (Exception ex)
             {

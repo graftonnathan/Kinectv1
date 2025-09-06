@@ -263,6 +263,10 @@ namespace Kinectv1
                 }
                 try
                 {
+                    // Re-resolve paths from current JSON settings and refresh voices
+                    ResolveModelLocationsFromSettings();
+                    LoadVoices();
+
                     bool useGpu;
                     try
                     {
@@ -1102,7 +1106,13 @@ namespace Kinectv1
                 if (!_initialized && !Initialize()) { Telemetry.Counter("tts.initialization_failures"); return Array.Empty<float>(); }
                 if (string.IsNullOrWhiteSpace(text)) { Telemetry.Counter("tts.empty_text"); return Array.Empty<float>(); }
                 Telemetry.Counter("tts.generate_requests");
-                var vk = (!string.IsNullOrWhiteSpace(voiceKey) && _voiceFiles.ContainsKey(voiceKey)) ? voiceKey : _defaultVoiceKey;
+                
+                // STRICT: require valid voice key from caller (no silent fallback)
+                var vk = voiceKey;
+                if (string.IsNullOrWhiteSpace(vk) || !_voiceFiles.ContainsKey(vk))
+                {
+                    throw new InvalidOperationException($"TTS speaker '{vk ?? "<null>"}' is not configured or not found. Configure in Settings → Models.");
+                }
 
                 // Snapshot JSON tunables once per Generate call
                 var snap = Kinectv1.App.SettingsProvider?.Current?.Tts;
@@ -1146,7 +1156,12 @@ namespace Kinectv1
                     if (ids == null || ids.Length < 2) { Telemetry.Counter("tts.mapping_failures"); continue; }
 
                     int innerTokenCount = Math.Max(0, ids.Length - 2);
-                    var style = LoadStyleVectorAt(_voiceFiles.ContainsKey(vk) ? _voiceFiles[vk] : null, innerTokenCount) ?? _defaultStyleVector;
+                    var stylePath = _voiceFiles.ContainsKey(vk) ? _voiceFiles[vk] : null;
+                    var style = LoadStyleVectorAt(stylePath, innerTokenCount);
+                    if (style == null)
+                    {
+                        throw new InvalidOperationException($"TTS voice style not found or invalid for '{vk}'. Expected .bin in voices folder.");
+                    }
 
                     var inputIds = new DenseTensor<long>(new[] { 1, ids.Length });
                     for (int i = 0; i < ids.Length; i++) inputIds[0, i] = ids[i];
@@ -1205,7 +1220,13 @@ namespace Kinectv1
             ApplyRuntimeSettings();
             if (!_initialized && !Initialize()) yield break;
             if (string.IsNullOrWhiteSpace(text)) yield break;
-            var vk = (!string.IsNullOrWhiteSpace(voiceKey) && _voiceFiles.ContainsKey(voiceKey)) ? voiceKey : _defaultVoiceKey;
+            
+            // STRICT: require valid voice key from caller (no silent fallback)
+            var vk = voiceKey;
+            if (string.IsNullOrWhiteSpace(vk) || !_voiceFiles.ContainsKey(vk))
+            {
+                throw new InvalidOperationException($"TTS speaker '{vk ?? "<null>"}' is not configured or not found. Configure in Settings → Models.");
+            }
 
             var snap = Kinectv1.App.SettingsProvider?.Current?.Tts;
             float trimThr = (float)(snap?.TrimThreshold ?? AppSettings.LoadTtsTrimThreshold());
@@ -1256,7 +1277,12 @@ namespace Kinectv1
                 if (ids == null || ids.Length < 2) continue;
 
                 int innerTokenCount = Math.Max(0, ids.Length - 2);
-                var style = LoadStyleVectorAt(_voiceFiles.ContainsKey(vk) ? _voiceFiles[vk] : null, innerTokenCount) ?? _defaultStyleVector;
+                var stylePath = _voiceFiles.ContainsKey(vk) ? _voiceFiles[vk] : null;
+                var style = LoadStyleVectorAt(stylePath, innerTokenCount);
+                if (style == null)
+                {
+                    throw new InvalidOperationException($"TTS voice style not found or invalid for '{vk}'. Expected .bin in voices folder.");
+                }
 
                 var inputIds = new DenseTensor<long>(new[] { 1, ids.Length });
                 for (int i = 0; i < ids.Length; i++) inputIds[0, i] = ids[i];

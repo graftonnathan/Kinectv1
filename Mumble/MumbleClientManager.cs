@@ -1,16 +1,9 @@
 using System;
-using System.IO;
+using System.Linq;
 using System.Net;
-using System.Net.Security;
 using System.Net.Sockets;
-using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 using System.Threading.Tasks;
-using Concentus.Enums;
-using Concentus.Structs;
-using System.Reflection;
-using System.Linq;
-using System.Collections.Generic;
 
 namespace Kinectv1.Mumble
 {
@@ -27,10 +20,8 @@ namespace Kinectv1.Mumble
         private static volatile bool _isConnected = false;
         private static CancellationTokenSource _cts;
 
-        private static readonly object _ttsGate = new object();
-        private static OpusEncoder _ttsEncoder;
-
-        private static MumbleSharpAdapter _adapter;
+        private static MumbleSharp.MumbleConnection _conn;
+        private static MumbleSimpleClient _proto;
 
         public static bool IsRunning => _isRunning;
         public static bool IsConnected => _isConnected;
@@ -54,52 +45,54 @@ namespace Kinectv1.Mumble
             {
                 if (string.IsNullOrWhiteSpace(host)) { OnError?.Invoke("Mumble host is empty"); return false; }
                 if (port <= 0) { OnError?.Invoke("Mumble port must be > 0"); return false; }
-                host = host.Trim();
 
-                try { _cts?.Cancel(); } catch { }
+                _cts?.Cancel();
                 _cts = new CancellationTokenSource();
 
-                _adapter = new MumbleSharpAdapter();
-                // Apply TLS policy from JSON settings if available
-                try
-                {
-                    var tlsMode = App.SettingsProvider?.Current?.Mumble.TlsValidate ?? Kinectv1.Settings.MumbleTlsValidate.Strict;
-                    _adapter.SetTlsMode(tlsMode);
-                    OnStatusChanged?.Invoke($"[Mumble] TLS policy: {tlsMode}");
-                }
-                catch { }
+                // Build with IPv4 endpoint, then connect (sample pattern)
+                var ip4 = Dns.GetHostAddresses(host).First(a => a.AddressFamily == AddressFamily.InterNetwork);
+                var ep = new IPEndPoint(ip4, port);
 
-                _adapter.Status += s => OnStatusChanged?.Invoke($"[Mumble] {s}");
-                _adapter.Error += e => OnError?.Invoke($"[Mumble] {e}");
-                _adapter.AudioFrameReceived += (pcm48, sampleRate, channels, user) =>
+                _proto = new MumbleSimpleClient();
+                _proto.OnRms += (speaker, rms) => { try { OnRmsLevel?.Invoke(rms); } catch { } };
+                _proto.OnPcm16kFrame += (speaker, frame16k) =>
                 {
                     try
                     {
-                        if (pcm48 == null || pcm48.Length == 0) return;
-                        // Convert float 48k mono to 16k mono PCM16 for recognizer
-                        var shorts48 = FloatsToInt16(pcm48);
-                        var pcm16k = MumbleSharpClient.Downsample48kTo16kPcm16(shorts48);
-                        var rms = MumbleSharpClient.CalculateRms(pcm16k, pcm16k.Length);
-                        OnRmsLevel?.Invoke(rms);
+                        if (frame16k == null || frame16k.Length == 0) return;
+                        var bytes = new byte[frame16k.Length * 2];
+                        Buffer.BlockCopy(frame16k, 0, bytes, 0, bytes.Length);
                         if (VoiceRecognizer.IsReady())
                         {
-                            SpeakerIdentifier.SetDiscordSpeakerHint(user);
-                            VoiceRecognizer.ProcessExternalAudio(pcm16k, pcm16k.Length, $"Mumble:{user}");
+                            SpeakerIdentifier.SetDiscordSpeakerHint(speaker);
+                            VoiceRecognizer.ProcessExternalAudio(bytes, bytes.Length, $"Mumble:{speaker}");
                         }
                     }
                     catch (Exception ex) { OnError?.Invoke($"Ingest error: {ex.Message}"); }
                 };
 
-                var ok = await _adapter.ConnectAsync(host, port, username, serverPassword, validateTls, _cts.Token).ConfigureAwait(false);
-                if (!ok) { OnError?.Invoke("Mumble connect failed"); return false; }
+                _conn = new MumbleSharp.MumbleConnection(ep, _proto);
 
-                if (!string.IsNullOrWhiteSpace(channel))
+                _conn.Connect(username ?? string.Empty, serverPassword ?? string.Empty, Array.Empty<string>(), host);
+
+                // Start pump loop like the sample
+                _ = Task.Run(() =>
                 {
-                    try { _adapter.JoinChannelPath(channel); } catch (Exception ex) { OnError?.Invoke($"Join channel error: {ex.Message}"); }
-                }
-
-                // Apply self mute/deaf settings now that we are connected
-                try { _adapter.TryApplySelfState(selfMute, selfDeaf); } catch { }
+                    try
+                    {
+                        while (_conn != null && _conn.State != MumbleSharp.ConnectionStates.Disconnected)
+                        {
+                            if (_conn.Process())
+                                Thread.Yield();
+                            else
+                                Thread.Sleep(1);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        OnError?.Invoke($"Pump error: {ex.Message}");
+                    }
+                }, _cts.Token);
 
                 _isConnected = true;
                 OnStatusChanged?.Invoke($"Connected to {host}:{port} as {username}");
@@ -114,36 +107,26 @@ namespace Kinectv1.Mumble
         }
 
         public static async Task DisconnectAsync()
-        { await _voiceOpLock.WaitAsync(); try { try { _cts?.Cancel(); } catch { } if (_adapter != null) { try { await _adapter.DisconnectAsync(); } catch { } try { _adapter.Dispose(); } catch { } _adapter = null; } _isConnected = false; OnStatusChanged?.Invoke("Disconnected"); await Task.Delay(50); } finally { _voiceOpLock.Release(); } }
-
-        private static short[] FloatsToInt16(float[] src)
         {
-            var dst = new short[src.Length];
-            for (int i = 0; i < src.Length; i++) { var f = src[i]; if (f > 1f) f = 1f; else if (f < -1f) f = -1f; dst[i] = (short)Math.Round(f * 32767f); }
-            return dst;
-        }
-
-        public static async Task<bool> SendTtsToMumbleAsync(string text, string speakerRefId = null, CancellationToken ct = default)
-        {
+            await _voiceOpLock.WaitAsync();
             try
             {
-                if (!_isConnected || _adapter == null) return false; if (string.IsNullOrWhiteSpace(text)) return false; if (!CoquiTtsService.IsEnabled()) return false;
-                var floats = await CoquiTtsService.GenerateAudioDataAsync(text, speakerRefId).ConfigureAwait(false); ct.ThrowIfCancellationRequested(); if (floats == null || floats.Length == 0) return false;
-                var gain = Math.Max(0f, (float)AppSettings.LoadDiscordTtsVolume()); if (gain <= 0f) gain = 1f; for (int i = 0; i < floats.Length; i++) { var f = floats[i] * gain; if (f > 1f) f = 1f; else if (f < -1f) f = -1f; floats[i] = f; }
-                int srcRate = KokoroTtsService.GetSampleRate(); var resampled = ResampleLinearMono(floats, srcRate, 48000); var pcm = FloatsToPcm16(resampled);
-                return _adapter.TrySendPcm48(pcm, ct);
+                _cts?.Cancel();
+                try { _conn?.Close(); } catch { }
+                _conn = null;
+                _proto = null;
+                _isConnected = false;
+                OnStatusChanged?.Invoke("Disconnected");
+                await Task.Delay(50);
             }
-            catch (OperationCanceledException) { return false; }
-            catch (Exception ex) { OnError?.Invoke($"TTS send error: {ex.Message}"); return false; }
+            finally { _voiceOpLock.Release(); }
         }
-
-        private static byte[] FloatsToPcm16(float[] mono)
-        { if (mono == null || mono.Length == 0) return Array.Empty<byte>(); var dst = new byte[mono.Length * 2]; int b = 0; for (int i = 0; i < mono.Length; i++) { float f = mono[i]; if (f > 1f) f = 1f; else if (f < -1f) f = -1f; short s = (short)Math.Round(f * 32767f); dst[b++] = (byte)(s & 0xFF); dst[b++] = (byte)((s >> 8) & 0xFF); } return dst; }
-
-        private static float[] ResampleLinearMono(float[] source, int srcRate, int dstRate)
-        { if (source == null || source.Length == 0 || srcRate == dstRate) return source ?? Array.Empty<float>(); double ratio = (double)dstRate / srcRate; int dstLen = (int)Math.Round(source.Length * ratio); var dst = new float[dstLen]; for (int n = 0; n < dstLen; n++) { double t = n / ratio; int i0 = (int)t; int i1 = Math.Min(i0 + 1, source.Length - 1); double frac = t - i0; dst[n] = (float)((1.0 - frac) * source[i0] + frac * source[i1]); } return dst; }
 
         public static string GetStatusSummary() => $"Running: {_isRunning}, Connected: {_isConnected}";
         public static string GetConnectionStatus() => _isConnected ? "Connected" : "Disconnected";
+
+        // Explicitly not implementing TTS send here in the minimal refactor
+        public static Task<bool> SendTtsToMumbleAsync(string text, string speakerRefId = null, CancellationToken ct = default)
+            => Task.FromResult(false);
     }
 }

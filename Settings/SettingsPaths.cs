@@ -38,7 +38,12 @@ namespace Kinectv1.Settings
         public static string AppDataDir =>
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), Company, Product);
 
+        public static string ProgramDataDir =>
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), Company, Product);
+
         public static string UserJsonPath => Path.Combine(AppDataDir, "settings.json");
+        public static string SecretsPath => Path.Combine(AppDataDir, "secrets.json");
+        public static string MachineDefaultsPath => Path.Combine(ProgramDataDir, "defaults.json");
 
         // Deterministic: {AssemblyName}.Settings.default.json
         public static string DefaultResourceName

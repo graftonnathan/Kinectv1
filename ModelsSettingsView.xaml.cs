@@ -158,7 +158,10 @@ namespace Kinectv1
 
                 // Voice Match Threshold
                 var match = AppSettings.LoadSpeakerMatchMinScore();
-                SpeakerMatchThresholdTextBox.Text = (match > 0f && match <= 1f) ? match.ToString("0.00") : string.Empty;
+                // Prefer JSON snapshot if present
+                var jsonMatch = snap?.Audio != null ? snap.Audio.SpeakerMatchMinScore : (double?)null;
+                var effectiveMatch = (float)(jsonMatch ?? (double)match);
+                SpeakerMatchThresholdTextBox.Text = (effectiveMatch > 0f && effectiveMatch <= 1f) ? effectiveMatch.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture) : string.Empty;
 
                 // Audio section – load thresholds/buffer
                 var vtVal = snap?.Audio?.VoiceThreshold ?? AppSettings.LoadVoiceConfidenceThreshold();
@@ -380,7 +383,7 @@ namespace Kinectv1
                     return;
                 }
 
-                // Persist current output device selection so test uses it
+                // Persist current output device selection so test and pipeline use it
                 var outDev = TtsOutputDeviceComboBox.SelectedItem as string;
                 if (!string.IsNullOrWhiteSpace(outDev))
                 {
@@ -393,9 +396,23 @@ namespace Kinectv1
                 if (!string.IsNullOrWhiteSpace(selectedVoice))
                 {
                     AppSettings.SaveTtsSpeaker(selectedVoice);
+
+                    // Also update the JSON snapshot immediately so normal TTS matches the test voice
+                    var svc = App.SettingsProvider;
+                    var curr = svc?.Current;
+                    if (svc != null && curr != null)
+                    {
+                        var tts = curr.Tts with
+                        {
+                            Speaker = selectedVoice,
+                            OutputDevice = string.IsNullOrWhiteSpace(outDev) ? curr.Tts.OutputDevice : outDev
+                        };
+                        var next = new Kinectv1.Settings.AppSettings(curr.Audio, tts, curr.Vad, curr.Ollama, curr.Discord, curr.Mumble);
+                        svc.Save(next);
+                    }
                 }
 
-                UpdateStatus($"🔊 Testing voice{(string.IsNullOrWhiteSpace(selectedVoice) ? string.Empty : $" '{selectedVoice}'") }...", false);
+                UpdateStatus($"🔊 Testing voice{(string.IsNullOrWhiteSpace(selectedVoice) ? string.Empty : $" '{selectedVoice}'")}...", false);
 
                 // Speak with preemption so repeated clicks interrupt
                 var ok = await CoquiTtsService.SpeakStreamingWithPreemptionAsync(phrase, selectedVoice);
@@ -722,49 +739,78 @@ namespace Kinectv1
                 try
                 {
                     var svc = App.SettingsProvider;
-                    if (svc != null)
+                    var curr = svc?.Current;
+                    if (svc != null && curr != null)
                     {
                         var outDevice = outDev ?? "Default";
                         var speaker = TtsVoiceComboBox.SelectedItem?.ToString();
-                        svc.Save(current =>
+
+                        var exec = useGpu ? Kinectv1.Settings.TtsExecution.GPU : Kinectv1.Settings.TtsExecution.CPU;
+
+                        // Audio snapshot from text boxes
+                        double vt = curr.Audio.VoiceThreshold;
+                        int vad = curr.Audio.VadThreshold;
+                        int buf = curr.Audio.BufferSize;
+                        if (double.TryParse(AudioVoiceThresholdTextBox.Text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var vtParsed)) vt = vtParsed;
+                        if (int.TryParse(AudioVadThresholdTextBox.Text, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var vadParsed)) vad = vadParsed;
+                        if (int.TryParse(AudioBufferSizeTextBox.Text, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var bufParsed)) buf = bufParsed;
+
+                        // Speaker match threshold (0..1)
+                        double spkMatch = curr.Audio.SpeakerMatchMinScore;
+                        var spkText = SpeakerMatchThresholdTextBox?.Text;
+                        if (!string.IsNullOrWhiteSpace(spkText))
                         {
-                            var exec = useGpu ? Kinectv1.Settings.TtsExecution.GPU : Kinectv1.Settings.TtsExecution.CPU;
+                            if (double.TryParse(spkText, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var sm) && sm >= 0.0 && sm <= 1.0)
+                            {
+                                spkMatch = sm;
+                            }
+                        }
 
-                            // Audio snapshot from text boxes
-                            double vt = current.Audio.VoiceThreshold;
-                            int vad = current.Audio.VadThreshold;
-                            int buf = current.Audio.BufferSize;
-                            if (double.TryParse(AudioVoiceThresholdTextBox.Text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var vtParsed)) vt = vtParsed;
-                            if (int.TryParse(AudioVadThresholdTextBox.Text, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var vadParsed)) vad = vadParsed;
-                            if (int.TryParse(AudioBufferSizeTextBox.Text, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var bufParsed)) buf = bufParsed;
-
-                            var audio = new Kinectv1.Settings.AudioSettings(vt, vad, buf);
-                            var tts = new Kinectv1.Settings.TtsSettings(
-                                Enabled: TtsEnabledCheckBox.IsChecked ?? false,
-                                Speaker: string.IsNullOrWhiteSpace(speaker) ? current.Tts.Speaker : speaker,
-                                Execution: exec,
-                                ModelFolder: TtsModelFolderTextBox.Text ?? current.Tts.ModelFolder,
-                                ModelPath: TtsModelPathTextBox.Text ?? current.Tts.ModelPath,
-                                VocoderPath: TtsVocoderPathTextBox.Text ?? current.Tts.VocoderPath,
-                                OutputDevice: outDevice,
-                                LocalVolume: localVol,
-                                DiscordVolume: discVol,
-                                Speed: speedVal,
-                                TrimThreshold: trimThr,
-                                TrimLeaveMs: leaveVal,
-                                TrimMaxMs: maxVal,
-                                MinClausePaddingMs: padVal,
-                                IpaServiceTimeoutMs: ipaSvc,
-                                IpaOneShotTimeoutMs: ipaOne
-                            );
-                            var vadSettings = new Kinectv1.Settings.VadSettings(vad);
-                            return new Kinectv1.Settings.AppSettings(audio, tts, vadSettings, current.Ollama, current.Discord, current.Mumble);
-                        });
+                        var audio = new Kinectv1.Settings.AudioSettings(vt, vad, buf, spkMatch);
+                        var tts = new Kinectv1.Settings.TtsSettings(
+                            Enabled: TtsEnabledCheckBox.IsChecked ?? false,
+                            Speaker: string.IsNullOrWhiteSpace(speaker) ? curr.Tts.Speaker : speaker,
+                            Execution: exec,
+                            ModelFolder: TtsModelFolderTextBox.Text ?? curr.Tts.ModelFolder,
+                            ModelPath: TtsModelPathTextBox.Text ?? curr.Tts.ModelPath,
+                            VocoderPath: TtsVocoderPathTextBox.Text ?? curr.Tts.VocoderPath,
+                            OutputDevice: outDevice,
+                            LocalVolume: localVol,
+                            DiscordVolume: discVol,
+                            Speed: speedVal,
+                            TrimThreshold: trimThr,
+                            TrimLeaveMs: leaveVal,
+                            TrimMaxMs: maxVal,
+                            MinClausePaddingMs: padVal,
+                            IpaServiceTimeoutMs: ipaSvc,
+                            IpaOneShotTimeoutMs: ipaOne
+                        );
+                        var vadSettings = new Kinectv1.Settings.VadSettings(vad);
+                        var next = new Kinectv1.Settings.AppSettings(audio, tts, vadSettings, curr.Ollama, curr.Discord, curr.Mumble);
+                        svc.Save(next);
                     }
                 }
                 catch (Exception jsEx)
                 {
                     Console.WriteLine($"JSON settings sync failed: {jsEx.Message}");
+                }
+
+                // Ensure runtime session is recreated to apply potential GPU/CPU change immediately
+                try
+                {
+                    var recreated = KokoroTtsService.RecreateSessionFromSettings();
+                    if (!recreated)
+                    {
+                        UpdateStatus("TTS session recreate failed; check GPU runtime availability.", true);
+                    }
+                    else
+                    {
+                        UpdateStatus($"TTS session now using {(KokoroTtsService.IsUsingGpu() ? "GPU" : "CPU")}.", false);
+                    }
+                }
+                catch (Exception rex)
+                {
+                    UpdateStatus($"Error recreating TTS session: {rex.Message}", true);
                 }
 
                 UpdateStatus("All settings saved successfully!", false);
@@ -926,12 +972,12 @@ namespace Kinectv1
                 var lv = Math.Max(0, Math.Min(100, LocalVolumeSlider.Value)) / 100.0;
                 AppSettings.SaveLocalTtsVolume(lv);
                 // Also persist to JSON
-                var svc = App.SettingsProvider;
-                svc?.Save(current =>
+                var svc = App.SettingsProvider; var curr = svc?.Current;
+                if (svc != null && curr != null)
                 {
-                    var tts = current.Tts with { LocalVolume = lv };
-                    return new Kinectv1.Settings.AppSettings(current.Audio, tts, current.Vad, current.Ollama, current.Discord, current.Mumble);
-                });
+                    var next = curr with { Tts = curr.Tts with { LocalVolume = lv } };
+                    svc.Save(next);
+                }
             }
             catch (Exception ex)
             {
@@ -947,12 +993,12 @@ namespace Kinectv1
                 var dv = Math.Max(0, Math.Min(100, DiscordVolumeSlider.Value)) / 100.0;
                 AppSettings.SaveDiscordTtsVolume(dv);
                 // Persist to JSON
-                var svc = App.SettingsProvider;
-                svc?.Save(current =>
+                var svc = App.SettingsProvider; var curr = svc?.Current;
+                if (svc != null && curr != null)
                 {
-                    var tts = current.Tts with { DiscordVolume = dv };
-                    return new Kinectv1.Settings.AppSettings(current.Audio, tts, current.Vad, current.Ollama, current.Discord, current.Mumble);
-                });
+                    var next = curr with { Tts = curr.Tts with { DiscordVolume = dv } };
+                    svc.Save(next);
+                }
             }
             catch (Exception ex)
             {
@@ -967,12 +1013,12 @@ namespace Kinectv1
                 var speed = Math.Max(0.5, Math.Min(2.0, e.NewValue / 100.0));
                 TtsSpeedValueText.Text = $"{speed:F2}x";
                 AppSettings.SaveTtsSpeed((float)speed);
-                var svc = App.SettingsProvider;
-                svc?.Save(current =>
+                var svc = App.SettingsProvider; var curr = svc?.Current;
+                if (svc != null && curr != null)
                 {
-                    var tts = current.Tts with { Speed = (float)speed };
-                    return new Kinectv1.Settings.AppSettings(current.Audio, tts, current.Vad, current.Ollama, current.Discord, current.Mumble);
-                });
+                    var next = curr with { Tts = curr.Tts with { Speed = (float)speed } };
+                    svc.Save(next);
+                }
             }
             catch (Exception ex) { UpdateStatus($"Error saving TTS speed: {ex.Message}", true); }
         }
@@ -985,12 +1031,12 @@ namespace Kinectv1
                 var thr = 0.0005 + (e.NewValue / 100.0) * (0.02 - 0.0005);
                 TrimSilenceThresholdValueText.Text = thr.ToString("F4");
                 AppSettings.SaveTtsTrimThreshold(thr);
-                var svc = App.SettingsProvider;
-                svc?.Save(current =>
+                var svc = App.SettingsProvider; var curr = svc?.Current;
+                if (svc != null && curr != null)
                 {
-                    var tts = current.Tts with { TrimThreshold = thr };
-                    return new Kinectv1.Settings.AppSettings(current.Audio, tts, current.Vad, current.Ollama, current.Discord, current.Mumble);
-                });
+                    var next = curr with { Tts = curr.Tts with { TrimThreshold = thr } };
+                    svc.Save(next);
+                }
             }
             catch (Exception ex) { UpdateStatus($"Error saving trim threshold: {ex.Message}", true); }
         }
@@ -1002,12 +1048,12 @@ namespace Kinectv1
                 var leave = (int)Math.Round(Math.Max(0, Math.Min(100, e.NewValue)));
                 if (TtsTrimLeaveValueText != null) TtsTrimLeaveValueText.Text = $"{leave} ms";
                 AppSettings.SaveTtsTrimLeaveMs(leave);
-                var svc = App.SettingsProvider;
-                svc?.Save(current =>
+                var svc = App.SettingsProvider; var curr = svc?.Current;
+                if (svc != null && curr != null)
                 {
-                    var tts = current.Tts with { TrimLeaveMs = leave };
-                    return new Kinectv1.Settings.AppSettings(current.Audio, tts, current.Vad, current.Ollama, current.Discord, current.Mumble);
-                });
+                    var next = curr with { Tts = curr.Tts with { TrimLeaveMs = leave } };
+                    svc.Save(next);
+                }
             }
             catch (Exception ex) { UpdateStatus($"Error saving Trim Leave (ms): {ex.Message}", true); }
         }
@@ -1019,12 +1065,12 @@ namespace Kinectv1
                 var max = (int)Math.Round(Math.Max(50, Math.Min(3000, e.NewValue)));
                 if (TtsTrimMaxValueText != null) TtsTrimMaxValueText.Text = $"{max} ms";
                 AppSettings.SaveTtsTrimMaxMs(max);
-                var svc = App.SettingsProvider;
-                svc?.Save(current =>
+                var svc = App.SettingsProvider; var curr = svc?.Current;
+                if (svc != null && curr != null)
                 {
-                    var tts = current.Tts with { TrimMaxMs = max };
-                    return new Kinectv1.Settings.AppSettings(current.Audio, tts, current.Vad, current.Ollama, current.Discord, current.Mumble);
-                });
+                    var next = curr with { Tts = curr.Tts with { TrimMaxMs = max } };
+                    svc.Save(next);
+                }
             }
             catch (Exception ex) { UpdateStatus($"Error saving Trim Max (ms): {ex.Message}", true); }
         }
@@ -1036,12 +1082,12 @@ namespace Kinectv1
                 var pad = (int)Math.Round(Math.Max(0, Math.Min(200, e.NewValue)));
                 TtsPaddingValueText.Text = $"{pad} ms";
                 AppSettings.SaveTtsMinClausePaddingMs(pad);
-                var svc = App.SettingsProvider;
-                svc?.Save(current =>
+                var svc = App.SettingsProvider; var curr = svc?.Current;
+                if (svc != null && curr != null)
                 {
-                    var tts = current.Tts with { MinClausePaddingMs = pad };
-                    return new Kinectv1.Settings.AppSettings(current.Audio, tts, current.Vad, current.Ollama, current.Discord, current.Mumble);
-                });
+                    var next = curr with { Tts = curr.Tts with { MinClausePaddingMs = pad } };
+                    svc.Save(next);
+                }
             }
             catch (Exception ex) { UpdateStatus($"Error saving padding: {ex.Message}", true); }
         }

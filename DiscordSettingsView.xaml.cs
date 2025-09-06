@@ -76,21 +76,16 @@ namespace Kinectv1
         {
             try
             {
-                App.SettingsProvider?.Save(curr =>
-                {
-                    var dc = curr.Discord;
-                    var next = new Kinectv1.Settings.DiscordSettings(
-                        Enabled: enabled ?? dc.Enabled,
-                        Prefix: prefix ?? dc.Prefix ?? "!",
-                        AutoJoinVoice: autoJoin ?? dc.AutoJoinVoice,
-                        Token: token ?? dc.Token
-                    );
-
-                    // Carry through existing Mumble settings (required by AppSettings ctor)
-                    var mumble = curr.Mumble;
-
-                    return new Kinectv1.Settings.AppSettings(curr.Audio, curr.Tts, curr.Vad, curr.Ollama, next, mumble);
-                });
+                var svc = App.SettingsProvider; var curr = svc?.Current; if (svc == null || curr == null) return;
+                var dc = curr.Discord;
+                var nextDiscord = new Kinectv1.Settings.DiscordSettings(
+                    Enabled: enabled ?? dc.Enabled,
+                    Prefix: prefix ?? dc.Prefix ?? "!",
+                    AutoJoinVoice: autoJoin ?? dc.AutoJoinVoice,
+                    Token: token ?? dc.Token
+                );
+                var next = new Kinectv1.Settings.AppSettings(curr.Audio, curr.Tts, curr.Vad, curr.Ollama, nextDiscord, curr.Mumble);
+                svc.Save(next);
             }
             catch (Exception ex)
             {

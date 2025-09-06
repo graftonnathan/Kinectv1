@@ -236,7 +236,9 @@ namespace Kinectv1
                 // Persist through JSON settings pipeline
                 var svc = App.SettingsProvider;
                 if (svc == null) { AppSettings.SaveOllamaEnabled(enabled); return; }
-                svc.Save(curr => curr with { Ollama = curr.Ollama with { Enabled = enabled } });
+                var curr = svc.Current;
+                var next = curr with { Ollama = curr.Ollama with { Enabled = enabled } };
+                svc.Save(next);
             }
             catch { AppSettings.SaveOllamaEnabled(enabled); }
         }

@@ -3,6 +3,8 @@ using System;
 using System.IO;
 using System.Text;
 using System.Reflection;
+using System.Threading;
+using System.ComponentModel.DataAnnotations;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Converters;
 using Newtonsoft.Json.Linq;
@@ -19,11 +21,16 @@ namespace Kinectv1.Settings
             Converters = { new StringEnumConverter() }
         };
 
+        // Schema hygiene: bump when migrations are added
+        private const int CurrentSchemaVersion = 1;
+
         private AppSettings _current;
-        private readonly object _gate = new object();
+        private readonly SemaphoreSlim _mutex = new SemaphoreSlim(1, 1);
         private readonly string _userPathOverride;
 
-        public AppSettings Current { get { lock (_gate) return _current; } }
+        public event EventHandler<AppSettings> Changed;
+
+        public AppSettings Current { get { return _current; } }
 
         public SettingsService(string userJsonPathOverride = null)
         {
@@ -33,37 +40,37 @@ namespace Kinectv1.Settings
 
         public AppSettings Reload()
         {
-            lock (_gate)
+            _mutex.Wait();
+            try
             {
                 _current = LoadComposite();
-                return _current;
             }
+            finally { _mutex.Release(); }
+            Changed?.Invoke(this, _current);
+            return _current;
         }
 
-        public void Save(Func<AppSettings, AppSettings> update)
+        // Save a full snapshot
+        public void Save(AppSettings next)
         {
-            AppSettings next;
-            lock (_gate) next = update(_current);
-
             Validate(next);
-
             var target = GetUserJsonPath();
             Directory.CreateDirectory(Path.GetDirectoryName(target));
 
             var tmp = target + ".tmp";
             using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
-            using (var sw = new StreamWriter(fs, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false)))
+            using (var sw = new StreamWriter(fs, new UTF8Encoding(false)))
             using (var jtw = new JsonTextWriter(sw) { Formatting = Formatting.Indented })
             {
                 var ser = JsonSerializer.Create(JsonSettings);
-                ser.Serialize(jtw, next);
+                var jNext = JObject.FromObject(next, ser);
+                jNext["schemaVersion"] = CurrentSchemaVersion;
+                ser.Serialize(jtw, jNext);
             }
 
             var bak = target + ".bak";
             if (File.Exists(target))
-            {
                 File.Replace(tmp, target, bak);
-            }
             else
             {
                 if (File.Exists(bak)) File.Delete(bak);
@@ -71,20 +78,68 @@ namespace Kinectv1.Settings
                 File.Copy(target, bak, overwrite: true);
             }
 
-            lock (_gate) _current = next;
+            _mutex.Wait();
+            try { _current = next; }
+            finally { _mutex.Release(); }
+            Changed?.Invoke(this, _current);
         }
 
         // ----- externals -----
         public AppSettings GetDefaults()
         {
             var json = ReadEmbeddedDefaultJson();
-            var obj = JsonConvert.DeserializeObject<AppSettings>(json, JsonSettings);
-            if (obj == null) throw new InvalidDataException("default.json is invalid");
+            var obj = JsonConvert.DeserializeObject<AppSettings>(json, JsonSettings)
+                      ?? throw new InvalidDataException("default.json is invalid");
+            Validate(obj);
+            return obj;
+        }
+
+        public AppSettings GetDefaultsEffective()
+        {
+            var eff = OverlayBySection(ReadDefaultsAsJObject(), ReadOptionalJsonAsJObject(SettingsPaths.MachineDefaultsPath));
+            var obj = eff.ToObject<AppSettings>(JsonSerializer.Create(JsonSettings))
+                      ?? throw new InvalidDataException("effective defaults invalid");
             Validate(obj);
             return obj;
         }
 
         public static void ValidateOrThrow(AppSettings s) => Validate(s);
+
+        public void ResetToDefaults()
+        {
+            var path = GetUserJsonPath();
+            if (File.Exists(path)) File.Delete(path);
+            Reload();
+        }
+
+        // Diagnostics: build effective overlay JSON (defaults -> machine -> user -> secrets)
+        public JObject GetEffectiveJson()
+        {
+            var defaults = ReadDefaultsAsJObject();
+            var machine = ReadOptionalJsonAsJObject(SettingsPaths.MachineDefaultsPath);
+            var user = ReadOptionalJsonAsJObject(GetUserJsonPath());
+            var secrets = ReadOptionalJsonAsJObject(SettingsPaths.SecretsPath);
+
+            // user-only migration in memory; no persistence here
+            var userVer = GetSchemaVersion(user);
+            if (userVer < CurrentSchemaVersion)
+            {
+                if (MigrateUserOverrides(user, userVer) && user != null)
+                    user["schemaVersion"] = CurrentSchemaVersion;
+            }
+
+            return OverlayBySection(defaults, machine, user, secrets);
+        }
+
+        // Optional QA: compute overrides-only JSON for cleaner diffs
+        public JObject GetOverridesJson(AppSettings candidate)
+        {
+            var ser = JsonSerializer.Create(JsonSettings);
+            var effDefaults = OverlayBySection(ReadDefaultsAsJObject(), ReadOptionalJsonAsJObject(SettingsPaths.MachineDefaultsPath));
+            var jCandidate = JObject.FromObject(candidate, ser);
+            jCandidate["schemaVersion"] = CurrentSchemaVersion;
+            return PruneToOverrides(effDefaults, jCandidate);
+        }
 
         // ----- internals -----
         private AppSettings LoadOrInitialize()
@@ -96,7 +151,15 @@ namespace Kinectv1.Settings
                 Validate(defaults);
                 Directory.CreateDirectory(Path.GetDirectoryName(target));
                 var tmp = target + ".tmp";
-                File.WriteAllText(tmp, JsonConvert.SerializeObject(defaults, JsonSettings), new UTF8Encoding(false));
+                using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
+                using (var sw = new StreamWriter(fs, new UTF8Encoding(false)))
+                using (var jtw = new JsonTextWriter(sw) { Formatting = Formatting.Indented })
+                {
+                    var ser = JsonSerializer.Create(JsonSettings);
+                    var jDefaults = JObject.FromObject(defaults, ser);
+                    jDefaults["schemaVersion"] = CurrentSchemaVersion;
+                    ser.Serialize(jtw, jDefaults);
+                }
                 var bak = target + ".bak";
                 File.Move(tmp, target);
                 File.Copy(target, bak, overwrite: true);
@@ -105,326 +168,112 @@ namespace Kinectv1.Settings
             return LoadComposite();
         }
 
+        // Overlays: defaults <- machine <- user <- secrets
         private AppSettings LoadComposite()
         {
-            var defaultsJson = ReadEmbeddedDefaultJson();
-            var composite = JObject.Parse(defaultsJson);
+            var defaults = ReadDefaultsAsJObject();
+            var machine = ReadOptionalJsonAsJObject(SettingsPaths.MachineDefaultsPath);
+            var user = ReadOptionalJsonAsJObject(GetUserJsonPath());
+            var secrets = ReadOptionalJsonAsJObject(SettingsPaths.SecretsPath);
 
-            JObject userObj = null;
-            if (File.Exists(GetUserJsonPath()))
+            // schemaVersion migration on user overrides only (no mutations to defaults or secrets)
+            var userVer = GetSchemaVersion(user);
+            if (userVer < CurrentSchemaVersion)
             {
-                var userJson = File.ReadAllText(GetUserJsonPath(), Encoding.UTF8);
-                if (!string.IsNullOrWhiteSpace(userJson))
+                if (MigrateUserOverrides(user, userVer))
                 {
-                    userObj = JObject.Parse(userJson);
-                    DeepMerge(composite, userObj);
+                    if (user != null) user["schemaVersion"] = CurrentSchemaVersion;
+                }
+                else if (user != null)
+                {
+                    user["schemaVersion"] = CurrentSchemaVersion;
                 }
             }
 
-            bool changed = false;
-            changed |= NormalizeSectionCasing(composite);
+            var effective = OverlayBySection(defaults, machine, user, secrets);
 
-            var defaultsObj = JObject.Parse(defaultsJson);
-            changed |= BackfillTts(composite, defaultsObj);
-            changed |= BackfillOllama(composite, defaultsObj);
-            changed |= BackfillDiscord(composite, defaultsObj);
-            changed |= BackfillMumble(composite, defaultsObj);
-
-            if (changed)
-            {
-                PersistNormalizedUserJson(composite);
-            }
-
-            var result = composite.ToObject<AppSettings>(JsonSerializer.Create(JsonSettings));
-            if (result == null) throw new InvalidDataException("Merged settings invalid");
+            var result = effective.ToObject<AppSettings>(JsonSerializer.Create(JsonSettings))
+                         ?? throw new InvalidDataException("Effective settings invalid");
             Validate(result);
             return result;
         }
 
-        // Deep-merge user JSON into defaults JSON (objects only)
-        private static void DeepMerge(JObject dst, JObject src)
+        // Helpers for overlays + schema
+        private static int GetSchemaVersion(JObject root)
         {
-            foreach (var p in src.Properties())
+            try { return root?[(string)"schemaVersion"]?.Value<int?>() ?? 0; } catch { return 0; }
+        }
+
+        private static bool MigrateUserOverrides(JObject user, int fromVersion)
+        {
+            if (user == null) return false;
+            bool changed = false;
+            // Example: future migrations mutate only 'user' object
+            // if (fromVersion < 2) { /* transform keys/values */ changed = true; fromVersion = 2; }
+            return changed;
+        }
+
+        // Compute overrides-only JSON (remove values equal to effective defaults)
+        private static JObject PruneToOverrides(JObject effectiveDefaults, JObject candidate)
+        {
+            if (candidate == null) return null;
+            if (effectiveDefaults == null) return (JObject)candidate.DeepClone();
+
+            JObject Prune(JObject defObj, JObject candObj)
             {
-                if (p.Value is JObject srcObj)
+                var pruned = new JObject();
+                foreach (var prop in candObj.Properties())
                 {
-                    if (dst[p.Name] is JObject dstObj)
-                        DeepMerge(dstObj, srcObj);
+                    var name = prop.Name;
+                    var candVal = prop.Value;
+                    var defVal = defObj[name];
+
+                    if (candVal is JObject candChild && defVal is JObject defChild)
+                    {
+                        var inner = Prune(defChild as JObject, candChild);
+                        if (inner.HasValues)
+                            pruned[name] = inner;
+                    }
                     else
-                        dst[p.Name] = srcObj.DeepClone();
+                    {
+                        if (defVal == null || !JToken.DeepEquals(defVal, candVal))
+                            pruned[name] = candVal.DeepClone();
+                    }
                 }
-                else
+                return pruned;
+            }
+
+            return Prune(effectiveDefaults, candidate);
+        }
+
+        private static JObject ReadDefaultsAsJObject()
+        {
+            var json = ReadEmbeddedDefaultJsonStatic();
+            return JObject.Parse(json);
+        }
+
+        private static JObject OverlayBySection(params JObject[] layers)
+        {
+            var dst = new JObject();
+            foreach (var layer in layers)
+            {
+                if (layer == null) continue;
+                foreach (var p in layer.Properties())
                 {
                     dst[p.Name] = p.Value.DeepClone();
                 }
             }
+            return dst;
         }
 
-        private void PersistNormalizedUserJson(JObject normalized)
+        private static JObject ReadOptionalJsonAsJObject(string path)
         {
-            try
-            {
-                var target = GetUserJsonPath();
-                Directory.CreateDirectory(Path.GetDirectoryName(target));
-                var tmp = target + ".tmp";
-                using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
-                using (var sw = new StreamWriter(fs, new UTF8Encoding(false)))
-                using (var jtw = new JsonTextWriter(sw) { Formatting = Formatting.Indented })
-                {
-                    var ser = JsonSerializer.Create(JsonSettings);
-                    ser.Serialize(jtw, normalized);
-                }
-                var bak = target + ".bak";
-                if (File.Exists(target))
-                {
-                    File.Replace(tmp, target, bak);
-                }
-                else
-                {
-                    if (File.Exists(bak)) File.Delete(bak);
-                    File.Move(tmp, target);
-                    File.Copy(target, bak, overwrite: true);
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Settings migration write failed: {ex.Message}");
-            }
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return null;
+            var txt = File.ReadAllText(path, Encoding.UTF8);
+            return string.IsNullOrWhiteSpace(txt) ? null : JObject.Parse(txt);
         }
 
-        private static bool NormalizeSectionCasing(JObject root)
-        {
-            bool changed = false;
-            if (root == null) return changed;
-
-            void MergeInto(string lowerName, string upperName)
-            {
-                var upper = root[upperName] as JObject;
-                if (upper == null) return;
-                var lower = root[lowerName] as JObject;
-                if (lower == null)
-                {
-                    lower = new JObject();
-                    root[lowerName] = lower;
-                }
-                foreach (var p in upper.Properties())
-                {
-                    var name = p.Name;
-                    if (string.IsNullOrEmpty(name)) continue;
-                    var lc = char.ToLowerInvariant(name[0]) + name.Substring(1);
-                    lower[lc] = p.Value.DeepClone();
-                }
-                root.Remove(upperName);
-                changed = true;
-            }
-
-            MergeInto("audio", "Audio");
-            MergeInto("tts", "Tts");
-            MergeInto("vad", "Vad");
-            MergeInto("ollama", "Ollama");
-            MergeInto("discord", "Discord");
-            MergeInto("mumble", "Mumble");
-            return changed;
-        }
-
-        private static bool BackfillTts(JObject composite, JObject defaults)
-        {
-            bool changed = false;
-            var tts = composite?[(string)"tts"] as JObject;
-            var dTts = defaults?[(string)"tts"] as JObject;
-            if (tts == null || dTts == null) return changed;
-
-            void Ensure(string name, Func<JToken, bool> invalid)
-            {
-                var token = tts[name];
-                if (token == null || invalid(token))
-                {
-                    tts[name] = dTts[name]?.DeepClone();
-                    changed = true;
-                }
-            }
-
-            bool IsNumberInvalidInRange(JToken tok, double min, double max)
-            {
-                if (tok == null || tok.Type == JTokenType.Null) return true;
-                double v;
-                try { v = tok.Value<double>(); } catch { return true; }
-                return v < min || v > max;
-            }
-
-            Ensure("outputDevice", tok => tok.Type != JTokenType.String || string.IsNullOrWhiteSpace(tok.Value<string>()));
-            Ensure("localVolume", tok => IsNumberInvalidInRange(tok, 0.0, 1.0));
-            Ensure("discordVolume", tok => IsNumberInvalidInRange(tok, 0.0, 1.0));
-            Ensure("speed", tok => IsNumberInvalidInRange(tok, 0.5, 2.0));
-            Ensure("trimThreshold", tok => IsNumberInvalidInRange(tok, 0.0005, 0.05));
-            Ensure("trimLeaveMs", tok => IsNumberInvalidInRange(tok, 0, 100));
-            Ensure("trimMaxMs", tok => IsNumberInvalidInRange(tok, 50, 3000));
-            Ensure("minClausePaddingMs", tok => IsNumberInvalidInRange(tok, 0, 200));
-            Ensure("ipaServiceTimeoutMs", tok => IsNumberInvalidInRange(tok, 200, 5000));
-            Ensure("ipaOneShotTimeoutMs", tok => IsNumberInvalidInRange(tok, 200, 5000));
-
-            return changed;
-        }
-
-        // New: Ensure Ollama section has required fields and defaults
-        private static bool BackfillOllama(JObject composite, JObject defaults)
-        {
-            bool changed = false;
-            var ol = composite?[(string)"ollama"] as JObject;
-            var dOl = defaults?[(string)"ollama"] as JObject;
-            if (dOl == null)
-                return changed;
-            if (ol == null)
-            {
-                composite["ollama"] = dOl.DeepClone();
-                return true;
-            }
-
-            void EnsureString(string name)
-            {
-                var tok = ol[name];
-                if (tok == null || tok.Type != JTokenType.String)
-                {
-                    ol[name] = dOl[name]?.DeepClone();
-                    changed = true;
-                }
-            }
-
-            void EnsureInt(string name)
-            {
-                var tok = ol[name];
-                if (tok == null || tok.Type != JTokenType.Integer)
-                {
-                    ol[name] = dOl[name]?.DeepClone();
-                    changed = true;
-                }
-            }
-
-            void EnsureBool(string name)
-            {
-                var tok = ol[name];
-                if (tok == null || tok.Type != JTokenType.Boolean)
-                {
-                    ol[name] = dOl[name]?.DeepClone();
-                    changed = true;
-                }
-            }
-
-            EnsureString("provider");
-            EnsureBool("enabled");
-            EnsureString("model");
-            EnsureBool("memoryEnabled");
-            EnsureInt("maxMessagesPerSpeaker");
-            EnsureInt("maxSystemMessages");
-            EnsureInt("conversationTimeoutMinutes");
-            EnsureString("conversationHistoryPath");
-            EnsureString("systemPromptPath");
-            EnsureBool("outputThink");
-
-            return changed;
-        }
-
-        // New: Ensure Discord section present
-        private static bool BackfillDiscord(JObject composite, JObject defaults)
-        {
-            bool changed = false;
-            var dc = composite?[(string)"discord"] as JObject;
-            var dDc = defaults?[(string)"discord"] as JObject;
-            if (dDc == null) return changed;
-            if (dc == null)
-            {
-                composite["discord"] = dDc.DeepClone();
-                return true;
-            }
-
-            void EnsureString(string name)
-            {
-                var tok = dc[name];
-                if (tok == null || tok.Type != JTokenType.String)
-                {
-                    dc[name] = dDc[name]?.DeepClone();
-                    changed = true;
-                }
-            }
-
-            void EnsureBool(string name)
-            {
-                var tok = dc[name];
-                if (tok == null || tok.Type != JTokenType.Boolean)
-                {
-                    dc[name] = dDc[name]?.DeepClone();
-                    changed = true;
-                }
-            }
-
-            EnsureBool("enabled");
-            EnsureString("prefix");
-            EnsureBool("autoJoinVoice");
-            EnsureString("token");
-            return changed;
-        }
-
-        // New: Ensure Mumble section present
-        private static bool BackfillMumble(JObject composite, JObject defaults)
-        {
-            bool changed = false;
-            var mb = composite?[(string)"mumble"] as JObject;
-            var dMb = defaults?[(string)"mumble"] as JObject;
-            if (dMb == null) return changed;
-            if (mb == null)
-            {
-                composite["mumble"] = dMb.DeepClone();
-                return true;
-            }
-
-            void EnsureString(string name)
-            {
-                var tok = mb[name];
-                if (tok == null || tok.Type != JTokenType.String)
-                {
-                    mb[name] = dMb[name]?.DeepClone();
-                    changed = true;
-                }
-            }
-            void EnsureInt(string name)
-            {
-                var tok = mb[name];
-                if (tok == null || tok.Type != JTokenType.Integer)
-                {
-                    mb[name] = dMb[name]?.DeepClone();
-                    changed = true;
-                }
-            }
-            void EnsureBool(string name)
-            {
-                var tok = mb[name];
-                if (tok == null || tok.Type != JTokenType.Boolean)
-                {
-                    mb[name] = dMb[name]?.DeepClone();
-                    changed = true;
-                }
-            }
-
-            EnsureBool("enabled");
-            EnsureBool("autoConnect");
-            EnsureString("host");
-            EnsureInt("port");
-            EnsureString("username");
-            EnsureString("serverPassword");
-            EnsureString("channel");
-            EnsureString("channelPassword");
-            EnsureBool("validateTls");
-            EnsureBool("selfMute");
-            EnsureBool("selfDeaf");
-            EnsureInt("opusBitrate");
-            EnsureInt("vadThreshold");
-            EnsureInt("reconnectBackoffMs");
-            EnsureBool("textCommandsEnabled");
-
-            return changed;
-        }
-
-        private string ReadEmbeddedDefaultJson()
+        private static string ReadEmbeddedDefaultJsonStatic()
         {
             var asm = typeof(SettingsService).Assembly;
             var resName = SettingsPaths.DefaultResourceName;
@@ -433,11 +282,16 @@ namespace Kinectv1.Settings
             return sr.ReadToEnd();
         }
 
+        private string ReadEmbeddedDefaultJson()
+        {
+            return ReadEmbeddedDefaultJsonStatic();
+        }
+
         private AppSettings ReadDefaultsAsAppSettings()
         {
             var json = ReadEmbeddedDefaultJson();
-            var obj = JsonConvert.DeserializeObject<AppSettings>(json, JsonSettings);
-            if (obj == null) throw new InvalidDataException("default.json is invalid");
+            var obj = JsonConvert.DeserializeObject<AppSettings>(json, JsonSettings)
+                      ?? throw new InvalidDataException("default.json is invalid");
             return obj;
         }
 
@@ -445,6 +299,16 @@ namespace Kinectv1.Settings
 
         private static void Validate(AppSettings s)
         {
+            // 0) DataAnnotations
+            var ctx = new ValidationContext(s);
+            var results = new System.Collections.Generic.List<ValidationResult>();
+            if (!Validator.TryValidateObject(s, ctx, results, validateAllProperties: true))
+            {
+                var msg = string.Join("; ", results.ConvertAll(r => r.ErrorMessage));
+                throw new InvalidDataException("Settings annotations failed: " + msg);
+            }
+
+            // 1) Existing custom rules
             if (s == null || s.Audio == null || s.Tts == null || s.Vad == null)
                 throw new InvalidDataException("Settings missing required sections (audio/tts/vad)");
 
@@ -452,8 +316,9 @@ namespace Kinectv1.Settings
                 throw new InvalidDataException("audio.voiceThreshold out of range [0,1]");
             if (s.Audio.VadThreshold < 0 || s.Audio.BufferSize <= 0)
                 throw new InvalidDataException("audio vadThreshold>=0 and bufferSize>0 required");
+            if (s.Audio.SpeakerMatchMinScore < 0.0 || s.Audio.SpeakerMatchMinScore > 1.0)
+                throw new InvalidDataException("audio.speakerMatchMinScore must be 0..1");
 
-            // TTS basics
             if (s.Tts.Enabled)
             {
                 if (string.IsNullOrWhiteSpace(s.Tts.ModelFolder)) throw new InvalidDataException("tts.modelFolder required when tts.enabled");
@@ -461,27 +326,6 @@ namespace Kinectv1.Settings
                 if (string.IsNullOrWhiteSpace(s.Tts.VocoderPath)) throw new InvalidDataException("tts.vocoderPath required when tts.enabled");
             }
 
-            // TTS extended fields validation (ranges)
-            if (s.Tts.LocalVolume < 0.0 || s.Tts.LocalVolume > 1.0)
-                throw new InvalidDataException("tts.localVolume must be 0..1");
-            if (s.Tts.DiscordVolume < 0.0 || s.Tts.DiscordVolume > 1.0)
-                throw new InvalidDataException("tts.discordVolume must be 0..1");
-            if (s.Tts.Speed < 0.5f || s.Tts.Speed > 2.0f)
-                throw new InvalidDataException("tts.speed must be 0.5..2.0");
-            if (s.Tts.TrimThreshold < 0.0005 || s.Tts.TrimThreshold > 0.05)
-                throw new InvalidDataException("tts.trimThreshold must be 0.0005..0.05");
-            if (s.Tts.TrimLeaveMs < 0 || s.Tts.TrimLeaveMs > 100)
-                throw new InvalidDataException("tts.trimLeaveMs must be 0..100");
-            if (s.Tts.TrimMaxMs < 50 || s.Tts.TrimMaxMs > 3000)
-                throw new InvalidDataException("tts.trimMaxMs must be 50..3000");
-            if (s.Tts.MinClausePaddingMs < 0 || s.Tts.MinClausePaddingMs > 200)
-                throw new InvalidDataException("tts.minClausePaddingMs must be 0..200");
-            if (s.Tts.IpaServiceTimeoutMs < 200 || s.Tts.IpaServiceTimeoutMs > 5000)
-                throw new InvalidDataException("tts.ipaServiceTimeoutMs must be 200..5000");
-            if (s.Tts.IpaOneShotTimeoutMs < 200 || s.Tts.IpaOneShotTimeoutMs > 5000)
-                throw new InvalidDataException("tts.ipaOneShotTimeoutMs must be 200..5000");
-
-            // Ollama validation
             if (s.Ollama == null)
                 throw new InvalidDataException("ollama section missing");
             if (string.IsNullOrWhiteSpace(s.Ollama.Provider))
@@ -493,7 +337,6 @@ namespace Kinectv1.Settings
 
             if (s.Ollama.Enabled)
             {
-                // Model must be set when enabled
                 if (string.IsNullOrWhiteSpace(s.Ollama.Model))
                     throw new InvalidDataException("ollama.model required when ollama.enabled");
             }
@@ -501,9 +344,7 @@ namespace Kinectv1.Settings
                 throw new InvalidDataException("ollama max message counts must be >= 0");
             if (s.Ollama.ConversationTimeoutMinutes < 0)
                 throw new InvalidDataException("ollama.conversationTimeoutMinutes must be >= 0");
-            // OutputThink is a boolean and needs no additional range validation
 
-            // Discord validation
             if (s.Discord == null)
                 throw new InvalidDataException("discord section missing");
             if (s.Discord.Enabled)
@@ -514,7 +355,6 @@ namespace Kinectv1.Settings
                     throw new InvalidDataException("discord.token appears invalid or missing when discord.enabled");
             }
 
-            // Mumble validation
             if (s.Mumble == null)
                 throw new InvalidDataException("mumble section missing");
             if (s.Mumble.Enabled)
