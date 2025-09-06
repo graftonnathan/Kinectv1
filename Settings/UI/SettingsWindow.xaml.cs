@@ -174,7 +174,12 @@ namespace Kinectv1.UI.Settings
             var ollama = current.Ollama;
             var discord = current.Discord;
             var mumble = current.Mumble;
-            return new global::Kinectv1.Settings.AppSettings(audio, tts, vad, ollama, discord, mumble);
+            var app = new global::Kinectv1.Settings.AppConfig(
+                RequireWakeWord: current.App.RequireWakeWord,
+                Scenario: current.App.Scenario,
+                InputMode: current.App.InputMode // keep existing unless saved elsewhere
+            );
+            return new global::Kinectv1.Settings.AppSettings(audio, tts, vad, ollama, discord, mumble, current.Ui, current.Asr, current.Stt, current.Face, app);
         }
 
         private void Verify_Click(object sender, RoutedEventArgs e)

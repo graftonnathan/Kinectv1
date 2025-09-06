@@ -206,6 +206,7 @@
   <ItemGroup>
     <Folder Include="Settings\Validation\" />
     <Folder Include="src\Audio\" />
+    <Folder Include="src\UI\Settings\Editors\" />
     <Folder Include="src\UI\Validation\" />
   </ItemGroup>
 

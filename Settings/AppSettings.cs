@@ -10,7 +10,12 @@ namespace Kinectv1.Settings
         [property: Required] VadSettings Vad,
         [property: Required] OllamaSettings Ollama,
         [property: Required] DiscordSettings Discord,
-        [property: Required] MumbleSettings Mumble
+        [property: Required] MumbleSettings Mumble,
+        [property: Required] UiSettings Ui,
+        [property: Required] AsrSettings Asr,
+        [property: Required] SttSettings Stt,
+        [property: Required] FaceSettings Face,
+        [property: Required] AppConfig App
     );
 
     public sealed record AudioSettings(
@@ -46,6 +51,46 @@ namespace Kinectv1.Settings
         [property: Range(0, int.MaxValue)] int Threshold
     );
 
+    // New: ASR/Discord VAD and confidence controls
+    public sealed record AsrSettings(
+        [property: Range(0.0, 1.0)] double VoiceConfidenceThreshold,
+        [property: Range(0.0, 1.0)] double VoiceHighConfidenceThreshold,
+        [property: Range(1, int.MaxValue)] int VoiceConfidenceBufferSize,
+        bool VoiceConfidenceLoggingEnabled,
+        [property: Range(50, 5000)] int VadSilenceTimeoutMs,
+        [property: Range(10, 2000)] int VadDebounceTimeoutMs,
+        [property: Range(0.0, 1000.0)] double DiscordVadThreshold,
+        bool BargeInEnabled
+    );
+
+    // STT configuration
+    public sealed record SttSettings(
+        [property: Required] string ModelPath,
+        [property: Required] string InputDevice
+    );
+
+    // Face recognition and fusion settings
+    public sealed record FaceSettings(
+        [property: Range(0.0, 1.0)] double Threshold,
+        [property: Range(0.0, 1.0)] double FusionFaceWeight,
+        [property: Range(0.0, 1.0)] double FusionVoiceWeight,
+        [property: Range(100, 60000)] int FusionDecayHalfLifeMs,
+        [property: Range(0.0, 1.0)] double FusionUnknownThreshold,
+        string ArcFaceModelPath,
+        string SpeakerEmbeddingModelPath
+    );
+
+    public enum AppScenario { Local, Remote }
+
+    public enum AudioInMode { LocalMic, DiscordVoice, SystemLoopback, MumbleVoice }
+
+    // App-level behavior
+    public sealed record AppConfig(
+        bool RequireWakeWord,
+        AppScenario Scenario,
+        AudioInMode InputMode
+    );
+
     // New: Ollama settings section persisted in JSON settings pipeline
     public sealed record OllamaSettings(
         [property: Required] string Provider, // "Ollama" | "LMStudio"
@@ -57,7 +102,7 @@ namespace Kinectv1.Settings
         [property: Range(0, int.MaxValue)] int ConversationTimeoutMinutes,
         string ConversationHistoryPath,
         string SystemPromptPath,
-        bool OutputThink // when false, <think>..</think> is replaced with "thinking"
+        bool OutputThink // when false, <think>..</think> is removed
     );
 
     // New: Discord settings for bot configuration
@@ -88,5 +133,10 @@ namespace Kinectv1.Settings
         [property: Range(0, 60000)] int ReconnectBackoffMs,
         bool TextCommandsEnabled,
         MumbleTlsValidate TlsValidate = MumbleTlsValidate.Strict
+    );
+
+    // New: UI settings
+    public sealed record UiSettings(
+        bool DarkMode
     );
 }

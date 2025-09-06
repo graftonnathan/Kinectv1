@@ -285,14 +285,14 @@ namespace Kinectv1
         {
             try
             {
-                _isDarkMode = AppSettings.LoadDarkMode();
+                var dark = Kinectv1.App.SettingsProvider?.Current?.Ui?.DarkMode ?? true;
+                _isDarkMode = dark;
                 ApplyTheme(_isDarkMode);
                 Console.WriteLine($"🎨 Theme loaded: {(_isDarkMode ? "Dark" : "Light")} mode");
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Failed to load theme settings: {ex.Message}");
-                // Default to dark mode if loading fails
                 _isDarkMode = true;
                 ApplyTheme(true);
             }
@@ -366,7 +366,14 @@ namespace Kinectv1
             {
                 _isDarkMode = !_isDarkMode;
                 ApplyTheme(_isDarkMode);
-                AppSettings.SaveDarkMode(_isDarkMode);
+
+                // Persist via JSON settings
+                var svc = Kinectv1.App.SettingsProvider; var curr = svc?.Current;
+                if (svc != null && curr != null)
+                {
+                    var next = curr with { Ui = new Kinectv1.Settings.UiSettings(_isDarkMode) };
+                    svc.Save(next);
+                }
 
                 Console.WriteLine($"🎨 Theme switched to: {(_isDarkMode ? "Dark" : "Light")} mode");
             }
@@ -730,7 +737,12 @@ namespace Kinectv1
                 var sel = TtsModelComboBox.SelectedItem?.ToString();
                 if (!string.IsNullOrWhiteSpace(sel))
                 {
-                    AppSettings.SaveTtsModelPath(sel);
+                    var svc = App.SettingsProvider; var curr = svc?.Current;
+                    if (svc != null && curr != null)
+                    {
+                        var next = curr with { Tts = curr.Tts with { ModelPath = sel } };
+                        svc.Save(next);
+                    }
                     TtsModelStatusText.Text = $"Model selected: {sel}";
                 }
             }
@@ -742,8 +754,16 @@ namespace Kinectv1
             try
             {
                 var selItem = TtsSpeakerComboBox.SelectedItem as ComboBoxItem;
-                var speaker = selItem?.Content?.ToString() ?? selItem?.Tag?.ToString() ?? AppSettings.LoadTtsSpeaker();
-                if (!string.IsNullOrWhiteSpace(speaker)) AppSettings.SaveTtsSpeaker(speaker);
+                var speaker = selItem?.Content?.ToString() ?? selItem?.Tag?.ToString();
+                if (!string.IsNullOrWhiteSpace(speaker))
+                {
+                    var svc = App.SettingsProvider; var curr = svc?.Current;
+                    if (svc != null && curr != null)
+                    {
+                        var next = curr with { Tts = curr.Tts with { Speaker = speaker } };
+                        svc.Save(next);
+                    }
+                }
             }
             catch (Exception ex) { Console.WriteLine($"TTS speaker selection error: {ex.Message}"); }
         }
@@ -752,22 +772,18 @@ namespace Kinectv1
         {
             try
             {
-                var useGpu = !AppSettings.LoadTtsUseGpu();
-                AppSettings.SaveTtsUseGpu(useGpu);
-                TtsGpuToggleButton.Content = useGpu ? "⚡ GPU" : "⚙ CPU";
+                var svc = App.SettingsProvider; var curr = svc?.Current;
+                if (svc != null && curr != null)
+                {
+                    var newExec = (curr.Tts.Execution == Kinectv1.Settings.TtsExecution.GPU) ? Kinectv1.Settings.TtsExecution.CPU : Kinectv1.Settings.TtsExecution.GPU;
+                    var next = curr with { Tts = curr.Tts with { Execution = newExec } };
+                    svc.Save(next);
+                    TtsGpuToggleButton.Content = (newExec == Kinectv1.Settings.TtsExecution.GPU) ? "⚡ GPU" : "⚙ CPU";
+                    // Recreate session to apply
+                    try { KokoroTtsService.RecreateSessionFromSettings(); } catch { }
+                }
             }
             catch (Exception ex) { Console.WriteLine($"TTS GPU toggle error: {ex.Message}"); }
-        }
-
-        private void RefreshTtsModelsButton_Click(object sender, RoutedEventArgs e)
-        {
-            try
-            {
-                // Minimal placeholder; actual model discovery is service-specific
-                TtsModelStatusText.Text = "Refreshing TTS models...";
-                TtsModelStatusText.Text = "TTS models refreshed";
-            }
-            catch (Exception ex) { Console.WriteLine($"Refresh TTS models error: {ex.Message}"); }
         }
 
         // --- No-op stubs referenced during initialization ---
@@ -927,10 +943,12 @@ namespace Kinectv1
                 }
                 catch { }
 
-                if (!AppSettings.LoadTtsEnabled())
-                    return;
+                // Prefer JSON pipeline for TTS enabled
+                var ttsEnabled = false;
+                try { ttsEnabled = Kinectv1.App.SettingsProvider?.Current?.Tts?.Enabled ?? false; } catch { }
+                if (!ttsEnabled) return;
 
-                // Prefer JSON settings snapshot speaker to avoid stale legacy speaker (e.g., 'em_alex')
+                // Prefer JSON settings snapshot speaker to avoid stale legacy speaker
                 var voice = App.SettingsProvider?.Current?.Tts?.Speaker;
                 var speakLocal = _isMicrophoneInputEnabled;      // Local output when mic mode is active
                 var speakDiscord = _isDiscordInputEnabled;       // Discord output when discord mode is active
@@ -976,10 +994,11 @@ namespace Kinectv1
         {
             try
             {
-                var mode = AppSettings.LoadAudioInMode();
+                var modeJson = App.SettingsProvider?.Current?.App?.InputMode;
+                var mode = modeJson.HasValue ? (AudioInMode)modeJson.Value : AudioInMode.LocalMic;
 
                 // Ensure microphone capture starts so RMS updates flow
-                var sttModelPath = AppSettings.LoadSttModelPath() ?? string.Empty;
+                var sttModelPath = App.SettingsProvider?.Current?.Stt?.ModelPath ?? string.Empty;
                 VoiceRecognizer.Start(sttModelPath);
 
                 // Apply current mode to wire UI and recognizer input toggles
@@ -1048,7 +1067,7 @@ namespace Kinectv1
                                 ReconnectBackoffMs: mb.ReconnectBackoffMs,
                                 TextCommandsEnabled: mb.TextCommandsEnabled
                             );
-                            var next = new Kinectv1.Settings.AppSettings(curr.Audio, curr.Tts, curr.Vad, curr.Ollama, curr.Discord, nextMb);
+                            var next = new Kinectv1.Settings.AppSettings(curr.Audio, curr.Tts, curr.Vad, curr.Ollama, curr.Discord, nextMb, curr.Ui, curr.Asr, curr.Stt, curr.Face, curr.App);
                             svc.Save(next);
                         }
                     }
@@ -1094,11 +1113,14 @@ namespace Kinectv1
             }
         }
 
+        // Replace PersistAudioMode to use SettingsService
         private void PersistAudioMode(AudioInMode mode)
         {
             try
             {
-                AppSettings.SaveAudioInMode(mode);
+                var svc = App.SettingsProvider; var curr = svc?.Current; if (svc == null || curr == null) return;
+                var next = curr with { App = curr.App with { InputMode = (Kinectv1.Settings.AudioInMode)mode } };
+                svc.Save(next);
             }
             catch (Exception ex)
             {
@@ -1231,5 +1253,16 @@ namespace Kinectv1
         private void RefreshValidationButton_Click(object sender, RoutedEventArgs e) { }
         private void RefreshDiagnosticsButton_Click(object sender, RoutedEventArgs e) { }
         private void LoadDiagnosticsTab() { }
+        private void RefreshTtsModelsButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                if (TtsModelStatusText != null)
+                {
+                    TtsModelStatusText.Text = "TTS models refreshed";
+                }
+            }
+            catch { }
+        }
     }
 }

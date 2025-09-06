@@ -57,12 +57,16 @@ namespace Kinectv1
 
         private static string GetConversationFilePath()
         {
-            var dir = AppSettings.LoadConversationHistoryPath();
-            if (string.IsNullOrWhiteSpace(dir)) dir = "history"; // AppSettings already validates; keep simple here
-            var baseDir = AppDomain.CurrentDomain.BaseDirectory;
-            var fullDir = Path.IsPathRooted(dir) ? dir : Path.Combine(baseDir, dir);
-            try { Directory.CreateDirectory(fullDir); } catch { }
-            return Path.Combine(fullDir, "conversation.json");
+            try
+            {
+                var dir = App.SettingsProvider?.Current?.Ollama?.ConversationHistoryPath;
+                if (string.IsNullOrWhiteSpace(dir)) return null; // no fallback dir when not configured
+                var baseDir = AppDomain.CurrentDomain.BaseDirectory;
+                var fullDir = Path.IsPathRooted(dir) ? dir : Path.Combine(baseDir, dir);
+                try { Directory.CreateDirectory(fullDir); } catch { }
+                return Path.Combine(fullDir, "conversation.json");
+            }
+            catch { return null; }
         }
 
         private static Dictionary<string, List<ConversationMessage>> LoadConversations()
@@ -70,7 +74,8 @@ namespace Kinectv1
             try
             {
                 var path = GetConversationFilePath();
-                if (!File.Exists(path)) return new Dictionary<string, List<ConversationMessage>>(StringComparer.OrdinalIgnoreCase);
+                if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+                    return new Dictionary<string, List<ConversationMessage>>(StringComparer.OrdinalIgnoreCase);
                 var json = File.ReadAllText(path, Encoding.UTF8);
                 var data = JsonConvert.DeserializeObject<Dictionary<string, List<ConversationMessage>>>(json);
                 return data ?? new Dictionary<string, List<ConversationMessage>>(StringComparer.OrdinalIgnoreCase);
@@ -86,6 +91,7 @@ namespace Kinectv1
             try
             {
                 var path = GetConversationFilePath();
+                if (string.IsNullOrWhiteSpace(path)) return; // not configured -> do not persist
                 var json = JsonConvert.SerializeObject(conv, Formatting.Indented);
                 File.WriteAllText(path, json, Encoding.UTF8);
             }
@@ -97,10 +103,12 @@ namespace Kinectv1
 
         private static void AppendConversation(string speaker, string role, string content)
         {
-            if (!AppSettings.LoadOllamaMemoryEnabled()) return;
-            if (string.IsNullOrWhiteSpace(speaker)) speaker = "UnknownSpeaker";
             try
             {
+                var snap = App.SettingsProvider?.Current;
+                if (!(snap?.Ollama?.MemoryEnabled ?? false)) return;
+                if (string.IsNullOrWhiteSpace(speaker)) speaker = "UnknownSpeaker";
+
                 lock (_convLock)
                 {
                     var conv = LoadConversations();
@@ -118,7 +126,7 @@ namespace Kinectv1
                     });
 
                     // Trim per-speaker list to max
-                    var maxPerSpeaker = AppSettings.LoadOllamaMaxMessagesPerSpeaker();
+                    var maxPerSpeaker = snap?.Ollama?.MaxMessagesPerSpeaker ?? 0;
                     if (maxPerSpeaker > 0 && list.Count > maxPerSpeaker)
                     {
                         list.RemoveRange(0, list.Count - maxPerSpeaker);
@@ -134,16 +142,18 @@ namespace Kinectv1
 
         private static string BuildHistoryBlock(string speaker)
         {
-            if (!AppSettings.LoadOllamaMemoryEnabled()) return string.Empty;
             try
             {
+                var snap = App.SettingsProvider?.Current;
+                if (!(snap?.Ollama?.MemoryEnabled ?? false)) return string.Empty;
+
                 lock (_convLock)
                 {
                     var conv = LoadConversations();
                     if (!conv.TryGetValue(speaker, out var list) || list.Count == 0) return string.Empty;
 
                     // Use most recent N items
-                    var maxPerSpeaker = AppSettings.LoadOllamaMaxMessagesPerSpeaker();
+                    var maxPerSpeaker = snap?.Ollama?.MaxMessagesPerSpeaker ?? 0;
                     var start = Math.Max(0, list.Count - Max(1, maxPerSpeaker));
                     var sb = new StringBuilder();
                     for (int i = start; i < list.Count; i++)
@@ -227,20 +237,20 @@ namespace Kinectv1
 
         // --------------- Public API expected by the app ---------------
 
-        public static bool IsEnabled() => AppSettings.LoadOllamaEnabled();
+        public static bool IsEnabled() => (App.SettingsProvider?.Current?.Ollama?.Enabled ?? false);
 
         public static void SetEnabled(bool enabled)
         {
             try
             {
-                // Persist through JSON settings pipeline
-                var svc = App.SettingsProvider;
-                if (svc == null) { AppSettings.SaveOllamaEnabled(enabled); return; }
-                var curr = svc.Current;
+                var svc = App.SettingsProvider; var curr = svc?.Current; if (svc == null || curr == null) return;
                 var next = curr with { Ollama = curr.Ollama with { Enabled = enabled } };
                 svc.Save(next);
             }
-            catch { AppSettings.SaveOllamaEnabled(enabled); }
+            catch (Exception ex)
+            {
+                OnError?.Invoke($"SetEnabled failed: {ex.Message}");
+            }
         }
 
         public static void SetProvider(string provider)
@@ -346,7 +356,11 @@ namespace Kinectv1
                 {
                     _defaultModel = model.Trim();
                 }
-                AppSettings.SaveOllamaModel(model.Trim());
+                var svc = App.SettingsProvider; var curr = svc?.Current; if (svc != null && curr != null)
+                {
+                    var next = curr with { Ollama = curr.Ollama with { Model = model.Trim() } };
+                    svc.Save(next);
+                }
                 Console.WriteLine($"Saved Ollama model: {model.Trim()}");
             }
             catch (Exception ex)
@@ -370,28 +384,6 @@ namespace Kinectv1
 
                 InitializeIfNeeded();
                 EnsureRouterInitialized();
-
-                // Load model from settings each call in case user changed it in UI
-                var model = AppSettings.LoadOllamaModel();
-                if (!string.IsNullOrWhiteSpace(model))
-                {
-                    lock (_lock) { _defaultModel = model.Trim(); }
-                }
-                // Resolve model via JSON settings pipeline; fall back to legacy only if pipeline not available
-                string effectiveModel = null;
-                try
-                {
-                    var svc = App.SettingsProvider;
-                    var snap = svc?.Current;
-                    effectiveModel = snap?.Ollama?.Model;
-                }
-                catch { }
-                if (string.IsNullOrWhiteSpace(effectiveModel))
-                {
-                    var legacy = AppSettings.LoadOllamaModel();
-                    if (!string.IsNullOrWhiteSpace(legacy)) effectiveModel = legacy.Trim();
-                }
-                if (string.IsNullOrWhiteSpace(effectiveModel)) effectiveModel = _defaultModel;
 
                 var system = LoadSystemPrompt();
                 var normalizedSpeaker = string.IsNullOrWhiteSpace(speakerName) ? "UnknownSpeaker" : speakerName.Trim();
@@ -463,15 +455,6 @@ namespace Kinectv1
                 if (_initialized) return;
 
                 _httpClient = new HttpClient();
-
-                // Model default from settings (safe if missing)
-                var model = AppSettings.LoadOllamaModel();
-                if (!string.IsNullOrWhiteSpace(model))
-                    _defaultModel = model;
-
-                // Base URL: not present in AppSettings; keep default unless you later add it.
-                // _baseUrl = AppSettings.LoadOllamaBaseUrl(); // (doesn't exist in your repo)
-
                 _initialized = true;
             }
         }
@@ -485,7 +468,7 @@ namespace Kinectv1
 
                 // Create clients with lazy model getter (reads latest from JSON pipeline)
                 string GetModel() {
-                    try { return App.SettingsProvider?.Current?.Ollama?.Model ?? AppSettings.LoadOllamaModel() ?? _defaultModel; }
+                    try { return App.SettingsProvider?.Current?.Ollama?.Model ?? _defaultModel; }
                     catch { return _defaultModel; }
                 }
 
@@ -512,7 +495,7 @@ namespace Kinectv1
                 if ((DateTime.UtcNow - _lastSystemPromptLoad).TotalSeconds < 2 && !string.IsNullOrEmpty(_systemPrompt))
                     return _systemPrompt;
 
-                var path = AppSettings.LoadSystemPromptPath();
+                var path = App.SettingsProvider?.Current?.Ollama?.SystemPromptPath;
                 if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
                 {
                     _systemPrompt = File.ReadAllText(path);

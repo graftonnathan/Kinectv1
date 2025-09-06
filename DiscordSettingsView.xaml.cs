@@ -84,7 +84,7 @@ namespace Kinectv1
                     AutoJoinVoice: autoJoin ?? dc.AutoJoinVoice,
                     Token: token ?? dc.Token
                 );
-                var next = new Kinectv1.Settings.AppSettings(curr.Audio, curr.Tts, curr.Vad, curr.Ollama, nextDiscord, curr.Mumble);
+                var next = new Kinectv1.Settings.AppSettings(curr.Audio, curr.Tts, curr.Vad, curr.Ollama, nextDiscord, curr.Mumble, curr.Ui, curr.Asr, curr.Stt, curr.Face, curr.App);
                 svc.Save(next);
             }
             catch (Exception ex)

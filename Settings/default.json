@@ -24,6 +24,34 @@
     "ipaOneShotTimeoutMs": 1500
   },
   "vad": { "threshold": 50 },
+  "asr": {
+    "voiceConfidenceThreshold": 0.6,
+    "voiceHighConfidenceThreshold": 0.8,
+    "voiceConfidenceBufferSize": 3,
+    "voiceConfidenceLoggingEnabled": false,
+    "vadSilenceTimeoutMs": 1000,
+    "vadDebounceTimeoutMs": 150,
+    "discordVadThreshold": 25.0,
+    "bargeInEnabled": true
+  },
+  "stt": {
+    "modelPath": "models/stt/vosk-model-en-us-0.22",
+    "inputDevice": "Default"
+  },
+  "face": {
+    "threshold": 0.7,
+    "fusionFaceWeight": 0.5,
+    "fusionVoiceWeight": 0.5,
+    "fusionDecayHalfLifeMs": 2000,
+    "fusionUnknownThreshold": 0.5,
+    "arcFaceModelPath": "models/face/arcface_r100.onnx",
+    "speakerEmbeddingModelPath": "models/speaker/pyannote_embedding.onnx"
+  },
+  "app": {
+    "requireWakeWord": false,
+    "scenario": "Local",
+    "inputMode": "LocalMic"
+  },
   "ollama": {
     "provider": "Ollama",
     "enabled": false,
@@ -59,5 +87,8 @@
     "reconnectBackoffMs": 2000,
     "textCommandsEnabled": true,
     "tlsValidate": "Strict"
+  },
+  "ui": {
+    "darkMode": true
   }
 }

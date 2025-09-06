@@ -1,8 +1,0 @@
-name: ASR Testing (Wrapper → Orchestrator)
-
-on:
-  workflow_dispatch:
-
-jobs:
-  forward:
-    uses: ./.github/workflows/copilot-task-runner.yml

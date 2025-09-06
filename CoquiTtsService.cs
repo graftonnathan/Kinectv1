@@ -138,17 +138,40 @@ namespace Kinectv1
         /// <summary>
         /// Check if TTS is enabled
         /// </summary>
-        public static bool IsEnabled() => AppSettings.LoadTtsEnabled() && Initialize();
+        public static bool IsEnabled()
+        {
+            var enabled = App.SettingsProvider?.Current?.Tts?.Enabled ?? false;
+            return enabled && Initialize();
+        }
 
         /// <summary>
         /// Enable or disable TTS
         /// </summary>
-        public static void SetEnabled(bool enabled) => AppSettings.SaveTtsEnabled(enabled);
+        public static void SetEnabled(bool enabled)
+        {
+            try
+            {
+                var svc = App.SettingsProvider; var curr = svc?.Current; if (svc == null || curr == null) return;
+                var next = curr with { Tts = curr.Tts with { Enabled = enabled } };
+                svc.Save(next);
+            }
+            catch { }
+        }
 
         /// <summary>
         /// Set current speaker
         /// </summary>
-        public static void SetSpeaker(string speaker) { _currentSpeaker = speaker; AppSettings.SaveTtsSpeaker(speaker); }
+        public static void SetSpeaker(string speaker)
+        {
+            _currentSpeaker = speaker;
+            try
+            {
+                var svc = App.SettingsProvider; var curr = svc?.Current; if (svc == null || curr == null) return;
+                var next = curr with { Tts = curr.Tts with { Speaker = speaker } };
+                svc.Save(next);
+            }
+            catch { }
+        }
 
         /// <summary>
         /// Get current model name
@@ -172,7 +195,10 @@ namespace Kinectv1
         {
             try
             {
-                AppSettings.SaveTtsUseGpu(useGpu);
+                var svc = App.SettingsProvider; var curr = svc?.Current; if (svc == null || curr == null) return false;
+                var mode = useGpu ? Settings.TtsExecution.GPU : Settings.TtsExecution.CPU;
+                var next = curr with { Tts = curr.Tts with { Execution = mode } };
+                svc.Save(next);
                 return KokoroTtsService.RecreateSessionFromSettings();
             }
             catch
@@ -202,22 +228,42 @@ namespace Kinectv1
         /// <summary>
         /// Get current local TTS volume (0.0 to 1.0)
         /// </summary>
-        public static double GetLocalVolume() => AppSettings.LoadLocalTtsVolume();
+        public static double GetLocalVolume() => App.SettingsProvider?.Current?.Tts?.LocalVolume ?? 0.0;
 
         /// <summary>
         /// Set local TTS volume (0.0 to 1.0)
         /// </summary>
-        public static void SetLocalVolume(double volume) => AppSettings.SaveLocalTtsVolume(volume);
+        public static void SetLocalVolume(double volume)
+        {
+            try
+            {
+                var svc = App.SettingsProvider; var curr = svc?.Current; if (svc == null || curr == null) return;
+                var v = Math.Max(0.0, Math.Min(1.0, volume));
+                var next = curr with { Tts = curr.Tts with { LocalVolume = v } };
+                svc.Save(next);
+            }
+            catch { }
+        }
 
         /// <summary>
         /// Get current Discord TTS volume (0.0 to 1.0)
         /// </summary>
-        public static double GetDiscordVolume() => AppSettings.LoadDiscordTtsVolume();
+        public static double GetDiscordVolume() => App.SettingsProvider?.Current?.Tts?.DiscordVolume ?? 0.0;
 
         /// <summary>
         /// Set Discord TTS volume (0.0 to 1.0)
         /// </summary>
-        public static void SetDiscordVolume(double volume) => AppSettings.SaveDiscordTtsVolume(volume);
+        public static void SetDiscordVolume(double volume)
+        {
+            try
+            {
+                var svc = App.SettingsProvider; var curr = svc?.Current; if (svc == null || curr == null) return;
+                var v = Math.Max(0.0, Math.Min(1.0, volume));
+                var next = curr with { Tts = curr.Tts with { DiscordVolume = v } };
+                svc.Save(next);
+            }
+            catch { }
+        }
 
         /// <summary>
         /// Get available TTS models

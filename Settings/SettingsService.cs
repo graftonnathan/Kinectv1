@@ -57,15 +57,17 @@ namespace Kinectv1.Settings
             var target = GetUserJsonPath();
             Directory.CreateDirectory(Path.GetDirectoryName(target));
 
+            // Compute overrides-only JSON against effective defaults (defaults + machine)
+            var overrides = GetOverridesJson(next) ?? new JObject();
+            overrides["schemaVersion"] = CurrentSchemaVersion;
+
             var tmp = target + ".tmp";
             using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
             using (var sw = new StreamWriter(fs, new UTF8Encoding(false)))
             using (var jtw = new JsonTextWriter(sw) { Formatting = Formatting.Indented })
             {
                 var ser = JsonSerializer.Create(JsonSettings);
-                var jNext = JObject.FromObject(next, ser);
-                jNext["schemaVersion"] = CurrentSchemaVersion;
-                ser.Serialize(jtw, jNext);
+                ser.Serialize(jtw, overrides);
             }
 
             var bak = target + ".bak";
@@ -147,23 +149,26 @@ namespace Kinectv1.Settings
             var target = GetUserJsonPath();
             if (!File.Exists(target))
             {
-                var defaults = ReadDefaultsAsAppSettings();
-                Validate(defaults);
+                // First run: create empty overrides file with only schemaVersion
                 Directory.CreateDirectory(Path.GetDirectoryName(target));
                 var tmp = target + ".tmp";
                 using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
                 using (var sw = new StreamWriter(fs, new UTF8Encoding(false)))
                 using (var jtw = new JsonTextWriter(sw) { Formatting = Formatting.Indented })
                 {
+                    var empty = new JObject
+                    {
+                        ["schemaVersion"] = CurrentSchemaVersion
+                    };
                     var ser = JsonSerializer.Create(JsonSettings);
-                    var jDefaults = JObject.FromObject(defaults, ser);
-                    jDefaults["schemaVersion"] = CurrentSchemaVersion;
-                    ser.Serialize(jtw, jDefaults);
+                    ser.Serialize(jtw, empty);
                 }
                 var bak = target + ".bak";
                 File.Move(tmp, target);
                 File.Copy(target, bak, overwrite: true);
-                return defaults;
+
+                // Load the composite effective settings (defaults + machine + empty user + secrets)
+                return LoadComposite();
             }
             return LoadComposite();
         }

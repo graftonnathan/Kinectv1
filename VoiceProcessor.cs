@@ -75,17 +75,17 @@ namespace Kinectv1
             _onVoiceEmbedding = onVoiceEmbedding;
             _triggerName = triggerName;
             
-            // Load configurable confidence settings
-            _confidenceThreshold = AppSettings.LoadVoiceConfidenceThreshold();
-            _highConfidenceThreshold = AppSettings.LoadVoiceHighConfidenceThreshold();
-            _confidenceLoggingEnabled = AppSettings.LoadVoiceConfidenceLoggingEnabled();
-            _bufferSize = AppSettings.LoadVoiceConfidenceBufferSize();
+            // Load configurable confidence settings (JSON)
+            var snap = Kinectv1.App.SettingsProvider?.Current;
+            _confidenceThreshold = (float)((snap?.Asr?.VoiceConfidenceThreshold) ?? 0.6);
+            _highConfidenceThreshold = (float)((snap?.Asr?.VoiceHighConfidenceThreshold) ?? 0.8);
+            _confidenceLoggingEnabled = snap?.Asr?.VoiceConfidenceLoggingEnabled ?? false;
+            _bufferSize = snap?.Asr?.VoiceConfidenceBufferSize ?? 3;
             _lowConfidenceBuffer = new Queue<VoskResult>(_bufferSize);
-            
-            // Load configurable VAD settings
-            var silenceTimeoutMs = AppSettings.LoadVadSilenceTimeoutMs();
-            var debounceTimeoutMs = AppSettings.LoadVadDebounceTimeoutMs();
-            // Clamp to sane bounds: debounce 50–250ms; silence 200–1000ms for more responsive UI
+            // Load configurable VAD settings (JSON)
+            var silenceTimeoutMs = snap?.Asr?.VadSilenceTimeoutMs ?? 1000;
+            var debounceTimeoutMs = snap?.Asr?.VadDebounceTimeoutMs ?? 150;
+            // Clamp
             silenceTimeoutMs = Math.Max(200, Math.Min(1000, silenceTimeoutMs));
             debounceTimeoutMs = Math.Max(50, Math.Min(250, debounceTimeoutMs));
             _silenceTimeout = TimeSpan.FromMilliseconds(silenceTimeoutMs);
@@ -340,11 +340,9 @@ namespace Kinectv1
                 
                 if (isDiscordAudio)
                 {
-                    // DISCORD AUDIO: Use configurable Discord VAD threshold
-                    // Discord audio is now normalized to microphone levels
-                    float discordVadThreshold = AppSettings.LoadDiscordVoiceActivityThreshold();
+                    // JSON-configured Discord VAD threshold
+                    float discordVadThreshold = (float)((Kinectv1.App.SettingsProvider?.Current?.Asr?.DiscordVadThreshold) ?? 25.0);
                     bool isDiscordVoiceActive = rms > discordVadThreshold;
-                    
                     return isDiscordVoiceActive;
                 }
                 else
@@ -940,16 +938,17 @@ namespace Kinectv1
 
                 // NEW: Check if TTS is currently speaking (ASR suppression during TTS playback)
                 // Only suppress ASR if barge-in is disabled (per requirements)
-                if (TtsPlaybackController.Instance.IsSpeaking && !AppSettings.LoadBargeInEnabled())
+                var snapG = Kinectv1.App.SettingsProvider?.Current;
+                if (TtsPlaybackController.Instance.IsSpeaking && !((snapG?.Asr?.BargeInEnabled) ?? true))
                 {
                     Console.WriteLine($"?? DISPATCH BLOCKED: '{clean}' from {source} (TTS currently speaking - ASR suppressed, barge-in disabled)");
                     Telemetry.Counter("asr.dispatch_blocked_due_to_tts");
                     return;
                 }
 
-                // NEW: Enhanced gating for Local scenario - optional wake word requirement via setting
-                var currentScenario = AppSettings.LoadAppScenario();
-                if (currentScenario == AppScenario.Local && AppSettings.LoadWakeWordRequired())
+                // Enhanced gating for Local scenario - optional wake word requirement via setting
+                var currentScenario = snapG?.App?.Scenario ?? Kinectv1.Settings.AppScenario.Local;
+                if (currentScenario == Kinectv1.Settings.AppScenario.Local && (snapG?.App?.RequireWakeWord ?? false))
                 {
                     // Enforce wake word only if a non-empty trigger is configured
                     if (!string.IsNullOrWhiteSpace(_triggerName))
@@ -966,7 +965,6 @@ namespace Kinectv1
                             Console.WriteLine($"?? WAKE WORD DETECTED: '{_triggerName}' in '{clean}' - proceeding with dispatch");
                         }
                     }
-                    // If no trigger configured, proceed without wake word gating
                 }
 
                 // Mark as processed (single-flight) and set dispatch flag using sanitized text

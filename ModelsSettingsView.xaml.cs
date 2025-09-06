@@ -1,12 +1,12 @@
 using System;
 using System.Collections.Generic;
-using System.Configuration;
 using System.IO;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using Microsoft.Win32;
 using System.Threading.Tasks;
+using Kinectv1.Settings; // for JSON enums
 
 namespace Kinectv1
 {
@@ -28,31 +28,6 @@ namespace Kinectv1
             {
                 try { InitializeVolumes(); InitializePacingControls(); } catch { }
             };
-        }
-
-        /// <summary>
-        /// Read the per-user saved value for a setting (userSettings only). Returns empty if not explicitly saved by the user.
-        /// </summary>
-        private string GetUserSetting(string name)
-        {
-            try
-            {
-                var config = ConfigurationManager.OpenExeConfiguration(ConfigurationUserLevel.PerUserRoamingAndLocal);
-                var group = config.SectionGroups["userSettings"] as UserSettingsGroup;
-                if (group == null) return string.Empty;
-                var sectionName = typeof(Kinectv1.Properties.Settings).FullName;
-                var section = group.Sections[sectionName] as ClientSettingsSection;
-                if (section == null) return string.Empty;
-                foreach (SettingElement element in section.Settings)
-                {
-                    if (string.Equals(element.Name, name, StringComparison.Ordinal))
-                    {
-                        return element.Value?.ValueXml?.InnerText ?? string.Empty;
-                    }
-                }
-            }
-            catch { }
-            return string.Empty;
         }
 
         /// <summary>
@@ -104,7 +79,7 @@ namespace Kinectv1
         }
 
         /// <summary>
-        /// Load current settings from config
+        /// Load current settings from JSON snapshot (fallback to legacy only where JSON does not yet cover)
         /// </summary>
         private void LoadCurrentSettings()
         {
@@ -112,16 +87,16 @@ namespace Kinectv1
             {
                 var snap = App.SettingsProvider?.Current;
 
-                // TTS core fields (prefer JSON snapshot)
+                // TTS core fields (use JSON snapshot)
                 var ttsSnap = snap?.Tts;
-                TtsModelPathTextBox.Text = ttsSnap?.ModelPath ?? AppSettings.LoadTtsModelPath() ?? string.Empty;
-                TtsModelFolderTextBox.Text = ttsSnap?.ModelFolder ?? AppSettings.LoadTtsModelFolder() ?? string.Empty;
-                TtsVocoderPathTextBox.Text = ttsSnap?.VocoderPath ?? AppSettings.LoadTtsVocoderModelPath() ?? string.Empty;
+                TtsModelPathTextBox.Text = ttsSnap?.ModelPath ?? string.Empty;
+                TtsModelFolderTextBox.Text = ttsSnap?.ModelFolder ?? string.Empty;
+                TtsVocoderPathTextBox.Text = ttsSnap?.VocoderPath ?? string.Empty;
 
-                var ttsEnabled = ttsSnap?.Enabled ?? AppSettings.LoadTtsEnabled();
+                var ttsEnabled = ttsSnap?.Enabled ?? false;
                 TtsEnabledCheckBox.IsChecked = ttsEnabled;
 
-                var currentVoice = ttsSnap?.Speaker ?? AppSettings.LoadTtsSpeaker();
+                var currentVoice = ttsSnap?.Speaker;
                 if (!string.IsNullOrEmpty(currentVoice))
                 {
                     var items = TtsVoiceComboBox.ItemsSource as IEnumerable<string>;
@@ -135,68 +110,85 @@ namespace Kinectv1
                     TtsVoiceComboBox.SelectedIndex = -1;
                 }
 
-                var execSnap = ttsSnap?.Execution;
-                bool useGpu = execSnap.HasValue ? (execSnap.Value == Kinectv1.Settings.TtsExecution.GPU) : AppSettings.LoadTtsUseGpu();
-                ExecutionModeComboBox.SelectedIndex = useGpu ? 1 : 0;
+                if (ttsSnap != null)
+                {
+                    bool useGpu = (ttsSnap.Execution == Kinectv1.Settings.TtsExecution.GPU);
+                    ExecutionModeComboBox.SelectedIndex = useGpu ? 1 : 0;
+                }
+                else
+                {
+                    ExecutionModeComboBox.SelectedIndex = -1;
+                }
 
-                // STT/Models
-                SttModelPathTextBox.Text = AppSettings.LoadSttModelPath() ?? string.Empty;
-                SpeakerModelPathTextBox.Text = AppSettings.LoadSpeakerEmbeddingModelPath() ?? string.Empty;
-                ArcFaceModelPathTextBox.Text = AppSettings.LoadArcFaceModelPath() ?? string.Empty;
+                // STT/Models (JSON-backed)
+                SttModelPathTextBox.Text = snap?.Stt?.ModelPath ?? string.Empty;
+                SpeakerModelPathTextBox.Text = snap?.Face?.SpeakerEmbeddingModelPath ?? string.Empty;
+                ArcFaceModelPathTextBox.Text = snap?.Face?.ArcFaceModelPath ?? string.Empty;
 
-                // Microphone selection
-                var mic = AppSettings.LoadSttInputDevice();
+                // Microphone selection (JSON-backed)
+                var mic = snap?.Stt?.InputDevice;
                 if (string.IsNullOrWhiteSpace(mic)) mic = "Default";
                 MicInputComboBox.SelectedItem = mic;
 
-                // Output device from JSON
-                var outDev = ttsSnap?.OutputDevice ?? AppSettings.LoadTtsOutputDevice();
+                // Output device (JSON)
+                var outDev = ttsSnap?.OutputDevice;
                 if (!string.IsNullOrWhiteSpace(outDev))
                 {
                     TtsOutputDeviceComboBox.SelectedItem = outDev;
                 }
 
                 // Voice Match Threshold
-                var match = AppSettings.LoadSpeakerMatchMinScore();
-                // Prefer JSON snapshot if present
-                var jsonMatch = snap?.Audio != null ? snap.Audio.SpeakerMatchMinScore : (double?)null;
-                var effectiveMatch = (float)(jsonMatch ?? (double)match);
-                SpeakerMatchThresholdTextBox.Text = (effectiveMatch > 0f && effectiveMatch <= 1f) ? effectiveMatch.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture) : string.Empty;
+                var jsonMatch = snap?.Audio?.SpeakerMatchMinScore;
+                if (jsonMatch.HasValue)
+                {
+                    SpeakerMatchThresholdTextBox.Text = (jsonMatch.Value > 0 && jsonMatch.Value <= 1.0)
+                        ? jsonMatch.Value.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)
+                        : string.Empty;
+                }
+                else
+                {
+                    SpeakerMatchThresholdTextBox.Text = string.Empty;
+                }
 
-                // Audio section – load thresholds/buffer
-                var vtVal = snap?.Audio?.VoiceThreshold ?? AppSettings.LoadVoiceConfidenceThreshold();
-                AudioVoiceThresholdTextBox.Text = vtVal > 0 ? vtVal.ToString(System.Globalization.CultureInfo.InvariantCulture) : string.Empty;
+                // Audio section – thresholds/buffer (JSON)
+                var vtVal = snap?.Audio?.VoiceThreshold;
+                AudioVoiceThresholdTextBox.Text = (vtVal.HasValue && vtVal.Value > 0)
+                    ? vtVal.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    : string.Empty;
 
-                var vhi = AppSettings.LoadVoiceHighConfidenceThreshold();
-                AudioVoiceHighThresholdTextBox.Text = vhi > 0 ? vhi.ToString(System.Globalization.CultureInfo.InvariantCulture) : string.Empty;
+                // High threshold currently legacy-only -> leave empty
+                AudioVoiceHighThresholdTextBox.Text = string.Empty;
 
-                VoiceConfidenceLoggingCheckBox.IsChecked = AppSettings.LoadVoiceConfidenceLoggingEnabled();
+                // Confidence logging (JSON)
+                VoiceConfidenceLoggingCheckBox.IsChecked = snap?.Asr?.VoiceConfidenceLoggingEnabled ?? false;
 
-                var discVad = AppSettings.LoadDiscordVoiceActivityThreshold();
+                // Discord VAD (JSON)
+                var discVad = snap?.Asr?.DiscordVadThreshold ?? 0.0;
                 AudioVadThresholdTextBox.Text = discVad > 0 ? discVad.ToString(System.Globalization.CultureInfo.InvariantCulture) : string.Empty;
 
-                var bs = snap?.Audio?.BufferSize ?? AppSettings.LoadVoiceConfidenceBufferSize();
-                AudioBufferSizeTextBox.Text = bs > 0 ? bs.ToString(System.Globalization.CultureInfo.InvariantCulture) : string.Empty;
+                var bs = snap?.Audio?.BufferSize;
+                AudioBufferSizeTextBox.Text = (bs.HasValue && bs.Value > 0) ? bs.Value.ToString(System.Globalization.CultureInfo.InvariantCulture) : string.Empty;
 
-                // VAD section (microphone) + wake word requirement
-                var micVad = snap?.Audio?.VadThreshold ?? AppSettings.LoadVoiceActivityThreshold();
-                VadThresholdTextBox.Text = micVad > 0 ? micVad.ToString(System.Globalization.CultureInfo.InvariantCulture) : string.Empty;
-                RequireWakeWordCheckBox.IsChecked = AppSettings.LoadWakeWordRequired();
+                // VAD section (microphone) + wake word requirement (JSON + legacy)
+                var micVad = snap?.Audio?.VadThreshold;
+                VadThresholdTextBox.Text = (micVad.HasValue && micVad.Value > 0)
+                    ? micVad.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    : string.Empty;
+                RequireWakeWordCheckBox.IsChecked = snap?.App?.RequireWakeWord ?? false;
 
-                // Face recognition section
-                var faceThr = AppSettings.LoadFaceThreshold();
+                // Face recognition section (JSON)
+                var faceThr = snap?.Face?.Threshold ?? 0.0;
                 FaceThresholdTextBox.Text = faceThr > 0 ? faceThr.ToString(System.Globalization.CultureInfo.InvariantCulture) : string.Empty;
-                FusionFaceWeightTextBox.Text = AppSettings.LoadFusionFaceWeight().ToString(System.Globalization.CultureInfo.InvariantCulture);
-                FusionVoiceWeightTextBox.Text = AppSettings.LoadFusionVoiceWeight().ToString(System.Globalization.CultureInfo.InvariantCulture);
-                FusionHalfLifeTextBox.Text = AppSettings.LoadFusionDecayHalfLifeMs().ToString(System.Globalization.CultureInfo.InvariantCulture);
-                FusionUnknownThresholdTextBox.Text = AppSettings.LoadFusionUnknownThreshold().ToString(System.Globalization.CultureInfo.InvariantCulture);
-                // Telemetry sampling UI removed
+                FusionFaceWeightTextBox.Text = (snap?.Face?.FusionFaceWeight ?? 0.5).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                FusionVoiceWeightTextBox.Text = (snap?.Face?.FusionVoiceWeight ?? 0.5).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                FusionHalfLifeTextBox.Text = (snap?.Face?.FusionDecayHalfLifeMs ?? 2000).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                FusionUnknownThresholdTextBox.Text = (snap?.Face?.FusionUnknownThreshold ?? 0.5).ToString(System.Globalization.CultureInfo.InvariantCulture);
 
-                // IPA timeouts (prefer JSON)
+                // IPA timeouts (JSON)
                 if (TtsIpaServiceTimeoutTextBox != null)
-                    TtsIpaServiceTimeoutTextBox.Text = (ttsSnap?.IpaServiceTimeoutMs ?? AppSettings.LoadTtsIpaServiceTimeoutMs()).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    TtsIpaServiceTimeoutTextBox.Text = (ttsSnap?.IpaServiceTimeoutMs ?? 0).ToString(System.Globalization.CultureInfo.InvariantCulture);
                 if (TtsIpaOneShotTimeoutTextBox != null)
-                    TtsIpaOneShotTimeoutTextBox.Text = (ttsSnap?.IpaOneShotTimeoutMs ?? AppSettings.LoadTtsIpaOneShotTimeoutMs()).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    TtsIpaOneShotTimeoutTextBox.Text = (ttsSnap?.IpaOneShotTimeoutMs ?? 0).ToString(System.Globalization.CultureInfo.InvariantCulture);
 
                 UpdateStatus("Settings loaded", false);
             }
@@ -387,7 +379,12 @@ namespace Kinectv1
                 var outDev = TtsOutputDeviceComboBox.SelectedItem as string;
                 if (!string.IsNullOrWhiteSpace(outDev))
                 {
-                    AppSettings.SaveTtsOutputDevice(outDev);
+                    var svc = App.SettingsProvider; var curr = svc?.Current;
+                    if (svc != null && curr != null)
+                    {
+                        var next = curr with { Tts = curr.Tts with { OutputDevice = outDev } };
+                        svc.Save(next);
+                    }
                     AudioDeviceManager.InvalidateOutputDeviceCache();
                 }
 
@@ -395,9 +392,6 @@ namespace Kinectv1
                 var selectedVoice = TtsVoiceComboBox.SelectedItem?.ToString();
                 if (!string.IsNullOrWhiteSpace(selectedVoice))
                 {
-                    AppSettings.SaveTtsSpeaker(selectedVoice);
-
-                    // Also update the JSON snapshot immediately so normal TTS matches the test voice
                     var svc = App.SettingsProvider;
                     var curr = svc?.Current;
                     if (svc != null && curr != null)
@@ -407,12 +401,12 @@ namespace Kinectv1
                             Speaker = selectedVoice,
                             OutputDevice = string.IsNullOrWhiteSpace(outDev) ? curr.Tts.OutputDevice : outDev
                         };
-                        var next = new Kinectv1.Settings.AppSettings(curr.Audio, tts, curr.Vad, curr.Ollama, curr.Discord, curr.Mumble);
+                        var next = new Kinectv1.Settings.AppSettings(curr.Audio, tts, curr.Vad, curr.Ollama, curr.Discord, curr.Mumble, curr.Ui, curr.Asr, curr.Stt, curr.Face, curr.App);
                         svc.Save(next);
                     }
                 }
 
-                UpdateStatus($"🔊 Testing voice{(string.IsNullOrWhiteSpace(selectedVoice) ? string.Empty : $" '{selectedVoice}'")}...", false);
+                UpdateStatus($"🔊 Testing voice{(string.IsNullOrWhiteSpace(selectedVoice) ? string.Empty : $" '{selectedVoice}'")}", false);
 
                 // Speak with preemption so repeated clicks interrupt
                 var ok = await CoquiTtsService.SpeakStreamingWithPreemptionAsync(phrase, selectedVoice);
@@ -583,62 +577,39 @@ namespace Kinectv1
         {
             try
             {
-                // legacy saves (no-op stubs in this repo) remain for compatibility
-                AppSettings.SaveTtsEnabled(TtsEnabledCheckBox.IsChecked ?? false);
-                AppSettings.SaveTtsModelPath(TtsModelPathTextBox.Text);
-                AppSettings.SaveTtsModelFolder(TtsModelFolderTextBox.Text);
-                AppSettings.SaveTtsVocoderModelPath(TtsVocoderPathTextBox.Text);
-                if (TtsVoiceComboBox.SelectedItem != null)
-                    AppSettings.SaveTtsSpeaker(TtsVoiceComboBox.SelectedItem.ToString());
+                // TTS enabled flag
+                bool ttsEnabled = TtsEnabledCheckBox.IsChecked ?? false;
 
+                // Selected execution mode
                 var selectedModeItem = ExecutionModeComboBox.SelectedItem as ComboBoxItem;
                 bool useGpu = selectedModeItem?.Tag?.ToString() == "GPU";
-                AppSettings.SaveTtsUseGpu(useGpu);
-
-                AppSettings.SaveSttModelPath(SttModelPathTextBox.Text);
-                AppSettings.SaveSpeakerEmbeddingModelPath(SpeakerModelPathTextBox.Text);
-                AppSettings.SaveArcFaceModelPath(ArcFaceModelPathTextBox.Text);
-
-                // Microphone selection
-                var mic = MicInputComboBox.SelectedItem as string;
-                if (!string.IsNullOrWhiteSpace(mic))
-                {
-                    AppSettings.SaveSttInputDevice(mic);
-                }
 
                 // TTS output selection
                 var outDev = TtsOutputDeviceComboBox.SelectedItem as string;
-                if (!string.IsNullOrWhiteSpace(outDev))
-                {
-                    AppSettings.SaveTtsOutputDevice(outDev);
-                }
 
                 // Volumes (0..100 UI -> 0..1)
-                double localVol = AppSettings.LoadLocalTtsVolume();
-                double discVol = AppSettings.LoadDiscordTtsVolume();
+                double localVol = 0.0;
+                double discVol = 0.0;
                 if (LocalVolumeSlider != null)
                 {
                     localVol = Math.Max(0, Math.Min(100, LocalVolumeSlider.Value)) / 100.0;
-                    AppSettings.SaveLocalTtsVolume(localVol);
                 }
                 if (DiscordVolumeSlider != null)
                 {
                     discVol = Math.Max(0, Math.Min(100, DiscordVolumeSlider.Value)) / 100.0;
-                    AppSettings.SaveDiscordTtsVolume(discVol);
                 }
 
                 // TTS pacing settings
-                float speedVal = AppSettings.LoadTtsSpeed();
-                double trimThr = AppSettings.LoadTtsTrimThreshold();
-                int leaveVal = AppSettings.LoadTtsTrimLeaveMs();
-                int maxVal = AppSettings.LoadTtsTrimMaxMs();
-                int padVal = AppSettings.LoadTtsMinClausePaddingMs();
+                float speedVal = 0f;
+                double trimThr = 0.0;
+                int leaveVal = 0;
+                int maxVal = 0;
+                int padVal = 0;
 
                 if (TtsSpeedSlider != null)
                 {
                     var speed = Math.Max(0.5, Math.Min(2.0, TtsSpeedSlider.Value / 100.0));
                     speedVal = (float)speed;
-                    AppSettings.SaveTtsSpeed((float)speed);
                 }
 
                 if (TrimSilenceThresholdSlider != null)
@@ -646,94 +617,51 @@ namespace Kinectv1
                     // Map UI 0..100 to 0.0005..0.02
                     var thr = 0.0005 + (TrimSilenceThresholdSlider.Value / 100.0) * (0.02 - 0.0005);
                     trimThr = thr;
-                    AppSettings.SaveTtsTrimThreshold(thr);
                 }
 
                 if (TtsTrimLeaveSlider != null)
                 {
                     var leave = (int)Math.Round(Math.Max(0, Math.Min(100, TtsTrimLeaveSlider.Value)));
                     leaveVal = leave;
-                    AppSettings.SaveTtsTrimLeaveMs(leave);
                 }
 
                 if (TtsTrimMaxSlider != null)
                 {
                     var max = (int)Math.Round(Math.Max(50, Math.Min(3000, TtsTrimMaxSlider.Value)));
                     maxVal = max;
-                    AppSettings.SaveTtsTrimMaxMs(max);
                 }
 
                 if (TtsPaddingSlider != null)
                 {
                     var pad = (int)Math.Round(Math.Max(0, Math.Min(200, TtsPaddingSlider.Value)));
                     padVal = pad;
-                    AppSettings.SaveTtsMinClausePaddingMs(pad);
                 }
 
                 // IPA timeouts
-                int ipaSvc = AppSettings.LoadTtsIpaServiceTimeoutMs();
-                int ipaOne = AppSettings.LoadTtsIpaOneShotTimeoutMs();
+                int ipaSvc = 0;
+                int ipaOne = 0;
                 if (!string.IsNullOrWhiteSpace(TtsIpaServiceTimeoutTextBox?.Text))
                 {
                     if (!int.TryParse(TtsIpaServiceTimeoutTextBox.Text, out ipaSvc))
                         throw new InvalidOperationException("IPA Service Timeout must be an integer");
-                    AppSettings.SaveTtsIpaServiceTimeoutMs(ipaSvc);
                 }
                 if (!string.IsNullOrWhiteSpace(TtsIpaOneShotTimeoutTextBox?.Text))
                 {
                     if (!int.TryParse(TtsIpaOneShotTimeoutTextBox.Text, out ipaOne))
                         throw new InvalidOperationException("IPA One-Shot Timeout must be an integer");
-                    AppSettings.SaveTtsIpaOneShotTimeoutMs(ipaOne);
                 }
 
-                // Face recognition settings (legacy + JSON handled below)
-                if (!string.IsNullOrWhiteSpace(FaceThresholdTextBox.Text))
-                {
-                    if (float.TryParse(FaceThresholdTextBox.Text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var ft) && ft >= 0f && ft <= 1f)
-                    {
-                        AppSettings.SaveFaceThreshold(ft);
-                    }
-                    else throw new InvalidOperationException("Face Threshold must be 0..1");
-                }
-
-                if (!string.IsNullOrWhiteSpace(FusionFaceWeightTextBox.Text))
-                {
-                    if (float.TryParse(FusionFaceWeightTextBox.Text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var ff) && ff > 0f && ff <= 1f)
-                    {
-                        AppSettings.SaveFusionFaceWeight(ff);
-                    }
-                    else throw new InvalidOperationException("Fusion Face Weight must be 0..1 (non-zero)");
-                }
-
-                if (!string.IsNullOrWhiteSpace(FusionVoiceWeightTextBox.Text))
-                {
-                    if (float.TryParse(FusionVoiceWeightTextBox.Text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var fv) && fv > 0f && fv <= 1f)
-                    {
-                        AppSettings.SaveFusionVoiceWeight(fv);
-                    }
-                    else throw new InvalidOperationException("Fusion Voice Weight must be 0..1 (non-zero)");
-                }
-
-                if (!string.IsNullOrWhiteSpace(FusionHalfLifeTextBox.Text))
-                {
-                    if (int.TryParse(FusionHalfLifeTextBox.Text, out var hl) && hl >= 500 && hl <= 10000)
-                    {
-                        AppSettings.SaveFusionDecayHalfLifeMs(hl);
-                    }
-                    else throw new InvalidOperationException("Fusion Decay Half-Life must be 500-10000 ms");
-                }
-
-                if (!string.IsNullOrWhiteSpace(FusionUnknownThresholdTextBox.Text))
-                {
-                    if (float.TryParse(FusionUnknownThresholdTextBox.Text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var fu) && fu >= 0f && fu <= 1f)
-                    {
-                        AppSettings.SaveFusionUnknownThreshold(fu);
-                    }
-                    else throw new InvalidOperationException("Fusion Unknown Threshold must be 0..1");
-                }
-
-                // Persist wake word requirement
-                AppSettings.SaveWakeWordRequired(RequireWakeWordCheckBox.IsChecked ?? false);
+                var svcSnap = App.SettingsProvider?.Current;
+                bool requireWake = RequireWakeWordCheckBox.IsChecked ?? (svcSnap?.App?.RequireWakeWord ?? false);
+                string sttPath = SttModelPathTextBox.Text ?? svcSnap?.Stt?.ModelPath ?? string.Empty;
+                string micDev = MicInputComboBox.SelectedItem as string;
+                string spkModel = SpeakerModelPathTextBox.Text ?? svcSnap?.Face?.SpeakerEmbeddingModelPath ?? string.Empty;
+                string arcModel = ArcFaceModelPathTextBox.Text ?? svcSnap?.Face?.ArcFaceModelPath ?? string.Empty;
+                double faceThreshold = string.IsNullOrWhiteSpace(FaceThresholdTextBox.Text) ? (svcSnap?.Face?.Threshold ?? 0.7) : double.Parse(FaceThresholdTextBox.Text, System.Globalization.CultureInfo.InvariantCulture);
+                double fusionFace = string.IsNullOrWhiteSpace(FusionFaceWeightTextBox.Text) ? (svcSnap?.Face?.FusionFaceWeight ?? 0.5) : double.Parse(FusionFaceWeightTextBox.Text, System.Globalization.CultureInfo.InvariantCulture);
+                double fusionVoice = string.IsNullOrWhiteSpace(FusionVoiceWeightTextBox.Text) ? (svcSnap?.Face?.FusionVoiceWeight ?? 0.5) : double.Parse(FusionVoiceWeightTextBox.Text, System.Globalization.CultureInfo.InvariantCulture);
+                int fusionHalf = string.IsNullOrWhiteSpace(FusionHalfLifeTextBox.Text) ? (svcSnap?.Face?.FusionDecayHalfLifeMs ?? 2000) : int.Parse(FusionHalfLifeTextBox.Text, System.Globalization.CultureInfo.InvariantCulture);
+                double fusionUnknown = string.IsNullOrWhiteSpace(FusionUnknownThresholdTextBox.Text) ? (svcSnap?.Face?.FusionUnknownThreshold ?? 0.5) : double.Parse(FusionUnknownThresholdTextBox.Text, System.Globalization.CultureInfo.InvariantCulture);
 
                 // ----- Synchronize with JSON settings (used at startup/services) -----
                 try
@@ -742,7 +670,7 @@ namespace Kinectv1
                     var curr = svc?.Current;
                     if (svc != null && curr != null)
                     {
-                        var outDevice = outDev ?? "Default";
+                        var outDevice = string.IsNullOrWhiteSpace(outDev) ? (curr.Tts.OutputDevice ?? "Default") : outDev;
                         var speaker = TtsVoiceComboBox.SelectedItem?.ToString();
 
                         var exec = useGpu ? Kinectv1.Settings.TtsExecution.GPU : Kinectv1.Settings.TtsExecution.CPU;
@@ -768,7 +696,7 @@ namespace Kinectv1
 
                         var audio = new Kinectv1.Settings.AudioSettings(vt, vad, buf, spkMatch);
                         var tts = new Kinectv1.Settings.TtsSettings(
-                            Enabled: TtsEnabledCheckBox.IsChecked ?? false,
+                            Enabled: ttsEnabled,
                             Speaker: string.IsNullOrWhiteSpace(speaker) ? curr.Tts.Speaker : speaker,
                             Execution: exec,
                             ModelFolder: TtsModelFolderTextBox.Text ?? curr.Tts.ModelFolder,
@@ -786,7 +714,35 @@ namespace Kinectv1
                             IpaOneShotTimeoutMs: ipaOne
                         );
                         var vadSettings = new Kinectv1.Settings.VadSettings(vad);
-                        var next = new Kinectv1.Settings.AppSettings(audio, tts, vadSettings, curr.Ollama, curr.Discord, curr.Mumble);
+                        var asr = new Kinectv1.Settings.AsrSettings(
+                            VoiceConfidenceThreshold: curr?.Asr?.VoiceConfidenceThreshold ?? 0.6,
+                            VoiceHighConfidenceThreshold: curr?.Asr?.VoiceHighConfidenceThreshold ?? 0.8,
+                            VoiceConfidenceBufferSize: curr?.Asr?.VoiceConfidenceBufferSize ?? 3,
+                            VoiceConfidenceLoggingEnabled: VoiceConfidenceLoggingCheckBox.IsChecked ?? (curr?.Asr?.VoiceConfidenceLoggingEnabled ?? false),
+                            VadSilenceTimeoutMs: curr?.Asr?.VadSilenceTimeoutMs ?? 1000,
+                            VadDebounceTimeoutMs: curr?.Asr?.VadDebounceTimeoutMs ?? 150,
+                            DiscordVadThreshold: string.IsNullOrWhiteSpace(AudioVadThresholdTextBox.Text) ? (curr?.Asr?.DiscordVadThreshold ?? 25.0) : double.Parse(AudioVadThresholdTextBox.Text, System.Globalization.CultureInfo.InvariantCulture),
+                            BargeInEnabled: curr?.Asr?.BargeInEnabled ?? true
+                        );
+                        var stt = new Kinectv1.Settings.SttSettings(
+                            ModelPath: sttPath,
+                            InputDevice: string.IsNullOrWhiteSpace(micDev) ? (curr?.Stt?.InputDevice ?? "Default") : micDev
+                        );
+                        var face = new Kinectv1.Settings.FaceSettings(
+                            Threshold: faceThreshold,
+                            FusionFaceWeight: fusionFace,
+                            FusionVoiceWeight: fusionVoice,
+                            FusionDecayHalfLifeMs: fusionHalf,
+                            FusionUnknownThreshold: fusionUnknown,
+                            ArcFaceModelPath: arcModel,
+                            SpeakerEmbeddingModelPath: spkModel
+                        );
+                        var app = new Kinectv1.Settings.AppConfig(
+                            RequireWakeWord: requireWake,
+                            Scenario: curr?.App?.Scenario ?? Kinectv1.Settings.AppScenario.Local,
+                            InputMode: curr?.App?.InputMode ?? Kinectv1.Settings.AudioInMode.LocalMic
+                        );
+                        var next = new Kinectv1.Settings.AppSettings(audio, tts, vadSettings, curr.Ollama, curr.Discord, curr.Mumble, curr.Ui, asr, stt, face, app);
                         svc.Save(next);
                     }
                 }
@@ -802,7 +758,7 @@ namespace Kinectv1
                     if (!recreated)
                     {
                         UpdateStatus("TTS session recreate failed; check GPU runtime availability.", true);
-                    }
+                      }
                     else
                     {
                         UpdateStatus($"TTS session now using {(KokoroTtsService.IsUsingGpu() ? "GPU" : "CPU")}.", false);
@@ -857,33 +813,8 @@ namespace Kinectv1
                     SpeakerMatchThresholdTextBox.Text = string.Empty;
                     RequireWakeWordCheckBox.IsChecked = false;
 
-                    // Persist clears
-                    AppSettings.SaveTtsEnabled(false);
-                    AppSettings.SaveTtsModelPath(string.Empty);
-                    AppSettings.SaveTtsModelFolder(string.Empty);
-                    AppSettings.SaveTtsVocoderModelPath(string.Empty);
-                    AppSettings.SaveTtsSpeaker(string.Empty);
-                    AppSettings.SaveTtsUseGpu(false);
-                    AppSettings.SaveSttModelPath(string.Empty);
-                    AppSettings.SaveSpeakerEmbeddingModelPath(string.Empty);
-                    AppSettings.SaveArcFaceModelPath(string.Empty);
-                    AppSettings.SaveSttInputDevice("Default");
-                    AppSettings.SaveSpeakerMatchMinScore(0.6f);
-
-                    // Clear voice confidence keys
-                    AppSettings.SaveVoiceConfidenceThreshold(0f);
-                    AppSettings.SaveVoiceConfidenceBufferSize(0);
-
-                    // Clear face/telemetry related
-                    AppSettings.SaveFaceThreshold(0f);
-                    AppSettings.SaveFusionFaceWeight(0f);
-                    AppSettings.SaveFusionVoiceWeight(0f);
-                    AppSettings.SaveFusionDecayHalfLifeMs(500);
-                    AppSettings.SaveFusionUnknownThreshold(0f);
-                    // Telemetry sampling reset removed
-
-                    // Clear wake word requirement
-                    AppSettings.SaveWakeWordRequired(false);
+                    // Reset JSON settings to defaults
+                    try { App.SettingsProvider?.ResetToDefaults(); } catch { }
 
                     UpdateStatus("Fields cleared. Click Save to persist.", false);
                 }
@@ -938,10 +869,10 @@ namespace Kinectv1
         {
             try
             {
-                // Prefer JSON snapshot
+                // JSON snapshot only
                 var snap = App.SettingsProvider?.Current;
-                double local = snap?.Tts?.LocalVolume ?? AppSettings.LoadLocalTtsVolume();
-                double disc = snap?.Tts?.DiscordVolume ?? AppSettings.LoadDiscordTtsVolume();
+                double local = snap?.Tts?.LocalVolume ?? 0.0;
+                double disc = snap?.Tts?.DiscordVolume ?? 0.0;
 
                 if (LocalVolumeSlider != null)
                 {
@@ -970,8 +901,7 @@ namespace Kinectv1
             {
                 LocalVolumeValueText.Text = $"{LocalVolumeSlider.Value:F0}%";
                 var lv = Math.Max(0, Math.Min(100, LocalVolumeSlider.Value)) / 100.0;
-                AppSettings.SaveLocalTtsVolume(lv);
-                // Also persist to JSON
+                // Persist to JSON
                 var svc = App.SettingsProvider; var curr = svc?.Current;
                 if (svc != null && curr != null)
                 {
@@ -991,7 +921,6 @@ namespace Kinectv1
             {
                 DiscordVolumeValueText.Text = $"{DiscordVolumeSlider.Value:F0}%";
                 var dv = Math.Max(0, Math.Min(100, DiscordVolumeSlider.Value)) / 100.0;
-                AppSettings.SaveDiscordTtsVolume(dv);
                 // Persist to JSON
                 var svc = App.SettingsProvider; var curr = svc?.Current;
                 if (svc != null && curr != null)
@@ -1012,7 +941,6 @@ namespace Kinectv1
             {
                 var speed = Math.Max(0.5, Math.Min(2.0, e.NewValue / 100.0));
                 TtsSpeedValueText.Text = $"{speed:F2}x";
-                AppSettings.SaveTtsSpeed((float)speed);
                 var svc = App.SettingsProvider; var curr = svc?.Current;
                 if (svc != null && curr != null)
                 {
@@ -1030,7 +958,6 @@ namespace Kinectv1
                 // Map UI 0..100 to 0.0005..0.02
                 var thr = 0.0005 + (e.NewValue / 100.0) * (0.02 - 0.0005);
                 TrimSilenceThresholdValueText.Text = thr.ToString("F4");
-                AppSettings.SaveTtsTrimThreshold(thr);
                 var svc = App.SettingsProvider; var curr = svc?.Current;
                 if (svc != null && curr != null)
                 {
@@ -1047,7 +974,6 @@ namespace Kinectv1
             {
                 var leave = (int)Math.Round(Math.Max(0, Math.Min(100, e.NewValue)));
                 if (TtsTrimLeaveValueText != null) TtsTrimLeaveValueText.Text = $"{leave} ms";
-                AppSettings.SaveTtsTrimLeaveMs(leave);
                 var svc = App.SettingsProvider; var curr = svc?.Current;
                 if (svc != null && curr != null)
                 {
@@ -1064,7 +990,6 @@ namespace Kinectv1
             {
                 var max = (int)Math.Round(Math.Max(50, Math.Min(3000, e.NewValue)));
                 if (TtsTrimMaxValueText != null) TtsTrimMaxValueText.Text = $"{max} ms";
-                AppSettings.SaveTtsTrimMaxMs(max);
                 var svc = App.SettingsProvider; var curr = svc?.Current;
                 if (svc != null && curr != null)
                 {
@@ -1081,7 +1006,6 @@ namespace Kinectv1
             {
                 var pad = (int)Math.Round(Math.Max(0, Math.Min(200, e.NewValue)));
                 TtsPaddingValueText.Text = $"{pad} ms";
-                AppSettings.SaveTtsMinClausePaddingMs(pad);
                 var svc = App.SettingsProvider; var curr = svc?.Current;
                 if (svc != null && curr != null)
                 {
@@ -1099,9 +1023,10 @@ namespace Kinectv1
                 if (_pacingInitialized) return; // avoid resetting slider positions after they were changed by the user
 
                 var ttsSnap = App.SettingsProvider?.Current?.Tts;
+                if (ttsSnap == null) { _pacingInitialized = true; return; }
 
                 // Speed slider maps 0.5x..2.0x to 50..200 (we display 1.00x style number)
-                var speedVal = ttsSnap?.Speed ?? AppSettings.LoadTtsSpeed();
+                var speedVal = ttsSnap.Speed;
                 if (TtsSpeedSlider != null)
                 {
                     var uiVal = Math.Max(50, Math.Min(200, (int)Math.Round(speedVal * 100))); // 1.05 -> 105
@@ -1112,7 +1037,7 @@ namespace Kinectv1
                 }
 
                 // Trim threshold slider: map 0.0005..0.02 -> 0..100 UI
-                var thr = ttsSnap?.TrimThreshold ?? AppSettings.LoadTtsTrimThreshold();
+                var thr = ttsSnap.TrimThreshold;
                 if (TrimSilenceThresholdSlider != null)
                 {
                     var norm = (thr - 0.0005) / (0.02 - 0.0005); // 0..1
@@ -1124,7 +1049,7 @@ namespace Kinectv1
                 }
 
                 // Trim leave (ms)
-                var leaveMs = ttsSnap?.TrimLeaveMs ?? AppSettings.LoadTtsTrimLeaveMs();
+                var leaveMs = ttsSnap.TrimLeaveMs;
                 if (TtsTrimLeaveSlider != null)
                 {
                     TtsTrimLeaveSlider.Value = Math.Max(0, Math.Min(100, leaveMs));
@@ -1134,7 +1059,7 @@ namespace Kinectv1
                 }
 
                 // Trim max (ms)
-                var maxMs = ttsSnap?.TrimMaxMs ?? AppSettings.LoadTtsTrimMaxMs();
+                var maxMs = ttsSnap.TrimMaxMs;
                 if (TtsTrimMaxSlider != null)
                 {
                     TtsTrimMaxSlider.Value = Math.Max(50, Math.Min(3000, maxMs));
@@ -1144,7 +1069,7 @@ namespace Kinectv1
                 }
 
                 // Padding slider in ms (0..200)
-                var padMs = ttsSnap?.MinClausePaddingMs ?? AppSettings.LoadTtsMinClausePaddingMs();
+                var padMs = ttsSnap.MinClausePaddingMs;
                 if (TtsPaddingSlider != null)
                 {
                     TtsPaddingSlider.Value = Math.Max(0, Math.Min(200, padMs));

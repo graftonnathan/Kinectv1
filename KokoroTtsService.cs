@@ -86,20 +86,14 @@ namespace Kinectv1
         {
             try
             {
-                // Prefer unified JSON snapshot
+                // Prefer unified JSON snapshot only
                 var snap = Kinectv1.App.SettingsProvider?.Current;
-                if (snap != null && snap.Tts != null)
+                if (snap?.Tts != null)
                 {
                     _speed = snap.Tts.Speed;
                     _ipaServiceTimeoutMs = snap.Tts.IpaServiceTimeoutMs;
                     _ipaOneShotTimeoutMs = snap.Tts.IpaOneShotTimeoutMs;
-                    return;
                 }
-
-                // Fallback to legacy keys
-                _speed = AppSettings.LoadTtsSpeed();
-                _ipaServiceTimeoutMs = AppSettings.LoadTtsIpaServiceTimeoutMs();
-                _ipaOneShotTimeoutMs = AppSettings.LoadTtsIpaOneShotTimeoutMs();
             }
             catch { }
         }
@@ -369,7 +363,7 @@ namespace Kinectv1
                     return; // prefer JSON path if present
                 }
 
-                // Legacy fallback
+                // Legacy fallback retained in this method until UI migration completes
                 var folderLegacy = AppSettings.LoadTtsModelFolder();
                 if (!string.IsNullOrWhiteSpace(folderLegacy))
                 {
@@ -1115,11 +1109,11 @@ namespace Kinectv1
                 }
 
                 // Snapshot JSON tunables once per Generate call
-                var snap = Kinectv1.App.SettingsProvider?.Current?.Tts;
-                float trimThr = (float)(snap?.TrimThreshold ?? AppSettings.LoadTtsTrimThreshold());
-                int trimLeave = snap?.TrimLeaveMs ?? AppSettings.LoadTtsTrimLeaveMs();
-                int trimMax = snap?.TrimMaxMs ?? AppSettings.LoadTtsTrimMaxMs();
-                int padMsSnap = snap?.MinClausePaddingMs ?? AppSettings.LoadTtsMinClausePaddingMs();
+                var tts = Kinectv1.App.SettingsProvider?.Current?.Tts;
+                float trimThr = (float)(tts?.TrimThreshold ?? 0.0);
+                int trimLeave = tts?.TrimLeaveMs ?? 0;
+                int trimMax = tts?.TrimMaxMs ?? 0;
+                int padMsSnap = tts?.MinClausePaddingMs ?? 0;
 
                 var segments = BuildSegments(text);
                 var output = new List<float>();
@@ -1166,7 +1160,7 @@ namespace Kinectv1
                     var inputIds = new DenseTensor<long>(new[] { 1, ids.Length });
                     for (int i = 0; i < ids.Length; i++) inputIds[0, i] = ids[i];
                     for (int i = 0; i < 256; i++) _reuseStyleTensor[0, i] = style[i];
-                    _reuseSpeedTensor[0] = (snap?.Speed ?? AppSettings.LoadTtsSpeed());
+                    _reuseSpeedTensor[0] = (tts?.Speed ?? _speed);
 
                     float[] audio = null;
                     bool ok = TryRunModel(inputIds, _reuseStyleTensor, _reuseSpeedTensor, out audio);
@@ -1228,11 +1222,11 @@ namespace Kinectv1
                 throw new InvalidOperationException($"TTS speaker '{vk ?? "<null>"}' is not configured or not found. Configure in Settings → Models.");
             }
 
-            var snap = Kinectv1.App.SettingsProvider?.Current?.Tts;
-            float trimThr = (float)(snap?.TrimThreshold ?? AppSettings.LoadTtsTrimThreshold());
-            int trimLeave = snap?.TrimLeaveMs ?? AppSettings.LoadTtsTrimLeaveMs();
-            int trimMax = snap?.TrimMaxMs ?? AppSettings.LoadTtsTrimMaxMs();
-            int padMsSnap = snap?.MinClausePaddingMs ?? AppSettings.LoadTtsMinClausePaddingMs();
+            var tts = Kinectv1.App.SettingsProvider?.Current?.Tts;
+            float trimThr = (float)(tts?.TrimThreshold ?? 0.0);
+            int trimLeave = tts?.TrimLeaveMs ?? 0;
+            int trimMax = tts?.TrimMaxMs ?? 0;
+            int padMsSnap = tts?.MinClausePaddingMs ?? 0;
 
             if (cancellationToken.IsCancellationRequested) yield break;
             var segments = BuildSegments(text);
@@ -1287,7 +1281,7 @@ namespace Kinectv1
                 var inputIds = new DenseTensor<long>(new[] { 1, ids.Length });
                 for (int i = 0; i < ids.Length; i++) inputIds[0, i] = ids[i];
                 for (int i = 0; i < 256; i++) _reuseStyleTensor[0, i] = style[i];
-                _reuseSpeedTensor[0] = (snap?.Speed ?? AppSettings.LoadTtsSpeed());
+                _reuseSpeedTensor[0] = (tts?.Speed ?? _speed);
 
                 if (cancellationToken.IsCancellationRequested) yield break;
 

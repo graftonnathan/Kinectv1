@@ -15,28 +15,17 @@ namespace Kinectv1
             LoadValues();
             _ = RefreshModelsAsync();
 
-            // Wire immediate persistence for booleans & model
-            OllamaEnabledCheckBox.Checked += (s, e) => AppSettings.SaveOllamaEnabled(true);
-            OllamaEnabledCheckBox.Unchecked += (s, e) => AppSettings.SaveOllamaEnabled(false);
-            OllamaMemoryEnabledCheckBox.Checked += (s, e) => AppSettings.SaveOllamaMemoryEnabled(true);
-            OllamaMemoryEnabledCheckBox.Unchecked += (s, e) => AppSettings.SaveOllamaMemoryEnabled(false);
+            // Wire immediate persistence for booleans & model using SettingsService
+            OllamaEnabledCheckBox.Checked += (s, e) => SaveSnapshot(enabled: true);
+            OllamaEnabledCheckBox.Unchecked += (s, e) => SaveSnapshot(enabled: false);
+            OllamaMemoryEnabledCheckBox.Checked += (s, e) => SaveSnapshot(memoryEnabled: true);
+            OllamaMemoryEnabledCheckBox.Unchecked += (s, e) => SaveSnapshot(memoryEnabled: false);
             OllamaModelComboBox.SelectionChanged += (s, e) =>
             {
                 var sel = OllamaModelComboBox.SelectedItem?.ToString();
                 if (!string.IsNullOrWhiteSpace(sel))
                 {
-                    // Persist via JSON settings pipeline and update live model immediately
-                    try
-                    {
-                        var svc = App.SettingsProvider;
-                        var curr = svc?.Current;
-                        if (svc != null && curr != null)
-                        {
-                            var next = curr with { Ollama = curr.Ollama with { Model = sel } };
-                            svc.Save(next);
-                        }
-                    }
-                    catch { }
+                    SaveSnapshot(model: sel);
                     OllamaService.SetDefaultModel(sel);
                 }
             };
@@ -50,13 +39,7 @@ namespace Kinectv1
                     {
                         var item = ProviderComboBox.SelectedItem as ComboBoxItem;
                         var provider = item?.Content?.ToString() ?? "Ollama";
-                        var svc = App.SettingsProvider;
-                        var curr = svc?.Current;
-                        if (svc != null && curr != null)
-                        {
-                            var next = curr with { Ollama = curr.Ollama with { Provider = provider } };
-                            svc.Save(next);
-                        }
+                        SaveSnapshot(provider: provider);
                         OllamaService.SetProvider(provider); // cancel in-flight and switch
                     }
                     catch (Exception ex) { Console.WriteLine($"Provider switch failed: {ex.Message}"); }
@@ -68,9 +51,13 @@ namespace Kinectv1
         {
             try
             {
-                OllamaEnabledCheckBox.IsChecked = AppSettings.LoadOllamaEnabled();
+                var snap = App.SettingsProvider?.Current;
+                var ol = snap?.Ollama;
+
+                OllamaEnabledCheckBox.IsChecked = ol?.Enabled ?? false;
+
                 // Provider
-                var provider = App.SettingsProvider?.Current?.Ollama?.Provider ?? "Ollama";
+                var provider = ol?.Provider ?? "Ollama";
                 foreach (var it in ProviderComboBox.Items)
                 {
                     if (it is ComboBoxItem cbi && string.Equals(cbi.Content?.ToString(), provider, StringComparison.OrdinalIgnoreCase))
@@ -80,19 +67,20 @@ namespace Kinectv1
                     }
                 }
 
-                // Read current model from JSON settings snapshot for persistence per docs
-                var model = App.SettingsProvider?.Current?.Ollama?.Model ?? string.Empty;
+                // Read current model from JSON settings snapshot
+                var model = ol?.Model ?? string.Empty;
                 OllamaModelComboBox.ItemsSource = null; // set later by refresh
                 OllamaModelComboBox.Text = model; // fallback visual until list loads
-                OllamaMemoryEnabledCheckBox.IsChecked = AppSettings.LoadOllamaMemoryEnabled();
-                MaxMsgsPerSpeakerTextBox.Text = AppSettings.LoadOllamaMaxMessagesPerSpeaker().ToString();
-                MaxSystemMsgsTextBox.Text = AppSettings.LoadOllamaMaxSystemMessages().ToString();
-                ConversationTimeoutTextBox.Text = AppSettings.LoadOllamaConversationTimeoutMinutes().ToString();
-                HistoryPathTextBox.Text = AppSettings.LoadConversationHistoryPath() ?? string.Empty;
-                SystemPromptPathTextBox.Text = AppSettings.LoadSystemPromptPath() ?? string.Empty;
+
+                OllamaMemoryEnabledCheckBox.IsChecked = ol?.MemoryEnabled ?? false;
+                MaxMsgsPerSpeakerTextBox.Text = (ol?.MaxMessagesPerSpeaker ?? 0).ToString();
+                MaxSystemMsgsTextBox.Text = (ol?.MaxSystemMessages ?? 0).ToString();
+                ConversationTimeoutTextBox.Text = (ol?.ConversationTimeoutMinutes ?? 0).ToString();
+                HistoryPathTextBox.Text = ol?.ConversationHistoryPath ?? string.Empty;
+                SystemPromptPathTextBox.Text = ol?.SystemPromptPath ?? string.Empty;
 
                 // Output think from snapshot
-                var outputThink = App.SettingsProvider?.Current?.Ollama?.OutputThink ?? false;
+                var outputThink = ol?.OutputThink ?? false;
                 OllamaOutputThinkCheckBox.IsChecked = outputThink;
 
                 Status("Settings loaded.");
@@ -150,56 +138,75 @@ namespace Kinectv1
             try
             {
                 var enabled = OllamaEnabledCheckBox.IsChecked == true;
-                try
-                {
-                    var svc = App.SettingsProvider; var curr = svc?.Current; if (svc != null && curr != null) { var next = curr with { Ollama = curr.Ollama with { Enabled = enabled } }; svc.Save(next); }
-                }
-                catch { AppSettings.SaveOllamaEnabled(enabled); }
-
-                // Provider
                 var provider = (ProviderComboBox.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "Ollama";
-                try
-                {
-                    var svc = App.SettingsProvider; var curr = svc?.Current; if (svc != null && curr != null) { var next = curr with { Ollama = curr.Ollama with { Provider = provider } }; svc.Save(next); }
-                }
-                catch { }
-                OllamaService.SetProvider(provider);
-
                 var model = (OllamaModelComboBox.SelectedItem?.ToString()) ?? (OllamaModelComboBox.Text ?? string.Empty);
-                try
-                {
-                    var svc = App.SettingsProvider; var curr = svc?.Current; if (svc != null && curr != null) { var next = curr with { Ollama = curr.Ollama with { Model = model } }; svc.Save(next); }
-                }
-                catch { AppSettings.SaveOllamaModel(model); }
-                if (!string.IsNullOrWhiteSpace(model))
-                    OllamaModelComboBox.SelectedItem = model;
-
                 var memEnabled = OllamaMemoryEnabledCheckBox.IsChecked == true;
-                try
-                {
-                    var svc = App.SettingsProvider; var curr = svc?.Current; if (svc != null && curr != null) { var next = curr with { Ollama = curr.Ollama with { MemoryEnabled = memEnabled } }; svc.Save(next); }
-                }
-                catch { AppSettings.SaveOllamaMemoryEnabled(memEnabled); }
-
-                if (int.TryParse(MaxMsgsPerSpeakerTextBox.Text, out var maxPerSpeaker))
-                    try { var svc = App.SettingsProvider; var curr = svc?.Current; if (svc != null && curr != null) { var next = curr with { Ollama = curr.Ollama with { MaxMessagesPerSpeaker = maxPerSpeaker } }; svc.Save(next); } } catch { AppSettings.SaveOllamaMaxMessagesPerSpeaker(maxPerSpeaker); }
-                if (int.TryParse(MaxSystemMsgsTextBox.Text, out var maxSys))
-                    try { var svc = App.SettingsProvider; var curr = svc?.Current; if (svc != null && curr != null) { var next = curr with { Ollama = curr.Ollama with { MaxSystemMessages = maxSys } }; svc.Save(next); } } catch { AppSettings.SaveOllamaMaxSystemMessages(maxSys); }
-                if (int.TryParse(ConversationTimeoutTextBox.Text, out var timeoutMin))
-                    try { var svc = App.SettingsProvider; var curr = svc?.Current; if (svc != null && curr != null) { var next = curr with { Ollama = curr.Ollama with { ConversationTimeoutMinutes = timeoutMin } }; svc.Save(next); } } catch { AppSettings.SaveOllamaConversationTimeoutMinutes(timeoutMin); }
-
-                try { var svc = App.SettingsProvider; var curr = svc?.Current; if (svc != null && curr != null) { var next = curr with { Ollama = curr.Ollama with { ConversationHistoryPath = HistoryPathTextBox.Text ?? string.Empty } }; svc.Save(next); } } catch { AppSettings.SaveConversationHistoryPath(HistoryPathTextBox.Text ?? string.Empty); }
-                try { var svc = App.SettingsProvider; var curr = svc?.Current; if (svc != null && curr != null) { var next = curr with { Ollama = curr.Ollama with { SystemPromptPath = SystemPromptPathTextBox.Text ?? string.Empty } }; svc.Save(next); } } catch { AppSettings.SaveSystemPromptPath(SystemPromptPathTextBox.Text ?? string.Empty); }
-
-                // Output think
+                int maxPerSpeaker; if (!int.TryParse(MaxMsgsPerSpeakerTextBox.Text, out maxPerSpeaker)) maxPerSpeaker = App.SettingsProvider?.Current?.Ollama?.MaxMessagesPerSpeaker ?? 0;
+                int maxSys; if (!int.TryParse(MaxSystemMsgsTextBox.Text, out maxSys)) maxSys = App.SettingsProvider?.Current?.Ollama?.MaxSystemMessages ?? 0;
+                int timeoutMin; if (!int.TryParse(ConversationTimeoutTextBox.Text, out timeoutMin)) timeoutMin = App.SettingsProvider?.Current?.Ollama?.ConversationTimeoutMinutes ?? 0;
+                var historyPath = HistoryPathTextBox.Text ?? string.Empty;
+                var systemPrompt = SystemPromptPathTextBox.Text ?? string.Empty;
                 var outputThink = OllamaOutputThinkCheckBox.IsChecked == true;
-                try { var svc = App.SettingsProvider; var curr = svc?.Current; if (svc != null && curr != null) { var next = curr with { Ollama = curr.Ollama with { OutputThink = outputThink } }; svc.Save(next); } } catch { }
+
+                SaveSnapshot(
+                    enabled: enabled,
+                    provider: provider,
+                    model: model,
+                    memoryEnabled: memEnabled,
+                    maxMessagesPerSpeaker: maxPerSpeaker,
+                    maxSystemMessages: maxSys,
+                    conversationTimeoutMinutes: timeoutMin,
+                    historyPath: historyPath,
+                    systemPromptPath: systemPrompt,
+                    outputThink: outputThink
+                );
 
                 Status("Settings saved.");
             }
             catch (Exception ex)
             {
                 Status($"Error saving settings: {ex.Message}", true);
+            }
+        }
+
+        private void SaveSnapshot(
+            bool? enabled = null,
+            string provider = null,
+            string model = null,
+            bool? memoryEnabled = null,
+            int? maxMessagesPerSpeaker = null,
+            int? maxSystemMessages = null,
+            int? conversationTimeoutMinutes = null,
+            string historyPath = null,
+            string systemPromptPath = null,
+            bool? outputThink = null)
+        {
+            try
+            {
+                var svc = App.SettingsProvider;
+                var curr = svc?.Current;
+                if (svc == null || curr == null) return;
+
+                var ol = curr.Ollama with
+                {
+                    Enabled = enabled ?? curr.Ollama.Enabled,
+                    Provider = provider ?? curr.Ollama.Provider,
+                    Model = model ?? curr.Ollama.Model,
+                    MemoryEnabled = memoryEnabled ?? curr.Ollama.MemoryEnabled,
+                    MaxMessagesPerSpeaker = maxMessagesPerSpeaker ?? curr.Ollama.MaxMessagesPerSpeaker,
+                    MaxSystemMessages = maxSystemMessages ?? curr.Ollama.MaxSystemMessages,
+                    ConversationTimeoutMinutes = conversationTimeoutMinutes ?? curr.Ollama.ConversationTimeoutMinutes,
+                    ConversationHistoryPath = historyPath ?? curr.Ollama.ConversationHistoryPath,
+                    SystemPromptPath = systemPromptPath ?? curr.Ollama.SystemPromptPath,
+                    OutputThink = outputThink ?? curr.Ollama.OutputThink
+                };
+
+                var next = curr with { Ollama = ol };
+                svc.Save(next);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Ollama settings save failed: {ex.Message}");
             }
         }
 

@@ -125,7 +125,7 @@ namespace Kinectv1
                     TextCommandsEnabled: textCommands ?? mb.TextCommandsEnabled
                 );
 
-                var next = new Kinectv1.Settings.AppSettings(curr.Audio, curr.Tts, curr.Vad, curr.Ollama, curr.Discord, nextMb);
+                var next = new Kinectv1.Settings.AppSettings(curr.Audio, curr.Tts, curr.Vad, curr.Ollama, curr.Discord, nextMb, curr.Ui, curr.Asr, curr.Stt, curr.Face, curr.App);
                 svc.Save(next);
             }
             catch (Exception ex)
