@@ -30,8 +30,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Compile Remove="src\UI\Settings\Editors\GeneralSettingsView.xaml.cs" />
-    <Page Remove="src\UI\Settings\Editors\GeneralSettingsView.xaml" />
+    <Compile Remove="src\UI\Settings\**\*.cs" />
+    <Page Remove="src\UI\Settings\**\*.xaml" />
   </ItemGroup>
 
   <Target Name="OrganizeDevLibs" BeforeTargets="Build">
@@ -188,19 +188,7 @@
     <None Remove="models\tts\SpeakerList.txt" />
     <None Remove="models\tts\symbols.txt" />
   </ItemGroup>
-  <ItemGroup>
-    <Compile Update="Properties\Settings.Designer.cs">
-      <DesignTimeSharedInput>True</DesignTimeSharedInput>
-      <AutoGen>True</AutoGen>
-      <DependentUpon>Settings.settings</DependentUpon>
-    </Compile>
-  </ItemGroup>
-  <ItemGroup>
-    <None Update="Properties\Settings.settings">
-      <Generator>SettingsSingleFileGenerator</Generator>
-      <LastGenOutput>Settings.Designer.cs</LastGenOutput>
-    </None>
-  </ItemGroup>
+
   <ItemGroup>
     <None Include=".github\copilot-instructions.md" />
     <None Include=".github\workflows\agent-bridge.yml" />
@@ -213,6 +201,12 @@
     <EmbeddedResource Include="Settings\default.json">
       <LogicalName>$(AssemblyName).Settings.default.json</LogicalName>
     </EmbeddedResource>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Folder Include="Settings\Validation\" />
+    <Folder Include="src\Audio\" />
+    <Folder Include="src\UI\Validation\" />
   </ItemGroup>
 
   <Target Name="VerifyRuntimeSetup" AfterTargets="Build">
@@ -237,7 +231,7 @@
     </PropertyGroup>
     <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(ProjectDir)download-discord-natives.ps1&quot;" WorkingDirectory="$(ProjectDir)" Condition="!Exists('$(OpusOut)') Or !Exists('$(SodiumOut)')" ContinueOnError="true" />
     <ItemGroup>
-      <DiscordLibs Include="$(ProjectDir)lib\discord\opus.dll;$(ProjectDir)lib\discord\libsodium.dll;$(ProjectDir)libs\opus.dll;$(ProjectDir)libs\libsodium.dll" />
+      <DiscordLibs Include="$(ProjectDir)lib\discord\opus.dll;$(ProjectDir)lib\discord\libsodium.dll" />
     </ItemGroup>
     <Copy SourceFiles="@(DiscordLibs)" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" Condition=" '@(DiscordLibs)' != '' " />
   </Target>

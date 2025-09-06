@@ -9,4 +9,5 @@
 - DO **NOT** CREATE FALL BACK HARDCODED SETTINGS.
 - DO **NOT** create shortcut code to solve issues.
 - SETTINGS should follow /docs/settings.md
+- Documentation found in /docs
 - **ALL** added settings should be persistant

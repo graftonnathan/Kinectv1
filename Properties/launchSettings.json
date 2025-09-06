@@ -1,8 +1,0 @@
-{
-  "profiles": {
-    "Kinectv1": {
-      "commandName": "Project",
-      "hotReloadEnabled": false
-    }
-  }
-}

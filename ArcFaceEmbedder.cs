@@ -18,31 +18,19 @@ public sealed class ArcFaceEmbedder : IDisposable
             if (!File.Exists(modelPath))
                 throw new FileNotFoundException("ArcFace model not found", modelPath);
 
-            // TEMPORARY: Use CPU-only to avoid CUDA issues
-            _arcface = CreateCpuOnlySession(modelPath);
+            // Create session via shared factory; request GPU (factory will gracefully fall back to CPU)
+            _arcface = Kinectv1.OnnxSessionFactory.Create(modelPath, requestedGpu: true, out _usingGpu);
 
             _inputName = _arcface.InputMetadata.Keys.First();
             _outputName = _arcface.OutputMetadata.Keys.First();
             
-            Console.WriteLine($"ArcFace loaded (CPU-ONLY) - {modelPath}");
+            Console.WriteLine($"ArcFace loaded ({(_usingGpu ? "GPU" : "CPU")}) - {modelPath}");
         }
         catch (Exception ex)
         {
             Console.WriteLine($"ArcFaceEmbedder failed to load: {ex.Message}");
             throw;
         }
-    }
-
-    private InferenceSession CreateCpuOnlySession(string modelPath)
-    {
-        // CPU-only for maximum stability
-        var cpuOptions = new SessionOptions();
-        cpuOptions.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL;
-        
-        var session = new InferenceSession(modelPath, cpuOptions);
-        _usingGpu = false;
-        Console.WriteLine("💻 ArcFace using CPU (stable mode)");
-        return session;
     }
 
     public float[] Embed(float[] chw112)
@@ -74,7 +62,7 @@ public sealed class ArcFaceEmbedder : IDisposable
         }
     }
 
-    public bool IsUsingGpu => _usingGpu; // Always false for now
+    public bool IsUsingGpu => _usingGpu;
 
     public void Dispose() => _arcface?.Dispose();
 }

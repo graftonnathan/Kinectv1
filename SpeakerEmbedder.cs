@@ -83,13 +83,13 @@ public static class SpeakerEmbedder
             // Dispose previous session if any before recreating
             try { _model?.Dispose(); } catch { }
 
-            // TEMP: Force CPU for isolation (avoid GPU EP for embedder)
-            var requestedGpu = false;
+            // Request GPU via shared factory (falls back to CPU if CUDA EP not available)
+            var requestedGpu = true;
             _model = Kinectv1.OnnxSessionFactory.Create(modelPath, requestedGpu, out _usingGpu);
             _lastModelPath = modelPath;
 
             var meta = _model.InputMetadata;
-            Console.WriteLine($"SpeakerEmbedder loaded (FORCED CPU) - {modelPath}");
+            Console.WriteLine($"SpeakerEmbedder loaded ({(_usingGpu ? "GPU" : "CPU")}) - {modelPath}");
             Console.WriteLine("Speaker model input nodes:");
             foreach (var name in meta.Keys)
             {
@@ -203,6 +203,8 @@ public static class SpeakerEmbedder
     public static bool IsUsingGpu => _usingGpu;
     public static bool IsLoaded => _model != null;
 }
+
+
 
 
 

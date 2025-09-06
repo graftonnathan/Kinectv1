@@ -4,9 +4,6 @@ using System.Windows;
 
 namespace Kinectv1.UI.Settings
 {
-    /// <summary>
-    /// ViewModel for individual settings categories in the TreeView
-    /// </summary>
     public class SettingsCategoryVM : INotifyPropertyChanged
     {
         private string _name;
@@ -46,10 +43,6 @@ namespace Kinectv1.UI.Settings
         }
     }
 
-    /// <summary>
-    /// Simple data class for the content displayed in the ContentPresenter
-    /// This is kept for backward compatibility but not used anymore.
-    /// </summary>
     public class SettingsEditorView
     {
         public string CategoryName { get; set; }

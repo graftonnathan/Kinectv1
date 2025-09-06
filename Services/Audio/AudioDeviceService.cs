@@ -363,46 +363,46 @@ namespace Kinectv1.Audio
         {
             try
             {
-                Console.WriteLine("🎧 === AUDIO DEVICE SERVICE DEMONSTRATION ===");
+                Console.WriteLine("?? === AUDIO DEVICE SERVICE DEMONSTRATION ===");
 
                 // Show input devices
-                Console.WriteLine("\n🎤 Input Devices:");
+                Console.WriteLine("\n?? Input Devices:");
                 var inputDevices = GetInputDevices();
                 foreach (var device in inputDevices)
                 {
-                    var testResult = TestDevice(device) ? "✅" : "❌";
+                    var testResult = TestDevice(device) ? "?" : "?";
                     Console.WriteLine($"   {device.StableId}: {device.FriendlyName} {testResult}");
                 }
 
                 // Show output devices
-                Console.WriteLine("\n🔊 Output Devices:");
+                Console.WriteLine("\n?? Output Devices:");
                 var outputDevices = GetOutputDevices();
                 foreach (var device in outputDevices)
                 {
-                    var testResult = TestDevice(device) ? "✅" : "❌";
+                    var testResult = TestDevice(device) ? "?" : "?";
                     Console.WriteLine($"   {device.StableId}: {device.FriendlyName} {testResult}");
                 }
 
                 // Test device resolution
-                Console.WriteLine("\n🔍 Device Resolution Test:");
+                Console.WriteLine("\n?? Device Resolution Test:");
                 if (inputDevices.Any())
                 {
                     var firstInput = inputDevices.First();
                     var resolved = TryResolveDevice(firstInput.StableId);
-                    Console.WriteLine($"   Test resolve '{firstInput.StableId}': {(resolved != null ? "✅ Success" : "❌ Failed")}");
+                    Console.WriteLine($"   Test resolve '{firstInput.StableId}': {(resolved != null ? "? Success" : "? Failed")}");
                 }
 
                 // Test graceful fallback
-                Console.WriteLine("\n🛡️ Graceful Fallback Test:");
+                Console.WriteLine("\n??? Graceful Fallback Test:");
                 var fakerId = "input_nonexistent_device_99";
                 var fallback = TryResolveDevice(fakerId);
-                Console.WriteLine($"   Test fallback for '{fakerId}': {(fallback != null ? $"✅ Fallback to {fallback.FriendlyName}" : "❌ No fallback")}");
+                Console.WriteLine($"   Test fallback for '{fakerId}': {(fallback != null ? $"? Fallback to {fallback.FriendlyName}" : "? No fallback")}");
 
-                Console.WriteLine("\n🎧 === END DEMONSTRATION ===");
+                Console.WriteLine("\n?? === END DEMONSTRATION ===");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"❌ Error in demonstration: {ex.Message}");
+                Console.WriteLine($"? Error in demonstration: {ex.Message}");
             }
         }
     }

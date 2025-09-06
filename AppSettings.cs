@@ -33,6 +33,9 @@ namespace Kinectv1
 
     public static partial class AppSettings
     {
+        // Legacy .settings section name retained for migration, no type dependency
+        private const string ConfigSettingsSectionName = "Kinectv1.Properties.Settings";
+
         // Thread-safe configuration access
         private static readonly object _configLock = new object();
 
@@ -48,7 +51,7 @@ namespace Kinectv1
         private static ClientSettingsSection GetClientSettingsSection(Configuration config, string groupName)
         {
             // groupName expected: "applicationSettings" or "userSettings"
-            var sectionName = typeof(Kinectv1.Properties.Settings).FullName;
+            var sectionName = ConfigSettingsSectionName;
             var group = config.SectionGroups[groupName];
             if (group == null) return null;
             return (group.Sections[sectionName] as ClientSettingsSection);
@@ -120,7 +123,7 @@ namespace Kinectv1
                     // Create group/section if missing
                     var appGroup = new ApplicationSettingsGroup();
                     config.SectionGroups.Add(groupName, appGroup);
-                    var sectionName = typeof(Kinectv1.Properties.Settings).FullName;
+                    var sectionName = ConfigSettingsSectionName;
                     section = new ClientSettingsSection();
                     appGroup.Sections.Add(sectionName, section);
                 }
@@ -147,7 +150,7 @@ namespace Kinectv1
                 target.Value.ValueXml.InnerText = value ?? string.Empty;
 
                 config.Save(ConfigurationSaveMode.Modified);
-                ConfigurationManager.RefreshSection($"{groupName}/{typeof(Kinectv1.Properties.Settings).FullName}");
+                ConfigurationManager.RefreshSection($"{groupName}/{ConfigSettingsSectionName}");
             }
         }
 
