@@ -107,7 +107,7 @@ public static class SpeakerEmbedder
     {
         try
         {
-            var path = Kinectv1.AppSettings.LoadSpeakerEmbeddingModelPath();
+            var path = Kinectv1.App.SettingsProvider?.Current?.Face?.SpeakerEmbeddingModelPath;
             if (string.IsNullOrWhiteSpace(path)) return false;
             var baseDir = AppDomain.CurrentDomain.BaseDirectory;
             var fullPath = Path.IsPathRooted(path) ? path : Path.Combine(baseDir, path);

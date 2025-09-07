@@ -185,7 +185,7 @@ namespace Kinectv1
                         var exec = Kinectv1.App.SettingsProvider?.Current?.Tts.Execution;
                         useGpu = (exec == Kinectv1.Settings.TtsExecution.GPU);
                     }
-                    catch { useGpu = AppSettings.LoadTtsUseGpu(); }
+                    catch { useGpu = false; }
 
                     CreateSession(useGpu);
 
@@ -266,7 +266,7 @@ namespace Kinectv1
                     {
                         useGpu = (Kinectv1.App.SettingsProvider?.Current?.Tts.Execution == Kinectv1.Settings.TtsExecution.GPU);
                     }
-                    catch { useGpu = AppSettings.LoadTtsUseGpu(); }
+                    catch { useGpu = false; }
 
                     CreateSession(useGpu);
                     Console.WriteLine($"[Kokoro] Session recreated using {(useGpu && _usingGpu ? "GPU" : "CPU")} ");
@@ -361,59 +361,6 @@ namespace Kinectv1
                     }
 
                     return; // prefer JSON path if present
-                }
-
-                // Legacy fallback retained in this method until UI migration completes
-                var folderLegacy = AppSettings.LoadTtsModelFolder();
-                if (!string.IsNullOrWhiteSpace(folderLegacy))
-                {
-                    var baseDir = NormalizeKokoroBaseDir(folderLegacy);
-                    if (Directory.Exists(baseDir))
-                    {
-                        _baseDir = baseDir;
-                        var onnxDir = Path.Combine(_baseDir, "onnx");
-                        if (Directory.Exists(onnxDir) && File.Exists(Path.Combine(onnxDir, "model_q8f16.onnx")))
-                            _modelPath = Path.Combine(onnxDir, "model_q8f16.onnx");
-                        else if (File.Exists(Path.Combine(_baseDir, "model_q8f16.onnx")))
-                            _modelPath = Path.Combine(_baseDir, "model_q8f16.onnx");
-                    }
-                }
-
-                var cfgLegacy = AppSettings.LoadTtsModelPath();
-                if (!string.IsNullOrWhiteSpace(cfgLegacy))
-                {
-                    var fullCfg = Path.IsPathRooted(cfgLegacy) ? cfgLegacy : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, cfgLegacy);
-                    string baseDir = null;
-
-                    if (File.Exists(fullCfg))
-                    {
-                        baseDir = Path.GetDirectoryName(fullCfg);
-                        _modelPath = fullCfg;
-                    }
-                    else if (Directory.Exists(fullCfg))
-                    {
-                        if (File.Exists(Path.Combine(fullCfg, "model_q8f16.onnx")))
-                        {
-                            _modelPath = Path.Combine(fullCfg, "model_q8f16.onnx");
-                            baseDir = Directory.GetParent(fullCfg)?.FullName ?? fullCfg;
-                        }
-                        else if (Directory.Exists(Path.Combine(fullCfg, "onnx")))
-                        {
-                            var onnx = Path.Combine(fullCfg, "onnx", "model_q8f16.onnx");
-                            _modelPath = onnx;
-                            baseDir = fullCfg;
-                        }
-                        else
-                        {
-                            baseDir = fullCfg;
-                            _modelPath = Path.Combine(fullCfg, "onnx", "model_q8f16.onnx");
-                        }
-                    }
-
-                    if (!string.IsNullOrEmpty(baseDir) && Directory.Exists(baseDir))
-                    {
-                        _baseDir = NormalizeKokoroBaseDir(baseDir);
-                    }
                 }
             }
             catch (Exception ex)
@@ -762,8 +709,8 @@ namespace Kinectv1
 
                 if (_ttsDebug)
                 {
-                    Console.WriteLine($"[TTS] eSpeak expected: {localDir}");
-                    Console.WriteLine($"[TTS] eSpeak resolved: {exe}");
+                    Console.WriteLine("[TTS] eSpeak expected: " + localDir);
+                    Console.WriteLine("[TTS] eSpeak resolved: " + exe);
                 }
 
                 _ipaService = new EspeakIpaNet48(exe, "en-us");

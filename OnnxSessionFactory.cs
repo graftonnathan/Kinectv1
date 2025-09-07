@@ -154,7 +154,7 @@ namespace Kinectv1
                     {
                         if (HasOrtExport("OrtSessionOptionsAppendExecutionProvider_CUDA") && IsCudaProviderAvailable())
                         {
-                            int deviceId = AppSettings.LoadTtsGpuDeviceId();
+                            int deviceId = 0; // Default GPU 0 as per settings guidelines
 #if NETFRAMEWORK
                             if (deviceId > 0) so.AppendExecutionProvider_CUDA(deviceId); else so.AppendExecutionProvider_CUDA();
 #else

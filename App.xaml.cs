@@ -111,7 +111,7 @@ namespace Kinectv1
                 // STT (Vosk) model directory presence
                 try
                 {
-                    var sttDir = AppSettings.LoadSttModelPath();
+                    var sttDir = SettingsProvider?.Current?.Stt?.ModelPath;
                     if (!string.IsNullOrWhiteSpace(sttDir))
                     {
                         var sttFull = Path.IsPathRooted(sttDir) ? sttDir : Path.Combine(baseDir, sttDir);

@@ -52,7 +52,7 @@ namespace Kinectv1
                     if (initSuccess)
                     {
                         // Enable TTS based on saved settings
-                        var ttsEnabled = AppSettings.LoadTtsEnabled();
+                        var ttsEnabled = Kinectv1.App.SettingsProvider?.Current?.Tts?.Enabled ?? false;
                         CoquiTtsService.SetEnabled(ttsEnabled);
                         
                         _isStarted = true;

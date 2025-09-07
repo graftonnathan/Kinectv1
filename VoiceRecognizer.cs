@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using NAudio.Wave;
 using Vosk;
+using Kinectv1.Settings; // new settings enums and snapshot access
 
 namespace Kinectv1
 {
@@ -92,7 +93,8 @@ namespace Kinectv1
         {
             try
             {
-                _cachedAudioMode = AppSettings.LoadAudioInMode();
+                var modeJson = Kinectv1.App.SettingsProvider?.Current?.App?.InputMode;
+                _cachedAudioMode = modeJson.HasValue ? (AudioInMode)modeJson.Value : AudioInMode.LocalMic;
             }
             catch { _cachedAudioMode = AudioInMode.LocalMic; }
 
@@ -182,7 +184,7 @@ namespace Kinectv1
             if (_speakerEmbedderLoaded) return;
             try
             {
-                var modelPath = AppSettings.LoadSpeakerEmbeddingModelPath();
+                var modelPath = Kinectv1.App.SettingsProvider?.Current?.Face?.SpeakerEmbeddingModelPath;
                 if (!string.IsNullOrWhiteSpace(modelPath))
                 {
                     var baseDir = AppDomain.CurrentDomain.BaseDirectory;
@@ -658,7 +660,8 @@ namespace Kinectv1
                 else
                 {
                     // Fallback to persisted selection (supports third-party modes like Mumble/SystemLoopback)
-                    _cachedAudioMode = AppSettings.LoadAudioInMode();
+                    var modeJson = Kinectv1.App.SettingsProvider?.Current?.App?.InputMode;
+                    _cachedAudioMode = modeJson.HasValue ? (AudioInMode)modeJson.Value : AudioInMode.LocalMic;
                 }
             }
             catch { _cachedAudioMode = AudioInMode.LocalMic; }

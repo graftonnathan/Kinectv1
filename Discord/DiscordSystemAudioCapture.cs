@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Threading;
 using NAudio.Wave;
+using Kinectv1.Settings;
 
 namespace Kinectv1.Discord
 {
@@ -22,7 +23,7 @@ namespace Kinectv1.Discord
                 if (_isRunning) return;
 
                 // Guard: Do not start system loopback when Discord voice ingest is active
-                var audioMode = AppSettings.LoadAudioInMode();
+                var audioMode = Kinectv1.App.SettingsProvider?.Current?.App?.InputMode ?? AudioInMode.LocalMic;
                 if (audioMode == AudioInMode.DiscordVoice)
                 {
                     Console.WriteLine("🚫 System loopback capture blocked - Discord voice ingest is active");

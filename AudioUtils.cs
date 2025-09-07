@@ -20,7 +20,8 @@ public static class AudioUtils
         {
             try
             {
-                _cachedVadThreshold = Kinectv1.AppSettings.LoadVoiceActivityThreshold();
+                var v = Kinectv1.App.SettingsProvider?.Current?.Audio?.VadThreshold ?? 300;
+                _cachedVadThreshold = (float)v;
                 Console.WriteLine($"🎙️ VAD threshold loaded: {_cachedVadThreshold.Value:F0}");
             }
             catch (Exception ex)
@@ -258,7 +259,7 @@ public static class AudioUtils
 
             lock (_frameLock)
             {
-                var completeFrames = new List<float[]>();
+                var completeFrames = new System.Collections.Generic.List<float[]>();
                 int inputOffset = 0;
 
                 while (inputOffset < samples.Length)

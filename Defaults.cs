@@ -1,6 +1,7 @@
 // Defaults.cs
 using System;
 using System.Collections.Generic;
+using Kinectv1.Settings; // new settings pipeline
 
 namespace Kinectv1
 {
@@ -12,6 +13,7 @@ namespace Kinectv1
     {
         /// <summary>
         /// Voice and Audio Processing defaults
+        /// (Kept for UI hints only; persistence uses SettingsService defaults)
         /// </summary>
         public static class Voice
         {
@@ -27,7 +29,7 @@ namespace Kinectv1
         }
 
         /// <summary>
-        /// Text-to-Speech defaults
+        /// Text-to-Speech defaults (UI hints only)
         /// </summary>
         public static class Tts
         {
@@ -43,7 +45,7 @@ namespace Kinectv1
         }
 
         /// <summary>
-        /// Speech-to-Text defaults
+        /// Speech-to-Text defaults (UI hints only)
         /// </summary>
         public static class Stt
         {
@@ -53,7 +55,7 @@ namespace Kinectv1
         }
 
         /// <summary>
-        /// Discord Bot defaults
+        /// Discord Bot defaults (UI hints only)
         /// </summary>
         public static class Discord
         {
@@ -65,7 +67,7 @@ namespace Kinectv1
         }
 
         /// <summary>
-        /// Ollama AI defaults
+        /// Ollama AI defaults (UI hints only)
         /// </summary>
         public static class Ollama
         {
@@ -81,7 +83,7 @@ namespace Kinectv1
         }
 
         /// <summary>
-        /// Kinect and Face Tracking defaults
+        /// Kinect and Face Tracking defaults (UI hints only)
         /// </summary>
         public static class Kinect
         {
@@ -92,25 +94,25 @@ namespace Kinectv1
         }
 
         /// <summary>
-        /// Audio Device and Processing defaults
+        /// Audio Device and Processing defaults (UI hints only)
         /// </summary>
         public static class Audio
         {
-            public const AudioInMode AudioInMode = Kinectv1.AudioInMode.LocalMic;
+            public const AudioInMode AudioInMode = Settings.AudioInMode.LocalMic;
             public const bool SystemAudioEnabled = false;
         }
 
         /// <summary>
-        /// UI and Application defaults
+        /// UI and Application defaults (UI hints only)
         /// </summary>
         public static class Ui
         {
             public const bool DarkMode = true;
-            public const AppScenario AppScenario = Kinectv1.AppScenario.Local;
+            public const AppScenario AppScenario = Settings.AppScenario.Local;
         }
 
         /// <summary>
-        /// Telemetry and Logging defaults
+        /// Telemetry and Logging defaults (UI hints only)
         /// </summary>
         public static class Telemetry
         {
@@ -119,7 +121,7 @@ namespace Kinectv1
         }
 
         /// <summary>
-        /// Window Settings defaults
+        /// Window Settings defaults (UI hints only)
         /// </summary>
         public static class Window
         {
@@ -174,7 +176,7 @@ namespace Kinectv1
         }
 
         /// <summary>
-        /// Apply defaults for a specific category
+        /// Apply defaults for a specific category using SettingsService overlays
         /// </summary>
         public static void ApplyCategory(string category)
         {
@@ -205,10 +207,10 @@ namespace Kinectv1
                     ApplyUiDefaults();
                     break;
                 case "telemetry":
-                    AppSettings.SaveTelemetryEnabled(Telemetry.TelemetryEnabled);
+                    // No-op in new pipeline; telemetry not persisted via settings.json
                     break;
                 case "window":
-                    AppSettings.SaveWindowSettings(Window.Width, Window.Height, Window.Left, Window.Top, Window.WindowState);
+                    // No-op: window geometry not persisted via settings.json in new pipeline
                     break;
                 case "all":
                     ApplyAllDefaults();
@@ -219,83 +221,75 @@ namespace Kinectv1
         }
 
         /// <summary>
-        /// Apply all default settings across all categories
+        /// Apply all default settings: reset user overrides file and reload
         /// </summary>
         public static void ApplyAllDefaults()
         {
-            ApplyVoiceDefaults();
-            ApplyTtsDefaults();
-            ApplySttDefaults();
-            ApplyDiscordDefaults();
-            ApplyOllamaDefaults();
-            ApplyKinectDefaults();
-            ApplyAudioDefaults();
-            ApplyUiDefaults();
-            AppSettings.SaveTelemetryEnabled(Telemetry.TelemetryEnabled);
-            AppSettings.SaveWindowSettings(Window.Width, Window.Height, Window.Left, Window.Top, Window.WindowState);
+            try { App.SettingsProvider?.ResetToDefaults(); } catch { }
         }
 
         private static void ApplyVoiceDefaults()
         {
-            AppSettings.SaveVoiceThreshold(Voice.VoiceThreshold);
-            AppSettings.SaveVoiceActivityThreshold(Voice.VoiceActivityThreshold);
-            AppSettings.SaveDiscordVoiceActivityThreshold(Voice.DiscordVoiceActivityThreshold);
-            AppSettings.SaveVadSilenceTimeoutMs(Voice.VadSilenceTimeoutMs);
-            AppSettings.SaveVadDebounceTimeoutMs(Voice.VadDebounceTimeoutMs);
-            AppSettings.SaveVoiceConfidenceThreshold(Voice.VoiceConfidenceThreshold);
-            AppSettings.SaveVoiceHighConfidenceThreshold(Voice.VoiceHighConfidenceThreshold);
-            AppSettings.SaveVoiceConfidenceBufferSize(Voice.VoiceConfidenceBufferSize);
-            AppSettings.SaveBargeInEnabled(Voice.BargeInEnabled);
+            var svc = App.SettingsProvider; var curr = svc?.Current; if (svc == null || curr == null) return;
+            var defs = svc.GetDefaultsEffective();
+            var next = curr with { Audio = defs.Audio, Vad = defs.Vad, Asr = defs.Asr };
+            svc.Save(next);
         }
 
         private static void ApplyTtsDefaults()
         {
-            AppSettings.SaveTtsEnabled(Tts.TtsEnabled);
-            AppSettings.SaveTtsUseGpu(Tts.TtsUseGpu);
-            AppSettings.SaveTtsModelPath(Tts.TtsModelPath);
-            AppSettings.SaveTtsModelFolder(Tts.TtsModelFolder);
-            AppSettings.SaveTtsSymbolsPath(Tts.TtsSymbolsPath);
-            AppSettings.SaveTtsCmudictPath(Tts.TtsCmudictPath);
-            AppSettings.SaveTtsOutputDevice(Tts.TtsOutputDevice);
-            AppSettings.SaveLocalTtsVolume(Tts.TtsVolumeScale);
+            var svc = App.SettingsProvider; var curr = svc?.Current; if (svc == null || curr == null) return;
+            var defs = svc.GetDefaultsEffective();
+            var next = curr with { Tts = defs.Tts };
+            svc.Save(next);
         }
 
         private static void ApplySttDefaults()
         {
-            AppSettings.SaveSttModelPath(Stt.SttModelPath);
-            AppSettings.SaveSttInputDevice(Stt.SttInputDevice);
+            var svc = App.SettingsProvider; var curr = svc?.Current; if (svc == null || curr == null) return;
+            var defs = svc.GetDefaultsEffective();
+            var next = curr with { Stt = defs.Stt };
+            svc.Save(next);
         }
 
         private static void ApplyDiscordDefaults()
         {
-            AppSettings.SaveDiscordBotEnabled(Discord.DiscordBotEnabled);
-            AppSettings.SaveDiscordBotToken(Discord.DiscordBotToken);
-            AppSettings.SaveDiscordAutoJoinVoice(Discord.DiscordAutoJoinVoice);
+            var svc = App.SettingsProvider; var curr = svc?.Current; if (svc == null || curr == null) return;
+            var defs = svc.GetDefaultsEffective();
+            var next = curr with { Discord = defs.Discord };
+            svc.Save(next);
         }
 
         private static void ApplyOllamaDefaults()
         {
-            AppSettings.SaveOllamaEnabled(Ollama.OllamaEnabled);
-            AppSettings.SaveOllamaModel(Ollama.OllamaModel);
-            AppSettings.SaveOllamaMemoryEnabled(Ollama.OllamaMemoryEnabled);
-            AppSettings.SaveConversationHistoryPath(Ollama.ConversationHistoryPath);
-            AppSettings.SaveSystemPromptPath(Ollama.SystemPromptPath);
+            var svc = App.SettingsProvider; var curr = svc?.Current; if (svc == null || curr == null) return;
+            var defs = svc.GetDefaultsEffective();
+            var next = curr with { Ollama = defs.Ollama };
+            svc.Save(next);
         }
 
         private static void ApplyKinectDefaults()
         {
-            AppSettings.SaveFaceThreshold(Kinect.FaceThreshold);
+            var svc = App.SettingsProvider; var curr = svc?.Current; if (svc == null || curr == null) return;
+            var defs = svc.GetDefaultsEffective();
+            var next = curr with { Face = defs.Face };
+            svc.Save(next);
         }
 
         private static void ApplyAudioDefaults()
         {
-            AppSettings.SaveAudioInMode(Audio.AudioInMode);
+            var svc = App.SettingsProvider; var curr = svc?.Current; if (svc == null || curr == null) return;
+            var defs = svc.GetDefaultsEffective();
+            var next = curr with { App = defs.App };
+            svc.Save(next);
         }
 
         private static void ApplyUiDefaults()
         {
-            AppSettings.SaveDarkMode(Ui.DarkMode);
-            AppSettings.SaveAppScenario(Ui.AppScenario);
+            var svc = App.SettingsProvider; var curr = svc?.Current; if (svc == null || curr == null) return;
+            var defs = svc.GetDefaultsEffective();
+            var next = curr with { Ui = defs.Ui, App = curr.App with { Scenario = defs.App.Scenario } };
+            svc.Save(next);
         }
 
         /// <summary>
@@ -320,7 +314,7 @@ namespace Kinectv1
         }
         
         /// <summary>
-        /// Face Processing defaults
+        /// Face Processing defaults (UI hints only)
         /// </summary>
         public static class Face
         {

@@ -304,8 +304,8 @@ namespace Kinectv1.Discord
         {
             try
             {
-                var token = AppSettings.LoadDiscordBotToken();
-                var enabled = AppSettings.LoadDiscordBotEnabled();
+                var token = Kinectv1.App.SettingsProvider?.Current?.Discord?.Token;
+                var enabled = Kinectv1.App.SettingsProvider?.Current?.Discord?.Enabled ?? false;
                 if (!enabled)
                 {
                     Console.WriteLine("Discord bot disabled in settings");
@@ -392,7 +392,7 @@ namespace Kinectv1.Discord
                 if (Interlocked.CompareExchange(ref _modulesRegistered, 1, 0) == 0)
                     await _commands.AddModuleAsync<DiscordNetVoiceCommands>(null);
 
-                await clientToUse.LoginAsync(TokenType.Bot, AppSettings.LoadDiscordBotToken());
+                await clientToUse.LoginAsync(TokenType.Bot, Kinectv1.App.SettingsProvider?.Current?.Discord?.Token);
                 await clientToUse.StartAsync();
 
                 var readyTimeout = DateTime.UtcNow.AddSeconds(30);
@@ -427,7 +427,7 @@ namespace Kinectv1.Discord
         {
             try
             {
-                if (!_isRunning || !AppSettings.LoadDiscordBotEnabled()) return;
+                if (!_isRunning || !(Kinectv1.App.SettingsProvider?.Current?.Discord?.Enabled ?? false)) return;
                 if (!VoiceRecognizer.IsDiscordInputEnabled()) return;
                 if (audioData?.Length < 100) return;
 
@@ -593,9 +593,9 @@ namespace Kinectv1.Discord
         {
             try
             {
-                var enabled = AppSettings.LoadDiscordBotEnabled();
-                var token = AppSettings.LoadDiscordBotToken();
-                var prefix = AppSettings.LoadDiscordBotPrefix();
+                var enabled = Kinectv1.App.SettingsProvider?.Current?.Discord?.Enabled ?? false;
+                var token = Kinectv1.App.SettingsProvider?.Current?.Discord?.Token;
+                var prefix = Kinectv1.App.SettingsProvider?.Current?.Discord?.Prefix;
                 
                 var connectionState = _client?.ConnectionState.ToString() ?? "Disconnected";
                 var guildCount = _client?.Guilds?.Count ?? 0;
@@ -816,7 +816,7 @@ namespace Kinectv1.Discord
 
         private static async Task<bool> SendTtsToDiscordCoreAsync(string text, string speakerRefId, CancellationToken ct, int generation)
         {
-            Console.WriteLine($"[TTS] Enter SendTtsToDiscordCoreAsync gen={generation}. Connected={( _currentAudioClient!=null ? _currentAudioClient.ConnectionState.ToString():"null")} SpeakerRef={speakerRefId ?? AppSettings.LoadTtsSpeaker()} TextLen={text?.Length ?? 0}");
+            Console.WriteLine($"[TTS] Enter SendTtsToDiscordCoreAsync gen={generation}. Connected={( _currentAudioClient!=null ? _currentAudioClient.ConnectionState.ToString():"null")} SpeakerRef={speakerRefId ?? Kinectv1.App.SettingsProvider?.Current?.Tts?.Speaker} TextLen={text?.Length ?? 0}");
             ct.ThrowIfCancellationRequested();
 
             if (_currentAudioClient == null || _currentAudioClient.ConnectionState != ConnectionState.Connected)
@@ -830,7 +830,7 @@ namespace Kinectv1.Discord
                 return false;
             }
 
-            var currentSpeaker = speakerRefId ?? AppSettings.LoadTtsSpeaker();
+            var currentSpeaker = speakerRefId ?? Kinectv1.App.SettingsProvider?.Current?.Tts?.Speaker;
 
             // 1) TTS: float[] at 24,000 Hz (Kokoro native), mono
             var audioFloatData = await CoquiTtsService.GenerateAudioDataAsync(text, currentSpeaker);
@@ -842,7 +842,7 @@ namespace Kinectv1.Discord
             }
 
             // 2) Convert float [-1..1] -> PCM16 bytes at Kokoro's native rate (mono)
-            float gain = Math.Max(0f, (float)AppSettings.LoadDiscordTtsVolume());
+            float gain = Math.Max(0f, (float)(Kinectv1.App.SettingsProvider?.Current?.Tts?.DiscordVolume ?? 1.0));
             byte[] pcm22050 = FloatsToPcm16(audioFloatData, gain);
 
             // 3) Resample to 48000 Hz, 2 channels (Discord.Net handles Opus)
@@ -984,7 +984,7 @@ namespace Kinectv1.Discord
         {
             try
             {
-                var message = messageParam as SocketUserMessage; if (message == null) return; int argPos = 0; var prefix = AppSettings.LoadDiscordBotPrefix();
+                var message = messageParam as SocketUserMessage; if (message == null) return; int argPos = 0; var prefix = Kinectv1.App.SettingsProvider?.Current?.Discord?.Prefix;
                 if (!(message.HasStringPrefix(prefix, ref argPos) || message.HasMentionPrefix(_client.CurrentUser, ref argPos)) || message.Author.IsBot) return;
                 var context = new SocketCommandContext(_client, message);
                 var result = await _commands.ExecuteAsync(context, argPos, null);

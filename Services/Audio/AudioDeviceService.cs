@@ -273,7 +273,7 @@ namespace Kinectv1.Audio
         {
             try
             {
-                var stableId = AppSettings.LoadSttInputDevice();
+                var stableId = Kinectv1.App.SettingsProvider?.Current?.Stt?.InputDevice;
                 if (string.IsNullOrEmpty(stableId) || stableId == "Default")
                 {
                     // Return first available input device as default
@@ -306,7 +306,7 @@ namespace Kinectv1.Audio
         {
             try
             {
-                var stableId = AppSettings.LoadTtsOutputDevice();
+                var stableId = Kinectv1.App.SettingsProvider?.Current?.Tts?.OutputDevice;
                 if (string.IsNullOrEmpty(stableId) || stableId == "Default")
                 {
                     // Return first available output device as default
@@ -339,8 +339,21 @@ namespace Kinectv1.Audio
         {
             if (device?.IsInputDevice == true)
             {
-                AppSettings.SaveSttInputDevice(device.StableId);
-                Console.WriteLine($"STT: Saved input device stable ID: {device.StableId} ({device.FriendlyName})");
+                try
+                {
+                    var svc = Kinectv1.App.SettingsProvider;
+                    var curr = svc?.Current;
+                    if (svc != null && curr != null)
+                    {
+                        var next = curr with { Stt = curr.Stt with { InputDevice = device.StableId } };
+                        svc.Save(next);
+                    }
+                    Console.WriteLine($"STT: Saved input device stable ID: {device.StableId} ({device.FriendlyName})");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"? Failed to persist input device: {ex.Message}");
+                }
             }
         }
 
@@ -351,8 +364,21 @@ namespace Kinectv1.Audio
         {
             if (device?.IsInputDevice == false)
             {
-                AppSettings.SaveTtsOutputDevice(device.StableId);
-                Console.WriteLine($"TTS: Saved output device stable ID: {device.StableId} ({device.FriendlyName})");
+                try
+                {
+                    var svc = Kinectv1.App.SettingsProvider;
+                    var curr = svc?.Current;
+                    if (svc != null && curr != null)
+                    {
+                        var next = curr with { Tts = curr.Tts with { OutputDevice = device.StableId } };
+                        svc.Save(next);
+                    }
+                    Console.WriteLine($"TTS: Saved output device stable ID: {device.StableId} ({device.FriendlyName})");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"? Failed to persist output device: {ex.Message}");
+                }
             }
         }
 

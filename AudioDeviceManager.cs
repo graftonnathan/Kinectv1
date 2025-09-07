@@ -274,7 +274,7 @@ namespace Kinectv1
         {
             try
             {
-                var deviceName = AppSettings.LoadSttInputDevice();
+                var deviceName = Kinectv1.App.SettingsProvider?.Current?.Stt?.InputDevice;
                 if (!string.IsNullOrEmpty(deviceName) && deviceName != "Default")
                 {
                     var deviceNumber = GetInputDeviceNumberByName(deviceName);
@@ -322,7 +322,7 @@ namespace Kinectv1
         {
             try
             {
-                var deviceName = AppSettings.LoadTtsOutputDevice();
+                var deviceName = Kinectv1.App.SettingsProvider?.Current?.Tts?.OutputDevice;
                 if (!string.IsNullOrEmpty(deviceName) && deviceName != "Default")
                 {
                     var deviceNumber = GetOutputDeviceNumberByName(deviceName);
@@ -442,7 +442,7 @@ namespace Kinectv1
                             DesiredLatency = 100 // 80–120 ms recommended; tune for your device
                         };
                         if (deviceNumber >= 0) waveOut.DeviceNumber = deviceNumber;
-                        waveOut.Volume = (float)AppSettings.LoadLocalTtsVolume();
+                        waveOut.Volume = (float)(Kinectv1.App.SettingsProvider?.Current?.Tts?.LocalVolume ?? 1.0);
                         waveOut.Init(rss);
                         waveOut.Play();
 

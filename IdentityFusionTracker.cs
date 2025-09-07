@@ -233,10 +233,11 @@ namespace Kinectv1
         private static void RecomputeFusion(ref IdentityEntry entry)
         {
             var now = DateTime.UtcNow;
-            var halfLifeMs = AppSettings.LoadFusionDecayHalfLifeMs();
-            var faceWeight = AppSettings.LoadFusionFaceWeight();
-            var voiceWeight = AppSettings.LoadFusionVoiceWeight();
-            var unknownThreshold = AppSettings.LoadFusionUnknownThreshold();
+            var face = Kinectv1.App.SettingsProvider?.Current?.Face;
+            var halfLifeMs = face?.FusionDecayHalfLifeMs ?? 1000;
+            var faceWeight = face?.FusionFaceWeight ?? 0.5;
+            var voiceWeight = face?.FusionVoiceWeight ?? 0.5;
+            var unknownThreshold = face?.FusionUnknownThreshold ?? 0.5;
 
             // Apply time decay to face score
             float decayedFaceScore = 0.0f;
@@ -255,7 +256,7 @@ namespace Kinectv1
             }
 
             // Compute weighted fusion score
-            float fusedScore = (decayedFaceScore * faceWeight + decayedVoiceScore * voiceWeight) / (faceWeight + voiceWeight);
+            float fusedScore = (float)((decayedFaceScore * faceWeight + decayedVoiceScore * voiceWeight) / (faceWeight + voiceWeight));
             
             // Determine fused name
             string fusedName = "Unknown";

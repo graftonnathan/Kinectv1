@@ -20,7 +20,7 @@ namespace Kinectv1
                 }
 
                 // Use configurable threshold from settings
-                var threshold = Kinectv1.AppSettings.LoadSpeakerMatchMinScore();
+                var threshold = (float)(Kinectv1.App.SettingsProvider?.Current?.Audio?.SpeakerMatchMinScore ?? _defaultThreshold);
                 var match = MemoryStore.MatchBestVoice(embedding, thresholdCos: threshold);
                 
                 if (match.HasValue)
@@ -95,7 +95,7 @@ namespace Kinectv1
         public static float GetDefaultThreshold()
         {
             // Return threshold from settings instead of hardcoded value
-            return Kinectv1.AppSettings.LoadSpeakerMatchMinScore();
+            return (float)(Kinectv1.App.SettingsProvider?.Current?.Audio?.SpeakerMatchMinScore ?? _defaultThreshold);
         }
 
         public static void EnrollSpeaker(string name, float[] embedding)
@@ -176,7 +176,7 @@ namespace Kinectv1
                     Console.WriteLine($"  Total: {count} enrolled speaker(s)");
                 }
                 // Print threshold from settings (not legacy field)
-                var current = Kinectv1.AppSettings.LoadSpeakerMatchMinScore();
+                var current = (float)(Kinectv1.App.SettingsProvider?.Current?.Audio?.SpeakerMatchMinScore ?? _defaultThreshold);
                 Console.WriteLine($"🔧 Current system threshold: {current:F3}");
                 
                 // Show Discord speaker hint status
@@ -195,7 +195,7 @@ namespace Kinectv1
         public static void TestRecognitionWithLowerThreshold(float[] embedding)
         {
             Console.WriteLine("🧪 Testing voice recognition with multiple thresholds:");
-            var current = Kinectv1.AppSettings.LoadSpeakerMatchMinScore();
+            var current = (float)(Kinectv1.App.SettingsProvider?.Current?.Audio?.SpeakerMatchMinScore ?? _defaultThreshold);
             Console.WriteLine($"   Current system threshold: {current:F3}");
             
             var thresholds = new float[] { 0.10f, 0.15f, 0.20f, 0.25f, 0.30f, 0.35f, 0.40f, 0.45f, 0.50f };

@@ -50,7 +50,7 @@ namespace Kinectv1
                 Console.WriteLine("🤖 Starting Discord Bot service...");
                 
                 // Check if Discord is enabled in settings
-                if (!AppSettings.LoadDiscordBotEnabled())
+                if (!(Kinectv1.App.SettingsProvider?.Current?.Discord?.Enabled ?? false))
                 {
                     Console.WriteLine("🤖 Discord Bot service disabled in settings, skipping startup");
                     return;

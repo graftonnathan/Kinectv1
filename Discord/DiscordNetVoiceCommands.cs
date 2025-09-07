@@ -35,7 +35,7 @@ namespace Kinectv1.Discord
         
         // CRITICAL 4006 PREVENTION: Global lock for Discord voice operations
         private static readonly SemaphoreSlim _discordVoiceOperationLock = Kinectv1.Discord.DiscordNetBotManager.VoiceOpLock;
-        
+
         #region Native Library Verification
 
         [DllImport("opus", CallingConvention = CallingConvention.Cdecl)]
@@ -268,9 +268,6 @@ namespace Kinectv1.Discord
                     Console.WriteLine($"ℹ️ No existing voice state to clean up");
                 }
 
-
-
-
                 await ReplyAsync($"🎯 Connecting to **{target.Name}** with enhanced handshake...");
 
                 // STEP 2: Use the enhanced voice join method with handshake state machine
@@ -341,9 +338,6 @@ namespace Kinectv1.Discord
 
                 Console.WriteLine($"🎉 === ENHANCED VOICE JOIN SUCCESS ===");
                 await ReplyAsync($"🎉 Joined **{target.Name}** successfully with enhanced handshake! (Connection state: {audioClient.ConnectionState})");
-
-
-
 
             }
             catch (InvalidOperationException opEx) when (opEx.Message.Contains("Client is not logged in"))
@@ -494,20 +488,75 @@ namespace Kinectv1.Discord
                     .WithColor(Color.Blue)
                     .WithTimestamp(DateTimeOffset.UtcNow);
 
-                // Discord.Net Bot Status
+                // Bot status
                 var botStatus = DiscordNetBotManager.GetStatusSummary();
                 embed.AddField("?? Discord.Net Bot", $"```{botStatus}```", false);
 
-                // Native Libraries Status with verification
-                var nativeStatus = GetNativeLibraryStatus();
+                // Inline native library status
+                string nativeStatus;
+                try
+                {
+                    var loaded = DiscordNativeLoader.AreLibrariesLoaded;
+                    var sodium = sodium_init();
+                    var opusPtr = opus_get_version_string();
+                    var opusVer = Marshal.PtrToStringAnsi(opusPtr);
+                    nativeStatus = $"Libraries Loaded: {(loaded ? "? Yes" : "? No")}\n" +
+                                   $"Sodium Init: {(sodium >= 0 ? "? OK" : "? Failed")}\n" +
+                                   $"Opus Version: {(string.IsNullOrEmpty(opusVer) ? "? Failed" : "? " + opusVer)}\n" +
+                                   $"Process: {(Environment.Is64BitProcess ? "x64 ?" : "x86 ??")}";
+                }
+                catch (Exception ex)
+                {
+                    nativeStatus = $"Status: ? Error\n{ex.Message}";
+                }
                 embed.AddField("?? Native Libraries", $"```{nativeStatus}```", false);
 
-                // Voice Recognition Status
-                var voiceStatus = GetVoiceRecognitionStatus();
+                // Inline voice recognition status
+                string voiceStatus;
+                try
+                {
+                    if (VoiceRecognizer.IsReady())
+                    {
+                        var micEnabled = VoiceRecognizer.IsMicrophoneInputEnabled();
+                        var discordEnabled = VoiceRecognizer.IsDiscordInputEnabled();
+                        var (queueSize, isProcessing) = VoiceRecognizer.GetExternalAudioStats();
+                        voiceStatus = $"Status: ? Ready\n" +
+                                      $"Microphone: {(micEnabled ? "? Enabled" : "? Disabled")}\n" +
+                                      $"Discord: {(discordEnabled ? "? Enabled" : "? Disabled")}\n" +
+                                      $"Queue size: {queueSize}\n" +
+                                      $"Processing: {(isProcessing ? "?? Active" : "?? Idle")}";
+                    }
+                    else
+                    {
+                        voiceStatus = "Status: ? Not Ready\nVoice recognition not initialized";
+                    }
+                }
+                catch (Exception ex)
+                {
+                    voiceStatus = $"Status: ? Error\n{ex.Message}";
+                }
                 embed.AddField("?? Voice Recognition", $"```{voiceStatus}```", false);
 
-                // Voice Connections Status
-                var connectionStatus = GetVoiceConnectionStatus();
+                // Inline voice connections status
+                string connectionStatus;
+                try
+                {
+                    var status = $"Active Connections: {_audioClients.Count}\n";
+                    if (_audioClients.Any())
+                    {
+                        foreach (var kvp in _audioClients)
+                        {
+                            var gid = kvp.Key; var client = kvp.Value;
+                            status += $"Guild {gid}: {client.ConnectionState}\n";
+                        }
+                    }
+                    else status += "No active voice connections";
+                    connectionStatus = status;
+                }
+                catch (Exception ex)
+                {
+                    connectionStatus = $"Error: {ex.Message}";
+                }
                 embed.AddField("?? Voice Connections", connectionStatus, false);
 
                 await ReplyAsync(embed: embed.Build());
@@ -627,7 +676,7 @@ namespace Kinectv1.Discord
         {
             try
             {
-                var prefix = AppSettings.LoadDiscordBotPrefix();
+                var prefix = Kinectv1.App.SettingsProvider?.Current?.Discord?.Prefix;
                 
                 var embed = new EmbedBuilder()
                     .WithTitle("?? Kinect Voice Bot Commands (Enhanced)")
@@ -948,863 +997,6 @@ namespace Kinectv1.Discord
             {
                 await ReplyAsync($"? TTS test failed: {ex.Message}");
                 Console.WriteLine($"? TTS test command failed: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Debug Discord audio format and settings
-        /// Usage: !debugaudio
-        /// </summary>
-        [Command("debugaudio")]
-        [Summary("Debug Discord audio format and settings")]
-        public async Task DebugAudioAsync()
-        {
-            try
-            {
-                var embed = new EmbedBuilder()
-                    .WithTitle("?? Discord Audio Debug Information")
-                    .WithColor(Color.Orange)
-                    .WithTimestamp(DateTimeOffset.UtcNow);
-
-                // TTS Configuration
-                var ttsInfo = $"TTS Enabled: {(CoquiTtsService.IsEnabled() ? "? Yes" : "? No")}\n" +
-                             $"TTS Model: {CoquiTtsService.GetCurrentModel()}\n" +
-                             $"TTS Mode: {CoquiTtsService.GetExecutionMode()}\n" +
-                             $"Current Speaker: {AppSettings.LoadTtsSpeaker()}";
-                embed.AddField("?? TTS Configuration", $"```{ttsInfo}```", false);
-
-                // Discord Audio Format
-                var audioFormat = $"Expected Input: TTS MONO 22050 Hz float32\n" +
-                                $"Resampling: 22050 Hz ? 48000 Hz (MONO)\n" +
-                                $"Volume Boost: ULTRA-AGGRESSIVE 30x+ boost\n" +
-                                $"Processing: Maximum volume, minimal limiting\n" +
-                                $"Target Level: -1 dBFS (nearly full scale)\n" +
-                                $"Conversion: MONO ? STEREO (duplicate channels)\n" +
-                                $"Output Format: STEREO 48000 Hz 16-bit PCM\n" +
-                                $"Chunk Size: 3840 bytes (20ms STEREO)\n" +
-                                $"Stream Buffer: 128KB";
-                embed.AddField("?? Audio Pipeline", $"```{audioFormat}```", false);
-
-                // Connection Status
-                var guildId = Context.Guild.Id;
-                var connectionInfo = "Voice Connection: ";
-                if (_audioClients.TryGetValue(guildId, out var audioClient) && audioClient.ConnectionState == ConnectionState.Connected)
-                {
-                    connectionInfo += $"? Connected\n" +
-                                   $"Connection State: {audioClient.ConnectionState}\n" +
-                                   $"Channel: Ready for audio output\n" +
-                                   $"Latency: {audioClient.Latency}ms";
-                }
-                else
-                {
-                    connectionInfo += $"? Not Connected\n" +
-                                   $"Use !join <channel> first";
-                }
-                embed.AddField("?? Connection Status", $"```{connectionInfo}```", false);
-
-                // Common Issues
-                var troubleshooting = $"� **Low Volume**: Fixed with ultra-aggressive 30x+ boost\n" +
-                                    $"� **Distortion**: Minimized with 98% hard limiting\n" +
-                                    $"� **High Pitch/Fast**: Fixed with proper STEREO format\n" +
-                                    $"� **No Audio**: Verify bot has Speak permission\n" +
-                                    $"� **Still Quiet**: Try restarting Discord client\n" +
-                                    $"� **Clipping**: Acceptable for maximum volume\n" +
-                                    $"� **Mono Issues**: Fixed - now converts to STEREO";
-                embed.AddField("??? Troubleshooting", troubleshooting, false);
-
-                await ReplyAsync(embed: embed.Build());
-                Console.WriteLine($"?? Audio debug info requested by {Context.User.Username}");
-            }
-            catch (Exception ex)
-            {
-                await ReplyAsync($"? Debug failed: {ex.Message}");
-                Console.WriteLine($"? Debug command failed: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Diagnose Discord voice connection issues
-        /// Usage: !diagnose
-        /// </summary>
-        [Command("diagnose")]
-        [Summary("Diagnose Discord voice connection issues")]
-        public async Task DiagnoseAsync()
-        {
-            try
-            {
-                var embed = new EmbedBuilder()
-                    .WithTitle("?? Discord Voice Connection Diagnostics")
-                    .WithColor(Color.Gold)
-                    .WithTimestamp(DateTimeOffset.UtcNow);
-
-                Console.WriteLine("?? Running Discord voice connection diagnostics...");
-                
-                var guild = Context.Guild as SocketGuild;
-
-                // 1. Network connectivity test
-                var networkStatus = "Testing network connectivity...";
-                try
-                {
-                    using (var client = new System.Net.Http.HttpClient())
-                    {
-                        client.Timeout = TimeSpan.FromSeconds(5);
-                        var response = await client.GetAsync("https://discord.com/api/v10/gateway");
-                        networkStatus = response.IsSuccessStatusCode ? "? Discord API reachable" : $"?? Discord API issue: {response.StatusCode}";
-                    }
-                }
-                catch (Exception netEx)
-                {
-                    networkStatus = $"? Network error: {netEx.Message}";
-                }
-
-                // 2. Guild and channel analysis
-                var voiceChannels = guild.VoiceChannels.ToList();
-                var guildInfo = $"Guild: {guild.Name} (ID: {guild.Id})\n" +
-                               $"Voice Channels: {voiceChannels.Count}\n" +
-                               $"Bot Permissions: {guild.CurrentUser.GuildPermissions}\n" +
-                               $"Guild Region: {guild.PreferredLocale}";
-
-                // 3. Current voice state
-                var currentVoiceState = "No active connections";
-                if (_audioClients.TryGetValue(guild.Id, out var audioClient))
-                {
-                    currentVoiceState = $"State: {audioClient.ConnectionState}\n" +
-                                       $"Latency: {audioClient.Latency}ms";
-                }
-
-                // 4. Native libraries status
-                var nativeStatus = "Testing native libraries...";
-                try
-                {
-                    VerifyVoiceNative();
-                    nativeStatus = "? Native libraries verified";
-                }
-                catch (Exception nativeEx)
-                {
-                    nativeStatus = $"? Native library issue: {nativeEx.Message}";
-                }
-
-                // 5. Recent connection attempts
-                var recentAttempts = "No recent connection data available";
-                // You could implement connection attempt logging here
-
-                embed.AddField("?? Network Status", networkStatus, false);
-                embed.AddField("?? Guild Information", $"```{guildInfo}```", false);
-                embed.AddField("?? Current Voice State", currentVoiceState, false);
-                embed.AddField("?? Native Libraries", nativeStatus, false);
-
-                // 6. Recommendations
-                var recommendations = "� Try `!reload` to refresh native libraries\n" +
-                                    "� Wait 30-60 seconds between connection attempts\n" +
-                                    "� Check if other bots can connect to voice\n" +
-                                    "� Try a different voice channel\n" +
-                                    "� Verify bot has Connect and Speak permissions";
-                embed.AddField("?? Recommendations", recommendations, false);
-
-                await ReplyAsync(embed: embed.Build());
-                Console.WriteLine($"?? Diagnostics completed for {Context.User.Username}");
-            }
-            catch (Exception ex)
-            {
-                await ReplyAsync($"? Diagnostics failed: {ex.Message}");
-                Console.WriteLine($"? Diagnostics command failed: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Enhanced diagnostics for connection state tracking
-        /// Usage: !conndiag
-        /// </summary>
-        [Command("conndiag")]
-        [Summary("Enhanced connection state diagnostics")]
-        public async Task ConnectionDiagnosticsAsync()
-        {
-            try
-            {
-                var embed = new EmbedBuilder()
-                    .WithTitle("?? Connection State Diagnostics")
-                    .WithColor(Color.DarkBlue)
-                    .WithTimestamp(DateTimeOffset.UtcNow);
-
-                var guildId = Context.Guild.Id;
-
-                // Commands module tracking
-                var commandsTracking = "Commands Module Tracking:\n";
-                if (_audioClients.TryGetValue(guildId, out var commandClient))
-                {
-                    commandsTracking += $"? Client stored: {commandClient.ConnectionState}\n";
-                    commandsTracking += $"   Latency: {commandClient.Latency}ms\n";
-                    commandsTracking += $"   Connection State: {commandClient.ConnectionState}";
-                }
-                else
-                {
-                    commandsTracking += "? No client stored in commands module";
-                }
-
-                // Bot manager tracking
-                var managerTracking = "Bot Manager Tracking:\n";
-                managerTracking += $"Is Running: {DiscordNetBotManager.IsRunning}\n";
-                managerTracking += $"In Voice Channel: {DiscordNetBotManager.IsInVoiceChannel}\n";
-                managerTracking += $"Voice Status: {DiscordNetBotManager.GetVoiceConnectionStatus()}";
-
-                // Connection synchronization analysis
-                var syncAnalysis = "Synchronization Analysis:\n";
-                var commandsHasConnection = _audioClients.ContainsKey(guildId);
-                var managerHasConnection = DiscordNetBotManager.IsInVoiceChannel;
-                
-                if (commandsHasConnection && managerHasConnection)
-                {
-                    syncAnalysis += "? Both systems synchronized";
-                }
-                else if (commandsHasConnection && !managerHasConnection)
-                {
-                    syncAnalysis += "?? Commands has connection, Manager doesn't";
-                }
-                else if (!commandsHasConnection && managerHasConnection)
-                {
-                    syncAnalysis += "?? Manager has connection, Commands doesn't";
-                }
-                else
-                {
-                    syncAnalysis += "? Both systems show no connection";
-                }
-
-                embed.AddField("?? Commands Module", $"```{commandsTracking}```", false);
-                embed.AddField("?? Bot Manager", $"```{managerTracking}```", false);
-                embed.AddField("?? Sync Status", $"```{syncAnalysis}```", false);
-
-                await ReplyAsync(embed: embed.Build());
-                Console.WriteLine($"?? Connection diagnostics run by {Context.User.Username}");
-            }
-            catch (Exception ex)
-            {
-                await ReplyAsync($"? Connection diagnostics failed: {ex.Message}");
-                Console.WriteLine($"? Connection diagnostics failed: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Check bot permissions in voice channels
-        /// Usage: !checkperms
-        /// </summary>
-        [Command("checkperms")]
-        [Summary("Check bot permissions in voice channels")]
-        public async Task CheckPermissionsAsync()
-        {
-            try
-            {
-                var embed = new EmbedBuilder()
-                    .WithTitle("?? Bot Permissions Check")
-                    .WithColor(Color.Blue)
-                    .WithTimestamp(DateTimeOffset.UtcNow);
-
-                var guild = Context.Guild as SocketGuild;
-                
-                // Overall guild permissions
-                var guildPerms = guild.CurrentUser.GuildPermissions;
-                var guildInfo = $"Administrator: {(guildPerms.Administrator ? "?" : "?")}\n" +
-                               $"Connect: {(guildPerms.Connect ? "?" : "?")}\n" +
-                               $"Speak: {(guildPerms.Speak ? "?" : "?")}\n" +
-                               $"Use Voice Activity: {(guildPerms.UseVAD ? "?" : "?")}\n" +
-                               $"Send Messages: {(guildPerms.SendMessages ? "?" : "?")}\n" +
-                               $"Read Message History: {(guildPerms.ReadMessageHistory ? "?" : "?")}";
-
-                embed.AddField("?? Guild Permissions", $"```{guildInfo}```", false);
-
-                // Check all voice channels
-                var voiceChannels = guild.VoiceChannels.ToList();
-                var channelPerms = "";
-                
-                foreach (var channel in voiceChannels.Take(5)) // Limit to 5 channels to avoid embed limits
-                {
-                    var perms = guild.CurrentUser.GetPermissions(channel);
-                    channelPerms += $"#{channel.Name}:\n";
-                    channelPerms += $"  Connect: {(perms.Connect ? "?" : "?")}\n";
-                    channelPerms += $"  Speak: {(perms.Speak ? "?" : "?")}\n";
-                    channelPerms += $"  Use VAD: {(perms.UseVAD ? "?" : "?")}\n\n";
-                }
-
-                if (string.IsNullOrEmpty(channelPerms))
-                {
-                    channelPerms = "No voice channels found";
-                }
-
-                embed.AddField("?? Voice Channel Permissions", $"```{channelPerms}```", false);
-
-                // Bot role info
-                var botRoles = guild.CurrentUser.Roles.Where(r => !r.IsEveryone).ToList();
-                var roleInfo = botRoles.Any() 
-                    ? string.Join(", ", botRoles.Select(r => r.Name))
-                    : "No roles assigned";
-
-                embed.AddField("?? Bot Roles", roleInfo, false);
-
-                await ReplyAsync(embed: embed.Build());
-                Console.WriteLine($"?? Permission check completed for {Context.User.Username}");
-            }
-            catch (Exception ex)
-            {
-                await ReplyAsync($"? Permission check failed: {ex.Message}");
-                Console.WriteLine($"? Permission check failed: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Test connection stability with detailed monitoring
-        /// Usage: !testconnection
-        /// </summary>
-        [Command("testconnection")]
-        [Summary("Test Discord voice connection stability")]
-        public async Task TestConnectionAsync()
-        {
-            try
-            {
-                await ReplyAsync("?? **Testing Discord voice connection stability...**");
-                
-                var guild = Context.Guild as SocketGuild;
-                var guildId = guild.Id;
-                
-                // Check if we have an active connection
-                if (!_audioClients.TryGetValue(guildId, out var audioClient))
-                {
-                    await ReplyAsync("? No active voice connection found. Use `!join <channel>` first.");
-                    return;
-                }
-                
-                Console.WriteLine($"?? Testing connection stability for guild {guild.Name}...");
-                
-                var embed = new EmbedBuilder()
-                    .WithTitle("?? Connection Stability Test")
-                    .WithColor(Color.Purple)
-                    .WithTimestamp(DateTimeOffset.UtcNow);
-                
-                // Test connection state over time
-                var states = new List<string>();
-                var latencies = new List<int>();
-                
-                for (int i = 0; i < 10; i++)
-                {
-                    states.Add(audioClient.ConnectionState.ToString());
-                    latencies.Add(audioClient.Latency);
-                    
-                    Console.WriteLine($"   Check {i + 1}/10: State={audioClient.ConnectionState}, Latency={audioClient.Latency}ms");
-					
-                    if (i < 9) await Task.Delay(500); // Wait 500ms between checks
-                }
-                
-                // Analyze results
-                var connectedCount = states.Count(s => s == "Connected");
-                var avgLatency = latencies.Average();
-                var maxLatency = latencies.Max();
-                var minLatency = latencies.Min();
-                
-                var testResults = $"Connection Checks: {connectedCount}/10 Connected\n" +
-                                $"Current State: {audioClient.ConnectionState}\n" +
-                                $"Average Latency: {avgLatency:F1}ms\n" +
-                                $"Latency Range: {minLatency}-{maxLatency}ms\n" +
-                                $"Stability: {(connectedCount >= 8 ? "? Stable" : "?? Unstable")}";
-                
-                embed.AddField("?? Test Results", $"```{testResults}```", false);
-                
-                // Connection details
-                var connectionDetails = $"Guild: {guild.Name}\n" +
-                                      $"Channel: {DiscordNetBotManager.IsInVoiceChannel}\n" +
-                                      $"Manager Sync: {(DiscordNetBotManager.IsInVoiceChannel ? "? Yes" : "? No")}\n" +
-                                      $"Audio Streams: {(audioClient.ConnectionState == ConnectionState.Connected ? audioClient.GetStreams().Count() : 0)}";
-                
-                embed.AddField("?? Connection Details", $"```{connectionDetails}```", false);
-                
-                // Recommendations
-                var recommendations = "";
-                if (connectedCount < 8)
-                {
-                    recommendations = "� Connection is unstable - consider rejoining\n" +
-                                    "� Check network connection\n" +
-                                    "� Try `!leave` then `!join <channel>`\n" +
-                                    "� Discord voice servers may be experiencing issues";
-                }
-                else if (avgLatency > 200)
-                {
-                    recommendations = "� High latency detected\n" +
-                                    "� Check network connection\n" +
-                                    "� Consider switching voice regions in Discord";
-                }
-                else
-                {
-                    recommendations = "� Connection appears stable ?\n" +
-                                    "� Latency is acceptable\n" +
-                                    "� Ready for voice processing";
-                }
-                
-                embed.AddField("?? Recommendations", recommendations, false);
-                
-                await ReplyAsync(embed: embed.Build());
-                Console.WriteLine($"?? Connection stability test completed for {Context.User.Username}");
-            }
-            catch (Exception ex)
-            {
-                await ReplyAsync($"? Connection test failed: {ex.Message}");
-                Console.WriteLine($"? Connection test failed: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Test single process token usage - CRITICAL for preventing 4006 errors
-        /// Usage: !tokencheck
-        /// </summary>
-        [Command("tokencheck")]
-        [Summary("Check if only one process is using this bot token")]
-        public async Task TokenCheckAsync()
-        {
-            try
-            {
-                await ReplyAsync("?? **Checking bot token usage...**");
-                
-                var embed = new EmbedBuilder()
-                    .WithTitle("?? Bot Token Usage Check")
-                    .WithColor(Color.Orange)
-                    .WithTimestamp(DateTimeOffset.UtcNow);
-
-                // Check current connection status
-                var client = DiscordNetBotManager.GetClient();
-                var tokenInfo = "";
-                
-                if (client != null)
-                {
-                    tokenInfo += $"Bot: {client.CurrentUser.Username}#{client.CurrentUser.Discriminator}\n";
-                    tokenInfo += $"Connection: {client.ConnectionState}\n";
-                    tokenInfo += $"Latency: {client.Latency}ms\n";
-                    tokenInfo += $"Guilds: {client.Guilds.Count}\n";
-                    
-                    // Check if we're in voice anywhere
-                    var voiceConnections = 0;
-                    foreach (var guild in client.Guilds)
-                    {
-                        if (guild.CurrentUser.VoiceChannel != null)
-                        {
-                            voiceConnections++;
-                            tokenInfo += $"Voice: {guild.CurrentUser.VoiceChannel.Name} in {guild.Name}\n";
-                        }
-                    }
-                    
-                    if (voiceConnections == 0)
-                    {
-                        tokenInfo += "Voice: Not connected\n";
-                    }
-                }
-                else
-                {
-                    tokenInfo = "? No client connection";
-                }
-
-                embed.AddField("?? Current Session", $"```{tokenInfo}```", false);
-
-                // Warning about multiple processes
-                var warnings = "?? **CRITICAL: Only ONE process should use this token**\n\n" +
-                              "If you see 4006 errors, check for:\n" +
-                              "� Multiple instances of this application\n" +
-                              "� Other Discord bots using the same token\n" +
-                              "� Previous crashed instances still running\n" +
-                              "� Development environment + production running\n\n" +
-                              "**How to check:**\n" +
-                              "� Task Manager ? Look for multiple processes\n" +
-                              "� Discord Developer Portal ? Bot section\n" +
-                              "� Only ONE connection should be active";
-
-                embed.AddField("?? Multiple Process Warning", warnings, false);
-
-                await ReplyAsync(embed: embed.Build());
-                Console.WriteLine($"?? Token check completed by {Context.User.Username}");
-            }
-            catch (Exception ex)
-            {
-                await ReplyAsync($"? Token check failed: {ex.Message}");
-                Console.WriteLine($"? Token check failed: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Test voice connection with timeout and detailed error reporting
-        /// Usage: !testjoin <channel>
-        /// </summary>
-        [Command("testjoin")]
-        [Summary("Test voice connection with timeout protection")]
-        public async Task TestJoinAsync([Remainder] string channelName = null)
-        {
-            var guild = (SocketGuild)Context.Guild;
-            var self = guild.CurrentUser;
-
-            try
-            {
-                await ReplyAsync("?? **Testing voice connection with timeout protection...**");
-                
-                // Resolve target channel
-                IVoiceChannel target = null;
-                if (string.IsNullOrWhiteSpace(channelName))
-                {
-                    await ReplyAsync("? Please specify a channel name: `!testjoin <channel name>`");
-                    return;
-                }
-                
-                target = guild.VoiceChannels.FirstOrDefault(c => 
-                             string.Equals(c.Name, channelName, StringComparison.OrdinalIgnoreCase));
-
-                if (target == null)
-                {
-                    await ReplyAsync($"? Voice channel '{channelName}' not found!");
-                    return;
-                }
-
-                Console.WriteLine($"?? TEST JOIN: Starting connection test to {target.Name}");
-                
-                // Clean up first
-                if (self.VoiceChannel != null)
-                {
-                    await self.VoiceChannel.DisconnectAsync();
-                    await Task.Delay(750);
-                }
-                
-                if (_audioClients.TryRemove(guild.Id, out var existing))
-                {
-                    try { await existing.StopAsync(); existing.Dispose(); } catch { /* ignore */ }
-                }
-
-                // Connection with timeout (using Task.Delay for .NET Framework compatibility)
-                Console.WriteLine($"?? TEST JOIN: Starting ConnectAsync with 20-second timeout...");
-                var connectTask = target.ConnectAsync(selfDeaf: false, selfMute: false);
-                var timeoutTask = Task.Delay(20000); // 20 seconds
-                
-                var completedTask = await Task.WhenAny(connectTask, timeoutTask);
-                
-                if (completedTask == timeoutTask)
-                {
-                    Console.WriteLine($"? TEST JOIN: Connection timed out after 20 seconds");
-                    await ReplyAsync("? **Test failed:** Connection timed out after 20 seconds\n\n" +
-                                   "This suggests a network or Discord API issue.");
-                    return;
-                }
-                
-                try
-                {
-                    var audioClient = await connectTask;
-                    
-                    if (audioClient != null)
-                    {
-                        Console.WriteLine($"? TEST JOIN: Success! State: {audioClient.ConnectionState}");
-                        
-                        // Store temporarily for testing
-                        _audioClients[guild.Id] = audioClient;
-                        
-                        await ReplyAsync($"? **Test connection successful!**\n" +
-                                       $"Channel: {target.Name}\n" +
-                                       $"State: {audioClient.ConnectionState}\n" +
-                                       $"Latency: {audioClient.Latency}ms\n\n" +
-                                       $"Use `!leave` to disconnect.");
-                        
-                        audioClient.Disconnected += ex =>
-                        {
-                            Console.WriteLine($"?? TEST JOIN: Disconnected - {ex?.Message ?? "Normal"}");
-                            _audioClients.TryRemove(guild.Id, out _);
-                            return Task.CompletedTask;
-                        };
-                    }
-                    else
-                    {
-                        await ReplyAsync("? **Test failed:** ConnectAsync returned null");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"? TEST JOIN: Exception - {ex.GetType().Name}: {ex.Message}");
-                    await ReplyAsync($"? **Test failed:** {ex.Message}\n\n" +
-                                   $"Error type: {ex.GetType().Name}");
-                }
-            }
-            catch (Exception ex)
-            {
-                await ReplyAsync($"? Test join failed: {ex.Message}");
-                Console.WriteLine($"? Test join command failed: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Force clear Discord voice session - helps prevent 4006 session reuse errors
-        /// Usage: !clearsession
-        /// </summary>
-        [Command("clearsession")]
-        [Summary("Force clear Discord voice session to prevent 4006 errors")]
-        public async Task ClearSessionAsync()
-        {
-            // CRITICAL 4006 PREVENTION: Global lock to prevent concurrent voice operations
-            await _discordVoiceOperationLock.WaitAsync();
-            try
-            {
-                Console.WriteLine($"?? GLOBAL VOICE LOCK ACQUIRED for clear session operation");
-                
-                await ReplyAsync("?? **Forcing Discord voice session clear (Enhanced)...**");
-                
-                var guild = (SocketGuild)Context.Guild;
-                var self = guild.CurrentUser;
-                
-                Console.WriteLine($"?? === ENHANCED FORCE SESSION CLEAR START ===");
-                Console.WriteLine($"?? Current bot voice state: {(self.VoiceChannel?.Name ?? "None")}");
-                Console.WriteLine($"?? Current session ID: {self.VoiceSessionId ?? "None"}");
-                
-                // Step 1: Clean up our tracking
-                if (_audioClients.TryRemove(guild.Id, out var existing))
-                {
-                    Console.WriteLine($"?? STEP 1: Disposing existing audio client...");
-                    try { await existing.StopAsync(); existing.Dispose(); } catch { /* ignore */ }
-                }
-                
-                // Step 2: Enhanced force disconnect with multiple methods
-                bool hadVoiceState = self.VoiceChannel != null || !string.IsNullOrEmpty(self.VoiceSessionId);
-                
-                if (hadVoiceState)
-                {
-                    // CRITICAL: Check shutdown status before proceeding with disconnect
-                    if (!DiscordNetBotManager.IsRunning)
-                    {
-                        Console.WriteLine($"?? ABORT: Discord bot shut down during session clearing");
-                        return;
-                    }
-
-                    Console.WriteLine($"?? STEP 2A: Voice state detected - starting enhanced clearing...");
-                    
-                    // Method 1: Standard channel disconnect
-                    if (self.VoiceChannel != null)
-                    {
-                        Console.WriteLine($"?? STEP 2A1: Standard disconnect from {self.VoiceChannel.Name}...");
-                        await self.VoiceChannel.DisconnectAsync();
-                    }
-                    
-                    // Method 2: Guild-level user modification (catches ghost sessions)
-                    Console.WriteLine($"?? STEP 2A2: Guild-level channel clearing...");
-                    try
-                    {
-                        await self.ModifyAsync(x => x.Channel = null);
-                        Console.WriteLine($"? STEP 2A2: Guild-level channel clear completed");
-                    }
-                    catch (Exception guildEx)
-                    {
-                        Console.WriteLine($"?? STEP 2A2: Guild-level clear failed: {guildEx.Message}");
-                    }
-                    
-                    Console.WriteLine($"? STEP 2: Waiting 4 seconds for enhanced session clearing...");
-                    await Task.Delay(4000); // Longer delay to ensure server clears session
-                    
-                    // Enhanced verification with multiple checks
-                    var maxWait = 20; // Maximum 20 checks (10 seconds total)
-                    var waitCount = 0;
-                    while ((self.VoiceChannel != null || !string.IsNullOrEmpty(self.VoiceSessionId)) && waitCount < maxWait)
-                    {
-                        // CRITICAL: Check shutdown status during verification
-                        if (!DiscordNetBotManager.IsRunning)
-                        {
-                            Console.WriteLine($"?? ABORT: Discord bot shut down during verification");
-                            return;
-                        }
-
-                        Console.WriteLine($"? STEP 2: Still has voice state - VoiceChannel: {self.VoiceChannel?.Name ?? "None"}, Session: {self.VoiceSessionId ?? "None"} (check {waitCount + 1}/{maxWait})");
-                        
-                        // Additional clearing attempts during verification
-                        if (waitCount % 5 == 0) // Every 2.5 seconds
-                        {
-                            try
-                            {
-                                await self.ModifyAsync(x => x.Channel = null);
-                                Console.WriteLine($"?? STEP 2: Additional clear attempt during verification");
-                            }
-                            catch { /* ignore */ }
-                        }
-                        
-                        await Task.Delay(500);
-                        waitCount++;
-                    }
-                    
-                    Console.WriteLine($"?? STEP 2: Final state - VoiceChannel: {self.VoiceChannel?.Name ?? "None"}, Session: {self.VoiceSessionId ?? "None"}");
-                }
-                else
-                {
-                    Console.WriteLine($"?? STEP 2: No voice state detected - performing safety clear anyway...");
-                    try
-                    {
-                        await self.ModifyAsync(x => x.Channel = null);
-                        await Task.Delay(1000);
-                        Console.WriteLine($"? STEP 2: Safety clear completed");
-                    }
-                    catch (Exception safetyEx)
-                    {
-                        Console.WriteLine($"?? STEP 2: Safety clear failed (expected if already clear): {safetyEx.Message}");
-                    }
-                }
-                
-                // Step 3: Update bot manager
-                await DiscordNetBotManager.OnVoiceChannelLeft();
-                
-                Console.WriteLine($"? === ENHANCED FORCE SESSION CLEAR COMPLETE ===");
-                
-                if (hadVoiceState)
-                {
-                    await ReplyAsync("? **Enhanced session cleared!** Wait 15-20 seconds before using voice commands.\n\n" +
-                                   "**What was cleared:**\n" +
-                                   "� Voice channel connection\n" +
-                                   "� Discord session ID\n" +
-                                   "� Guild-level voice state\n" +
-                                   "� Audio client tracking\n\n" +
-                                   "This should force Discord to issue a completely fresh session.");
-                }
-                else
-                {
-                    await ReplyAsync("? **Session verification completed!** No active voice state found.\n\n" +
-                                   "The bot was already disconnected. You can try voice commands now.");
-                }
-                
-                Console.WriteLine($"?? Recommendation: Wait 15-20 seconds before next voice connection attempt");
-            }
-            catch (Exception ex)
-            {
-                await ReplyAsync($"? Enhanced session clear failed: {ex.Message}");
-                Console.WriteLine($"? Enhanced session clear failed: {ex.Message}");
-            }
-            finally
-            {
-                _discordVoiceOperationLock.Release();
-                Console.WriteLine($"?? GLOBAL VOICE LOCK RELEASED for clear session operation");
-            }
-        }
-
-        /// <summary>
-        /// Enhanced join with session clearing to prevent 4006 errors
-        /// Usage: !joinforce <channel>
-        /// </summary>
-        [Command("joinforce")]
-        [Summary("Force join with session clearing to prevent 4006 errors")]
-        public async Task JoinForceAsync([Remainder] string channelName = null)
-        {
-            var guild = (SocketGuild)Context.Guild;
-            var self = guild.CurrentUser;
-
-            // CRITICAL 4006 PREVENTION: Global lock to prevent concurrent voice operations
-            await _discordVoiceOperationLock.WaitAsync();
-            try
-            {
-                Console.WriteLine($"?? GLOBAL VOICE LOCK ACQUIRED for force join operation");
-                Console.WriteLine($"?? === FORCE JOIN WITH SESSION CLEAR START ===");
-                Console.WriteLine($"?? Force join requested by {Context.User.Username} in guild: {guild.Name}");
-
-                // Resolve target
-                IVoiceChannel target = null;
-                if (string.IsNullOrWhiteSpace(channelName))
-                {
-                    await ReplyAsync("? Please specify a channel name: `!joinforce <channel>`");
-                    return;
-                }
-                
-                target = guild.VoiceChannels.FirstOrDefault(c => 
-                             string.Equals(c.Name, channelName, StringComparison.OrdinalIgnoreCase));
-
-                if (target == null)
-                {
-                    Console.WriteLine($"? Target channel not found: '{channelName}'");
-                    await ReplyAsync($"? Voice channel '{channelName}' not found!");
-                    return;
-                }
-
-                Console.WriteLine($"? Target channel resolved: {target.Name} (ID: {target.Id})");
-
-                await ReplyAsync($"?? **Step 1/3:** Clearing any existing sessions...");
-
-                // ENHANCED STEP 1: Aggressive session clearing
-                Console.WriteLine($"?? STEP 1: Aggressive session clearing...");
-                
-                // Clear our audio client tracking
-                if (_audioClients.TryRemove(guild.Id, out var existing))
-                {
-                    Console.WriteLine($"?? Disposing existing audio client...");
-                    try { await existing.StopAsync(); existing.Dispose(); } catch { /* ignore */ }
-                }
-                
-                // Force disconnect if in voice
-                if (self.VoiceChannel != null)
-                {
-                    Console.WriteLine($"?? Force disconnecting from: {self.VoiceChannel.Name}");
-                    await self.VoiceChannel.DisconnectAsync();
-                    Console.WriteLine($"? Waiting 4 seconds for session to clear server-side...");
-                    await Task.Delay(4000); // Longer delay to ensure server clears session
-                }
-                else
-                {
-                    Console.WriteLine($"?? Not in voice, but waiting 2 seconds for safety...");
-                    await Task.Delay(2000);
-                }
-
-                await ReplyAsync($"?? **Step 2/3:** Attempting connection with fresh session...");
-
-                // STEP 2: Attempt connection
-                Console.WriteLine($"?? STEP 2: Calling target.ConnectAsync with fresh session...");
-                Console.WriteLine($"?? Connection attempt starting at: {DateTime.Now:HH:mm:ss.fff}");
-                
-                // CRITICAL: Final shutdown check before attempting connection
-                if (!DiscordNetBotManager.IsRunning)
-                {
-                    Console.WriteLine($"?? ABORT: Discord bot shut down just before ConnectAsync - canceling operation");
-                    await ReplyAsync("? **Connection canceled** - Discord bot is shutting down.");
-                    return;
-                }
-
-                IAudioClient audioClient = null;
-                try
-                {
-                    audioClient = await target.ConnectAsync(selfDeaf: false, selfMute: false);
-                    Console.WriteLine($"? STEP 2: ConnectAsync completed at: {DateTime.Now:HH:mm:ss.fff}");
-                    Console.WriteLine($"? AudioClient state: {audioClient?.ConnectionState}");
-                }
-                catch (Exception connectEx)
-                {
-                    Console.WriteLine($"? STEP 2: ConnectAsync failed: {connectEx.GetType().Name}: {connectEx.Message}");
-                    await ReplyAsync($"? **Connection failed:** {connectEx.Message}\n\n" +
-                                   $"Error type: {connectEx.GetType().Name}");
-                    return;
-                }
-
-                if (audioClient == null)
-                {
-                    Console.WriteLine($"? STEP 2: ConnectAsync returned null");
-                    await ReplyAsync($"? **Connection failed:** ConnectAsync returned null");
-                    return;
-                }
-
-                await ReplyAsync($"?? **Step 3/3:** Configuring connection...");
-
-                // STEP 3: Store and configure
-                Console.WriteLine($"?? STEP 3: Storing and configuring connection...");
-                _audioClients[guild.Id] = audioClient;
-                
-                audioClient.Disconnected += ex =>
-                {
-                    Console.WriteLine($"🔌 AudioClient.Disconnected event: {ex?.Message ?? "Normal"}");
-                    _audioClients.TryRemove(guild.Id, out _);
-                    return Task.CompletedTask;
-                };
-
-                Console.WriteLine($"?? STEP 3: Calling DiscordNetBotManager.SetVoiceConnection...");
-                await DiscordNetBotManager.SetVoiceConnection(audioClient, target.Id, target.Name);
-
-                Console.WriteLine($"?? === FORCE JOIN SUCCESS ===");
-                await ReplyAsync($"? **Force join successful!** Joined **{target.Name}** with fresh session.\n\n" +
-                               $"Connection state: {audioClient.ConnectionState}");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"? === FORCE JOIN ERROR ===");
-                Console.WriteLine($"? Exception: {ex.GetType().Name}: {ex.Message}");
-                await ReplyAsync($"? Force join failed: {ex.Message}");
-            }
-            finally
-            {
-                _discordVoiceOperationLock.Release();
-                Console.WriteLine($"?? GLOBAL VOICE LOCK RELEASED for force join operation");
             }
         }
     }
