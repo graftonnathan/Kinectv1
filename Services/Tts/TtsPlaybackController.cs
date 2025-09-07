@@ -61,6 +61,22 @@ namespace Kinectv1
         public static bool IsUsingGpu() => _useGpu;
         public static int GetSampleRate() => _sampleRate;
 
+        public static string[] GetInstalledVoices()
+        {
+            try
+            {
+                EnsureSynth();
+                return _synth?.GetInstalledVoices()
+                           ?.Select(v => v.VoiceInfo?.Name)
+                           .Where(n => !string.IsNullOrWhiteSpace(n))
+                           .ToArray() ?? Array.Empty<string>();
+            }
+            catch
+            {
+                return Array.Empty<string>();
+            }
+        }
+
         public static async Task<float[]> GenerateAudioAsync(string text, string speakerName = null, CancellationToken ct = default)
         {
             if (string.IsNullOrWhiteSpace(text)) return Array.Empty<float>();
