@@ -5,7 +5,7 @@ using System.Windows.Controls;
 using Microsoft.Win32;
 using WinForms = System.Windows.Forms;
 
-namespace Kinectv1
+namespace Kinectv1.UI.Settings
 {
     public partial class ModelsSettingsView : UserControl
     {
@@ -140,17 +140,17 @@ namespace Kinectv1
 
         private void ValidateButton_Click(object sender, RoutedEventArgs e)
         {
-            (Window.GetWindow(this) as Kinectv1.UI.Settings.SettingsWindow)?.TriggerValidate();
+            (Window.GetWindow(this) as SettingsWindow)?.TriggerValidate();
         }
 
         private void SaveButton_Click(object sender, RoutedEventArgs e)
         {
-            (Window.GetWindow(this) as Kinectv1.UI.Settings.SettingsWindow)?.TriggerSave();
+            (Window.GetWindow(this) as SettingsWindow)?.TriggerSave();
         }
 
         private void ResetButton_Click(object sender, RoutedEventArgs e)
         {
-            (Window.GetWindow(this) as Kinectv1.UI.Settings.SettingsWindow)?.TriggerDefaults();
+            (Window.GetWindow(this) as SettingsWindow)?.TriggerDefaults();
         }
     }
 }

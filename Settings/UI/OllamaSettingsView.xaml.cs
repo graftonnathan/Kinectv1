@@ -2,7 +2,7 @@ using System;
 using System.Windows;
 using System.Windows.Controls;
 
-namespace Kinectv1
+namespace Kinectv1.UI.Settings
 {
     public partial class OllamaSettingsView : UserControl
     {
