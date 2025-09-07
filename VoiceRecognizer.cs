@@ -72,7 +72,8 @@ namespace Kinectv1
 
         // Input control flags
         private static bool _microphoneInputEnabled = true;
-        private static bool _discordInputEnabled = true;
+        // Default Discord input to disabled on startup; UI/ApplyAudioMode will enable when selected
+        private static bool _discordInputEnabled = false;
         private static bool _microphoneRecording = false;
         private static AudioInMode _cachedAudioMode = AudioInMode.LocalMic; // Cache for performance
 
@@ -637,7 +638,7 @@ namespace Kinectv1
         public static void SetDiscordInputEnabled(bool enabled)
         {
             _discordInputEnabled = enabled;
-            Console.WriteLine($"🤖 Discord input {(enabled ? "enabled" : "disabled")}");
+            Console.WriteLine($"🤖 Discord input {(enabled ? "enabled" : "disabled")}" );
             
             // Refresh cached audio mode when input settings change
             UpdateCachedModeFromFlags();

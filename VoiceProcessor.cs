@@ -34,6 +34,7 @@ namespace Kinectv1
         private readonly RingBuffer _speakerBuffer = new RingBuffer(16000); // 1 second at 16kHz
         private DateTime _lastSpeakerInference = DateTime.MinValue;
         private readonly TimeSpan _speakerInferenceHop = TimeSpan.FromMilliseconds(500); // 0.5s hop
+        private bool _speakerEmbedderAvailable => SpeakerEmbedder.IsLoaded; // guard access
         
         private string _lastTranscription = string.Empty;
         private string _pendingTranscription = string.Empty; // Store transcription for Ollama
@@ -1165,6 +1166,12 @@ namespace Kinectv1
         {
             try
             {
+                // Skip entirely when embedder not available
+                if (!_speakerEmbedderAvailable)
+                {
+                    return;
+                }
+
                 // Check if enough time has passed for next inference (0.5s hop)
                 var timeSinceLastInference = DateTime.UtcNow - _lastSpeakerInference;
                 if (timeSinceLastInference < _speakerInferenceHop)

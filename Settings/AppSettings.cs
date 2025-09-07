@@ -1,5 +1,6 @@
 // Settings/AppSettings.cs
 using System.ComponentModel.DataAnnotations;
+using System.Runtime.Serialization;
 
 namespace Kinectv1.Settings
 {
@@ -82,7 +83,17 @@ namespace Kinectv1.Settings
 
     public enum AppScenario { Local, Remote }
 
-    public enum AudioInMode { LocalMic, DiscordVoice, SystemLoopback, MumbleVoice }
+    public enum AudioInMode
+    {
+        [EnumMember(Value = "mic")]
+        LocalMic,
+        [EnumMember(Value = "discord")]
+        DiscordVoice,
+        [EnumMember(Value = "loopback")]
+        SystemLoopback,
+        [EnumMember(Value = "mumble")]
+        MumbleVoice
+    }
 
     // App-level behavior
     public sealed record AppConfig(

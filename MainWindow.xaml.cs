@@ -39,7 +39,8 @@ namespace Kinectv1
 
         // Audio input settings
         private bool _isMicrophoneInputEnabled = true;
-        private bool _isDiscordInputEnabled = true;
+        // Default Discord and Mumble inputs disabled at startup; toggled by mode selection
+        private bool _isDiscordInputEnabled = false;
         private bool _isMumbleInputEnabled = false; // new: UI state mirror (future input)
         private AudioInMode _currentAudioMode = AudioInMode.LocalMic;
         private bool _updatingAudioMode = false;
@@ -53,6 +54,8 @@ namespace Kinectv1
 
         public MainWindow()
         {
+            // Guard UI event handlers from firing during initialization (e.g., CheckBox.Checked)
+            _updatingAudioMode = true;
             try
             {
                 InitializeComponent();
@@ -257,6 +260,11 @@ namespace Kinectv1
                 {
                     Console.WriteLine("Could not show initialization warning");
                 }
+            }
+            finally
+            {
+                // Allow user-driven mode changes after initial wiring
+                _updatingAudioMode = false;
             }
         }
 
@@ -789,7 +797,37 @@ namespace Kinectv1
         private void InitializeAudioDevicesUI() { }
         private void InitializeOllamaModels() { }
         private void InitializeTtsSystem() { }
-        private void InitializeDiscordBot() { }
+        private void InitializeDiscordBot()
+        {
+            try
+            {
+                // Start Discord bot at app startup when enabled and token is present
+                var discord = App.SettingsProvider?.Current?.Discord;
+                if (discord != null && discord.Enabled && !string.IsNullOrWhiteSpace(discord.Token))
+                {
+                    // Avoid duplicate startups with atomic guard inside manager
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            var ok = await DiscordNetBotManager.StartAsync();
+                            if (!ok)
+                            {
+                                Console.WriteLine("Discord bot failed to start. Check token and network.");
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"Discord init error: {ex.Message}");
+                        }
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"InitializeDiscordBot failed: {ex.Message}");
+            }
+        }
         private void InitializeVolumeControls() { }
         private void InitializeIdentityFusionCleanup() { }
 
@@ -1035,6 +1073,9 @@ namespace Kinectv1
                 {
                     // Ensure Mumble is disconnected
                     _ = Task.Run(async () => { try { await MumbleClientManager.DisconnectAsync(); } catch { } });
+
+                    // Ensure Discord bot is running so commands and gateway are available
+                    _ = Task.Run(async () => { try { await DiscordNetBotManager.StartAsync(); } catch { } });
                 }
                 else if (_isMumbleInputEnabled)
                 {

@@ -50,7 +50,7 @@
   "app": {
     "requireWakeWord": false,
     "scenario": "Local",
-    "inputMode": "LocalMic"
+    "inputMode": "mic"
   },
   "ollama": {
     "provider": "Ollama",

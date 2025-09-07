@@ -155,6 +155,28 @@ namespace Kinectv1
             try
             {
                 ServicesManager = new HostedServicesManager();
+
+                // Register Vosk/ASR using settings-driven model path (per docs/settings.md)
+                try
+                {
+                    var sttPath = SettingsProvider?.Current?.Stt?.ModelPath;
+                    if (!string.IsNullOrWhiteSpace(sttPath))
+                    {
+                        var baseDir = AppDomain.CurrentDomain.BaseDirectory;
+                        var fullSttPath = Path.IsPathRooted(sttPath) ? sttPath : Path.Combine(baseDir, sttPath);
+                        ServicesManager.RegisterService(new VoiceRecognizerHostedService(fullSttPath, string.Empty));
+                    }
+                    else
+                    {
+                        Console.WriteLine("⚠️ STT model path not configured in settings; skipping VoiceRecognizer service registration");
+                    }
+                }
+                catch (Exception regEx)
+                {
+                    Console.WriteLine($"⚠️ Failed to register VoiceRecognizer service: {regEx.Message}");
+                }
+
+                // Start all registered services
                 ServicesManager.StartAllAsync().GetAwaiter().GetResult();
             }
             catch (Exception ex)
