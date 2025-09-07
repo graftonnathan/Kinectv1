@@ -221,7 +221,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Folder Include="Settings\UI\Discord\" />
     <Folder Include="Settings\UI\Models\" />
+    <Folder Include="Settings\UI\Mumble\" />
+    <Folder Include="Settings\UI\Ollama\" />
     <Folder Include="Settings\Validation\" />
     <Folder Include="src\Audio\" />
     <Folder Include="src\UI\Settings\Editors\" />

@@ -275,9 +275,27 @@ namespace Kinectv1
                 _embeddedSettingsWindow = new UI.Settings.SettingsWindow();
                 if (_embeddedSettingsWindow.Content is FrameworkElement content && SettingsHost != null)
                 {
+                    // Use the SettingsWindow's ViewModel as DataContext for embedded content
                     content.DataContext = _embeddedSettingsWindow.DataContext;
-                    _embeddedSettingsWindow.Content = null;
+                    _embeddedSettingsWindow.Content = null; // detach visual tree from Window
                     SettingsHost.Content = content;
+
+                    // Explicitly populate from current snapshot since Window.Loaded will not fire when embedded
+                    _embeddedSettingsWindow.PopulateEditorFromCurrentSnapshot();
+
+                    // Keep UI in sync if settings change elsewhere
+                    try
+                    {
+                        var svc = Kinectv1.App.SettingsProvider;
+                        if (svc != null)
+                        {
+                            svc.Changed += (s, snap) =>
+                            {
+                                try { Dispatcher.BeginInvoke(new Action(() => _embeddedSettingsWindow.PopulateEditorFromCurrentSnapshot()), DispatcherPriority.Background); } catch { }
+                            };
+                        }
+                    }
+                    catch { }
                 }
             }
             catch (Exception ex)

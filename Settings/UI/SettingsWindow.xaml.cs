@@ -31,7 +31,8 @@ namespace Kinectv1.UI.Settings
         public void TriggerSave() => Save_Click(this, new RoutedEventArgs());
         public void TriggerDefaults() => Defaults_Click(this, new RoutedEventArgs());
 
-        private void SettingsWindow_Loaded(object sender, RoutedEventArgs e)
+        // New: explicitly populate editor from current snapshot (used when embedding content)
+        public void PopulateEditorFromCurrentSnapshot()
         {
             try
             {
@@ -39,86 +40,85 @@ namespace Kinectv1.UI.Settings
                 var snapshot = _svc?.Current;
                 if (snapshot != null)
                 {
-                    var editor = _viewModel?.SelectedCategory?.EditorView as Kinectv1.ModelsSettingsView;
-                    if (editor != null)
-                    {
-                        // TTS
-                        editor.TtsEnabledCheckBox.IsChecked = snapshot.Tts.Enabled;
-                        editor.TtsModelPathTextBox.Text = snapshot.Tts.ModelPath;
-                        editor.TtsModelFolderTextBox.Text = snapshot.Tts.ModelFolder;
-                        editor.TtsVocoderPathTextBox.Text = snapshot.Tts.VocoderPath;
-                        foreach (var item in editor.ExecutionModeComboBox.Items)
-                        {
-                            if (item is ComboBoxItem cbi && string.Equals(cbi.Tag?.ToString(), snapshot.Tts.Execution.ToString(), StringComparison.OrdinalIgnoreCase))
-                            {
-                                editor.ExecutionModeComboBox.SelectedItem = cbi;
-                                break;
-                            }
-                        }
-                        if (!string.IsNullOrWhiteSpace(snapshot.Tts.Speaker))
-                        {
-                            editor.TtsVoiceComboBox.SelectedItem = snapshot.Tts.Speaker;
-                        }
-                        // Extra TTS fields
-                        if (editor.TtsOutputDeviceComboBox != null)
-                        {
-                            editor.TtsOutputDeviceComboBox.Text = snapshot.Tts.OutputDevice ?? string.Empty;
-                        }
-                        if (editor.TtsIpaServiceTimeoutTextBox != null)
-                        {
-                            editor.TtsIpaServiceTimeoutTextBox.Text = snapshot.Tts.IpaServiceTimeoutMs.ToString(CultureInfo.InvariantCulture);
-                        }
-                        if (editor.TtsIpaOneShotTimeoutTextBox != null)
-                        {
-                            editor.TtsIpaOneShotTimeoutTextBox.Text = snapshot.Tts.IpaOneShotTimeoutMs.ToString(CultureInfo.InvariantCulture);
-                        }
-
-                        // STT
-                        if (editor.SttModelPathTextBox != null)
-                            editor.SttModelPathTextBox.Text = snapshot.Stt.ModelPath ?? string.Empty;
-                        if (editor.MicInputComboBox != null)
-                            editor.MicInputComboBox.Text = snapshot.Stt.InputDevice ?? string.Empty;
-
-                        // Audio
-                        editor.AudioVoiceThresholdTextBox.Text = snapshot.Audio.VoiceThreshold.ToString(CultureInfo.InvariantCulture);
-                        if (editor.AudioVoiceHighThresholdTextBox != null)
-                            editor.AudioVoiceHighThresholdTextBox.Text = snapshot.Asr.VoiceHighConfidenceThreshold.ToString(CultureInfo.InvariantCulture);
-                        if (editor.VoiceConfidenceLoggingCheckBox != null)
-                            editor.VoiceConfidenceLoggingCheckBox.IsChecked = snapshot.Asr.VoiceConfidenceLoggingEnabled;
-                        editor.AudioVadThresholdTextBox.Text = snapshot.Audio.VadThreshold.ToString(CultureInfo.InvariantCulture);
-                        editor.AudioBufferSizeTextBox.Text = snapshot.Audio.BufferSize.ToString(CultureInfo.InvariantCulture);
-                        // New: Speaker match min score
-                        if (editor.SpeakerMatchThresholdTextBox != null)
-                        {
-                            editor.SpeakerMatchThresholdTextBox.Text = snapshot.Audio.SpeakerMatchMinScore.ToString(CultureInfo.InvariantCulture);
-                        }
-
-                        // VAD
-                        editor.VadThresholdTextBox.Text = snapshot.Vad.Threshold.ToString(CultureInfo.InvariantCulture);
-                        if (editor.RequireWakeWordCheckBox != null)
-                            editor.RequireWakeWordCheckBox.IsChecked = snapshot.App.RequireWakeWord;
-
-                        // Face
-                        if (editor.FaceThresholdTextBox != null)
-                            editor.FaceThresholdTextBox.Text = snapshot.Face.Threshold.ToString(CultureInfo.InvariantCulture);
-                        if (editor.FusionFaceWeightTextBox != null)
-                            editor.FusionFaceWeightTextBox.Text = snapshot.Face.FusionFaceWeight.ToString(CultureInfo.InvariantCulture);
-                        if (editor.FusionVoiceWeightTextBox != null)
-                            editor.FusionVoiceWeightTextBox.Text = snapshot.Face.FusionVoiceWeight.ToString(CultureInfo.InvariantCulture);
-                        if (editor.FusionHalfLifeTextBox != null)
-                            editor.FusionHalfLifeTextBox.Text = snapshot.Face.FusionDecayHalfLifeMs.ToString(CultureInfo.InvariantCulture);
-                        if (editor.FusionUnknownThresholdTextBox != null)
-                            editor.FusionUnknownThresholdTextBox.Text = snapshot.Face.FusionUnknownThreshold.ToString(CultureInfo.InvariantCulture);
-                        if (editor.ArcFaceModelPathTextBox != null)
-                            editor.ArcFaceModelPathTextBox.Text = snapshot.Face.ArcFaceModelPath ?? string.Empty;
-                        if (editor.SpeakerModelPathTextBox != null)
-                            editor.SpeakerModelPathTextBox.Text = snapshot.Face.SpeakerEmbeddingModelPath ?? string.Empty;
-                    }
+                    ApplySnapshotToEditor(snapshot);
                 }
-                _viewModel.HasUnsavedChanges = false; // initial load is clean
+                _viewModel.HasUnsavedChanges = false;
             }
-            catch { /* ignore to avoid blocking window load */ }
+            catch { }
             finally { _suppressDirty = false; }
+        }
+
+        private void SettingsWindow_Loaded(object sender, RoutedEventArgs e)
+        {
+            PopulateEditorFromCurrentSnapshot();
+        }
+
+        private void ApplySnapshotToEditor(AppSettings snapshot)
+        {
+            var editor = _viewModel?.SelectedCategory?.EditorView as Kinectv1.ModelsSettingsView;
+            if (editor == null) return;
+
+            // TTS
+            editor.TtsEnabledCheckBox.IsChecked = snapshot.Tts.Enabled;
+            editor.TtsModelPathTextBox.Text = snapshot.Tts.ModelPath;
+            editor.TtsModelFolderTextBox.Text = snapshot.Tts.ModelFolder;
+            editor.TtsVocoderPathTextBox.Text = snapshot.Tts.VocoderPath;
+            foreach (var item in editor.ExecutionModeComboBox.Items)
+            {
+                if (item is ComboBoxItem cbi && string.Equals(cbi.Tag?.ToString(), snapshot.Tts.Execution.ToString(), StringComparison.OrdinalIgnoreCase))
+                {
+                    editor.ExecutionModeComboBox.SelectedItem = cbi;
+                    break;
+                }
+            }
+            if (!string.IsNullOrWhiteSpace(snapshot.Tts.Speaker))
+            {
+                editor.TtsVoiceComboBox.SelectedItem = snapshot.Tts.Speaker;
+            }
+            if (editor.TtsOutputDeviceComboBox != null)
+                editor.TtsOutputDeviceComboBox.Text = snapshot.Tts.OutputDevice ?? string.Empty;
+            if (editor.TtsIpaServiceTimeoutTextBox != null)
+                editor.TtsIpaServiceTimeoutTextBox.Text = snapshot.Tts.IpaServiceTimeoutMs.ToString(CultureInfo.InvariantCulture);
+            if (editor.TtsIpaOneShotTimeoutTextBox != null)
+                editor.TtsIpaOneShotTimeoutTextBox.Text = snapshot.Tts.IpaOneShotTimeoutMs.ToString(CultureInfo.InvariantCulture);
+
+            // STT
+            if (editor.SttModelPathTextBox != null)
+                editor.SttModelPathTextBox.Text = snapshot.Stt.ModelPath ?? string.Empty;
+            if (editor.MicInputComboBox != null)
+                editor.MicInputComboBox.Text = snapshot.Stt.InputDevice ?? string.Empty;
+
+            // Audio
+            editor.AudioVoiceThresholdTextBox.Text = snapshot.Audio.VoiceThreshold.ToString(CultureInfo.InvariantCulture);
+            if (editor.AudioVoiceHighThresholdTextBox != null)
+                editor.AudioVoiceHighThresholdTextBox.Text = snapshot.Asr.VoiceHighConfidenceThreshold.ToString(CultureInfo.InvariantCulture);
+            if (editor.VoiceConfidenceLoggingCheckBox != null)
+                editor.VoiceConfidenceLoggingCheckBox.IsChecked = snapshot.Asr.VoiceConfidenceLoggingEnabled;
+            editor.AudioVadThresholdTextBox.Text = snapshot.Audio.VadThreshold.ToString(CultureInfo.InvariantCulture);
+            editor.AudioBufferSizeTextBox.Text = snapshot.Audio.BufferSize.ToString(CultureInfo.InvariantCulture);
+            if (editor.SpeakerMatchThresholdTextBox != null)
+                editor.SpeakerMatchThresholdTextBox.Text = snapshot.Audio.SpeakerMatchMinScore.ToString(CultureInfo.InvariantCulture);
+
+            // VAD
+            editor.VadThresholdTextBox.Text = snapshot.Vad.Threshold.ToString(CultureInfo.InvariantCulture);
+            if (editor.RequireWakeWordCheckBox != null)
+                editor.RequireWakeWordCheckBox.IsChecked = snapshot.App.RequireWakeWord;
+
+            // Face
+            if (editor.FaceThresholdTextBox != null)
+                editor.FaceThresholdTextBox.Text = snapshot.Face.Threshold.ToString(CultureInfo.InvariantCulture);
+            if (editor.FusionFaceWeightTextBox != null)
+                editor.FusionFaceWeightTextBox.Text = snapshot.Face.FusionFaceWeight.ToString(CultureInfo.InvariantCulture);
+            if (editor.FusionVoiceWeightTextBox != null)
+                editor.FusionVoiceWeightTextBox.Text = snapshot.Face.FusionVoiceWeight.ToString(CultureInfo.InvariantCulture);
+            if (editor.FusionHalfLifeTextBox != null)
+                editor.FusionHalfLifeTextBox.Text = snapshot.Face.FusionDecayHalfLifeMs.ToString(CultureInfo.InvariantCulture);
+            if (editor.FusionUnknownThresholdTextBox != null)
+                editor.FusionUnknownThresholdTextBox.Text = snapshot.Face.FusionUnknownThreshold.ToString(CultureInfo.InvariantCulture);
+            if (editor.ArcFaceModelPathTextBox != null)
+                editor.ArcFaceModelPathTextBox.Text = snapshot.Face.ArcFaceModelPath ?? string.Empty;
+            if (editor.SpeakerModelPathTextBox != null)
+                editor.SpeakerModelPathTextBox.Text = snapshot.Face.SpeakerEmbeddingModelPath ?? string.Empty;
         }
 
         private void CategoriesTreeView_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
@@ -127,6 +127,8 @@ namespace Kinectv1.UI.Settings
             {
                 _viewModel.SelectedCategory = category;
                 AttachDirtyHandlersToCurrentEditor();
+                // Update the newly selected editor with snapshot when switching categories
+                PopulateEditorFromCurrentSnapshot();
             }
         }
 
