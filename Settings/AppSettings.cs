@@ -34,7 +34,8 @@ namespace Kinectv1.Settings
         TtsExecution Execution,
         [property: Required] string ModelFolder,
         [property: Required] string ModelPath,
-        [property: Required] string VocoderPath,
+        // Vocoder is optional for some models
+        string VocoderPath,
         // New unified fields
         [property: Required] string OutputDevice,
         [property: Range(0, 1)] double LocalVolume,

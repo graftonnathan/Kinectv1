@@ -31,6 +31,13 @@ namespace Kinectv1.UI.Settings
         public void TriggerSave() => Save_Click(this, new RoutedEventArgs());
         public void TriggerDefaults() => Defaults_Click(this, new RoutedEventArgs());
 
+        // Added: allow host to manually populate editor when embedding (Loaded won't fire)
+        public void PopulateEditorFromCurrentSnapshot()
+        {
+            // Reuse existing load handler logic for consistency
+            SettingsWindow_Loaded(this, new RoutedEventArgs());
+        }
+
         private void SettingsWindow_Loaded(object sender, RoutedEventArgs e)
         {
             try

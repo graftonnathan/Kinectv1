@@ -12,7 +12,7 @@
     "execution": "GPU",
     "modelFolder": "models/tts/kokoro",
     "modelPath": "models/tts/kokoro/onnx/model.onnx",
-    "vocoderPath": "models/tts/kokoro-82M/onnx/model_q8f16.onnx",
+    "vocoderPath": "",
     "outputDevice": "Default",
     "localVolume": 1.0,
     "discordVolume": 1.0,

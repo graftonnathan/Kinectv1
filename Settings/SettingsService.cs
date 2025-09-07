@@ -335,7 +335,7 @@ namespace Kinectv1.Settings
             {
                 if (string.IsNullOrWhiteSpace(s.Tts.ModelFolder)) throw new InvalidDataException("tts.modelFolder required when tts.enabled");
                 if (string.IsNullOrWhiteSpace(s.Tts.ModelPath)) throw new InvalidDataException("tts.modelPath required when tts.enabled");
-                if (string.IsNullOrWhiteSpace(s.Tts.VocoderPath)) throw new InvalidDataException("tts.vocoderPath required when tts.enabled");
+                // VocoderPath is optional for some models; do not enforce
             }
 
             if (s.Ollama == null)
@@ -382,7 +382,7 @@ namespace Kinectv1.Settings
                 if (s.Mumble.VadThreshold < 1 || s.Mumble.VadThreshold > 10000)
                     throw new InvalidDataException("mumble.vadThreshold must be 1..10000");
                 if (s.Mumble.ReconnectBackoffMs < 0 || s.Mumble.ReconnectBackoffMs > 60000)
-                    throw new InvalidDataException("mumble.reconnectBackoffMs must be 0..60000");
+                    throw new InvalidDataException("mumble.reconnectBackOffMs must be 0..60000");
             }
         }
     }
