@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
 using Kinectv1.Settings;
+using Kinectv1;
 
 namespace Kinectv1.UI.Settings
 {
@@ -54,6 +55,7 @@ namespace Kinectv1.UI.Settings
                         editor.TtsModelPathTextBox.Text = snapshot.Tts.ModelPath;
                         editor.TtsModelFolderTextBox.Text = snapshot.Tts.ModelFolder;
                         editor.TtsVocoderPathTextBox.Text = snapshot.Tts.VocoderPath;
+                        editor.TtsVoiceComboBox.ItemsSource = TtsPlaybackController.GetInstalledVoices();
                         foreach (var item in editor.ExecutionModeComboBox.Items)
                         {
                             if (item is ComboBoxItem cbi && string.Equals(cbi.Tag?.ToString(), snapshot.Tts.Execution.ToString(), StringComparison.OrdinalIgnoreCase))
@@ -66,6 +68,13 @@ namespace Kinectv1.UI.Settings
                         {
                             editor.TtsVoiceComboBox.SelectedItem = snapshot.Tts.Speaker;
                         }
+                        editor.LocalVolumeSlider.Value = snapshot.Tts.LocalVolume * 100;
+                        editor.DiscordVolumeSlider.Value = snapshot.Tts.DiscordVolume * 100;
+                        editor.TtsSpeedSlider.Value = snapshot.Tts.Speed * 100;
+                        editor.TrimSilenceThresholdSlider.Value = snapshot.Tts.TrimThreshold * 1000;
+                        editor.TtsTrimLeaveSlider.Value = snapshot.Tts.TrimLeaveMs;
+                        editor.TtsTrimMaxSlider.Value = snapshot.Tts.TrimMaxMs;
+                        editor.TtsPaddingSlider.Value = snapshot.Tts.MinClausePaddingMs;
                         // Extra TTS fields
                         if (editor.TtsOutputDeviceComboBox != null)
                         {
@@ -235,14 +244,14 @@ namespace Kinectv1.UI.Settings
             // App-level
             bool requireWake = editor.RequireWakeWordCheckBox?.IsChecked ?? current.App.RequireWakeWord;
 
-            // Extended TTS fields from snapshot (persist unchanged here)
-            double localVolume = current.Tts.LocalVolume;
-            double discordVolume = current.Tts.DiscordVolume;
-            float speed = current.Tts.Speed;
-            double trimThreshold = current.Tts.TrimThreshold;
-            int trimLeaveMs = current.Tts.TrimLeaveMs;
-            int trimMaxMs = current.Tts.TrimMaxMs;
-            int minClausePaddingMs = current.Tts.MinClausePaddingMs;
+            // Extended TTS fields from sliders
+            double localVolume = editor.LocalVolumeSlider.Value / 100.0;
+            double discordVolume = editor.DiscordVolumeSlider.Value / 100.0;
+            float speed = (float)(editor.TtsSpeedSlider.Value / 100.0);
+            double trimThreshold = editor.TrimSilenceThresholdSlider.Value / 1000.0;
+            int trimLeaveMs = (int)editor.TtsTrimLeaveSlider.Value;
+            int trimMaxMs = (int)editor.TtsTrimMaxSlider.Value;
+            int minClausePaddingMs = (int)editor.TtsPaddingSlider.Value;
 
             var audio = new global::Kinectv1.Settings.AudioSettings(voiceThreshold, audioVadThreshold, bufferSize, speakerMatchMin);
             var vad = new global::Kinectv1.Settings.VadSettings(vadThreshold);
@@ -361,6 +370,15 @@ namespace Kinectv1.UI.Settings
                     {
                         editor.TtsVoiceComboBox.SelectedItem = defaults.Tts.Speaker;
                     }
+                    if (editor.TtsVoiceComboBox.ItemsSource == null)
+                        editor.TtsVoiceComboBox.ItemsSource = TtsPlaybackController.GetInstalledVoices();
+                    editor.LocalVolumeSlider.Value = defaults.Tts.LocalVolume * 100;
+                    editor.DiscordVolumeSlider.Value = defaults.Tts.DiscordVolume * 100;
+                    editor.TtsSpeedSlider.Value = defaults.Tts.Speed * 100;
+                    editor.TrimSilenceThresholdSlider.Value = defaults.Tts.TrimThreshold * 1000;
+                    editor.TtsTrimLeaveSlider.Value = defaults.Tts.TrimLeaveMs;
+                    editor.TtsTrimMaxSlider.Value = defaults.Tts.TrimMaxMs;
+                    editor.TtsPaddingSlider.Value = defaults.Tts.MinClausePaddingMs;
                     if (editor.TtsOutputDeviceComboBox != null)
                         editor.TtsOutputDeviceComboBox.Text = defaults.Tts.OutputDevice ?? string.Empty;
                     if (editor.TtsIpaServiceTimeoutTextBox != null)
@@ -432,6 +450,7 @@ namespace Kinectv1.UI.Settings
                     editor.TtsModelPathTextBox.Text = snapshot.Tts.ModelPath;
                     editor.TtsModelFolderTextBox.Text = snapshot.Tts.ModelFolder;
                     editor.TtsVocoderPathTextBox.Text = snapshot.Tts.VocoderPath;
+                    editor.TtsVoiceComboBox.ItemsSource = TtsPlaybackController.GetInstalledVoices();
                     foreach (var item in editor.ExecutionModeComboBox.Items)
                     {
                         if (item is ComboBoxItem cbi && string.Equals(cbi.Tag?.ToString(), snapshot.Tts.Execution.ToString(), StringComparison.OrdinalIgnoreCase))
@@ -444,6 +463,13 @@ namespace Kinectv1.UI.Settings
                     {
                         editor.TtsVoiceComboBox.SelectedItem = snapshot.Tts.Speaker;
                     }
+                    editor.LocalVolumeSlider.Value = snapshot.Tts.LocalVolume * 100;
+                    editor.DiscordVolumeSlider.Value = snapshot.Tts.DiscordVolume * 100;
+                    editor.TtsSpeedSlider.Value = snapshot.Tts.Speed * 100;
+                    editor.TrimSilenceThresholdSlider.Value = snapshot.Tts.TrimThreshold * 1000;
+                    editor.TtsTrimLeaveSlider.Value = snapshot.Tts.TrimLeaveMs;
+                    editor.TtsTrimMaxSlider.Value = snapshot.Tts.TrimMaxMs;
+                    editor.TtsPaddingSlider.Value = snapshot.Tts.MinClausePaddingMs;
                     if (editor.TtsOutputDeviceComboBox != null)
                         editor.TtsOutputDeviceComboBox.Text = snapshot.Tts.OutputDevice ?? string.Empty;
                     if (editor.TtsIpaServiceTimeoutTextBox != null)
@@ -511,6 +537,13 @@ namespace Kinectv1.UI.Settings
                 _attachedEditor.TtsEnabledCheckBox.Unchecked -= OnEditorDirty;
                 _attachedEditor.TtsVoiceComboBox.SelectionChanged -= OnEditorDirtySelection;
                 _attachedEditor.ExecutionModeComboBox.SelectionChanged -= OnEditorDirtySelection;
+                _attachedEditor.LocalVolumeSlider.ValueChanged -= OnEditorDirtyValue;
+                _attachedEditor.DiscordVolumeSlider.ValueChanged -= OnEditorDirtyValue;
+                _attachedEditor.TtsSpeedSlider.ValueChanged -= OnEditorDirtyValue;
+                _attachedEditor.TrimSilenceThresholdSlider.ValueChanged -= OnEditorDirtyValue;
+                _attachedEditor.TtsTrimLeaveSlider.ValueChanged -= OnEditorDirtyValue;
+                _attachedEditor.TtsTrimMaxSlider.ValueChanged -= OnEditorDirtyValue;
+                _attachedEditor.TtsPaddingSlider.ValueChanged -= OnEditorDirtyValue;
                 _attachedEditor.SttModelPathTextBox.TextChanged -= OnEditorDirty;
                 _attachedEditor.SpeakerModelPathTextBox.TextChanged -= OnEditorDirty;
                 _attachedEditor.ArcFaceModelPathTextBox.TextChanged -= OnEditorDirty;
@@ -552,6 +585,13 @@ namespace Kinectv1.UI.Settings
                 _attachedEditor.TtsEnabledCheckBox.Unchecked += OnEditorDirty;
                 _attachedEditor.TtsVoiceComboBox.SelectionChanged += OnEditorDirtySelection;
                 _attachedEditor.ExecutionModeComboBox.SelectionChanged += OnEditorDirtySelection;
+                _attachedEditor.LocalVolumeSlider.ValueChanged += OnEditorDirtyValue;
+                _attachedEditor.DiscordVolumeSlider.ValueChanged += OnEditorDirtyValue;
+                _attachedEditor.TtsSpeedSlider.ValueChanged += OnEditorDirtyValue;
+                _attachedEditor.TrimSilenceThresholdSlider.ValueChanged += OnEditorDirtyValue;
+                _attachedEditor.TtsTrimLeaveSlider.ValueChanged += OnEditorDirtyValue;
+                _attachedEditor.TtsTrimMaxSlider.ValueChanged += OnEditorDirtyValue;
+                _attachedEditor.TtsPaddingSlider.ValueChanged += OnEditorDirtyValue;
                 _attachedEditor.SttModelPathTextBox.TextChanged += OnEditorDirty;
                 _attachedEditor.SpeakerModelPathTextBox.TextChanged += OnEditorDirty;
                 _attachedEditor.ArcFaceModelPathTextBox.TextChanged += OnEditorDirty;
@@ -591,6 +631,12 @@ namespace Kinectv1.UI.Settings
         }
 
         private void OnEditorDirtySelection(object sender, SelectionChangedEventArgs e)
+        {
+            if (_suppressDirty) return;
+            if (_viewModel != null) _viewModel.HasUnsavedChanges = true;
+        }
+
+        private void OnEditorDirtyValue(object sender, RoutedPropertyChangedEventArgs<double> e)
         {
             if (_suppressDirty) return;
             if (_viewModel != null) _viewModel.HasUnsavedChanges = true;
