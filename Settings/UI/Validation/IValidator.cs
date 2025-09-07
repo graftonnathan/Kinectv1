@@ -1,6 +1,6 @@
 using System;
 
-namespace Kinectv1.src.UI.Validation
+namespace Kinectv1.UI.Settings.Validation
 {
     /// <summary>
     /// Represents a validation rule with severity level

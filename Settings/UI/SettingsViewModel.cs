@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using Kinectv1.Settings;
 
 namespace Kinectv1.UI.Settings
 {
@@ -8,7 +9,7 @@ namespace Kinectv1.UI.Settings
     {
         private SettingsCategoryVM _selectedCategory;
         private bool _hasUnsavedChanges;
-        private Kinectv1.Settings.AppSettings _snapshot;
+        private AppSettings _snapshot;
 
         public SettingsViewModel()
         {
@@ -52,7 +53,7 @@ namespace Kinectv1.UI.Settings
             set => HasUnsavedChanges = value;
         }
 
-        public Kinectv1.Settings.AppSettings Snapshot
+        public AppSettings Snapshot
         {
             get => _snapshot;
             private set
@@ -77,7 +78,7 @@ namespace Kinectv1.UI.Settings
 
         private void InitializeCategories()
         {
-            var modelsView = new Kinectv1.ModelsSettingsView();
+            var modelsView = new ModelsSettingsView();
 
             Categories.Add(new SettingsCategoryVM
             {
@@ -88,19 +89,19 @@ namespace Kinectv1.UI.Settings
             Categories.Add(new SettingsCategoryVM
             {
                 Name = "AI Assistant",
-                EditorView = new Kinectv1.OllamaSettingsView()
+                EditorView = new OllamaSettingsView()
             });
 
             Categories.Add(new SettingsCategoryVM
             {
                 Name = "Discord",
-                EditorView = new Kinectv1.DiscordSettingsView()
+                EditorView = new DiscordSettingsView()
             });
 
             Categories.Add(new SettingsCategoryVM
             {
                 Name = "Mumble",
-                EditorView = new Kinectv1.MumbleSettingsView()
+                EditorView = new MumbleSettingsView()
             });
 
             if (Categories.Count > 0)
