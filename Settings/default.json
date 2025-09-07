@@ -1,4 +1,5 @@
 {
+  "schemaVersion": 1,
   "audio": {
     "voiceThreshold": 0.2,
     "vadThreshold": 50,
