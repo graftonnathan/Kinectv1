@@ -1,7 +1,7 @@
 using System;
 using System.Globalization;
 
-namespace Kinectv1.src.UI.Validation
+namespace Kinectv1.UI.Settings.Validation
 {
     /// <summary>
     /// Validates that a value is not null or empty

@@ -14,7 +14,7 @@ namespace Kinectv1.UI.Settings
     {
         private SettingsViewModel _viewModel;
         private SettingsService _svc => App.SettingsProvider;
-        private Kinectv1.ModelsSettingsView _attachedEditor;
+        private ModelsSettingsView _attachedEditor;
         private bool _suppressDirty; // prevent dirty flag during programmatic updates
 
         public SettingsWindow()
@@ -39,7 +39,7 @@ namespace Kinectv1.UI.Settings
                 var snapshot = _svc?.Current;
                 if (snapshot != null)
                 {
-                    var editor = _viewModel?.SelectedCategory?.EditorView as Kinectv1.ModelsSettingsView;
+                    var editor = _viewModel?.SelectedCategory?.EditorView as ModelsSettingsView;
                     if (editor != null)
                     {
                         // TTS
@@ -156,7 +156,7 @@ namespace Kinectv1.UI.Settings
 
         private global::Kinectv1.Settings.AppSettings BuildFromUI()
         {
-            var editor = _viewModel?.SelectedCategory?.EditorView as Kinectv1.ModelsSettingsView;
+            var editor = _viewModel?.SelectedCategory?.EditorView as ModelsSettingsView;
             if (editor == null) throw new InvalidOperationException("Settings editor not available");
 
             var current = _svc?.Current ?? throw new InvalidOperationException("Settings snapshot unavailable");
@@ -334,7 +334,7 @@ namespace Kinectv1.UI.Settings
             {
                 _suppressDirty = true;
                 var defaults = _svc.GetDefaultsEffective();
-                var editor = _viewModel?.SelectedCategory?.EditorView as Kinectv1.ModelsSettingsView;
+                var editor = _viewModel?.SelectedCategory?.EditorView as ModelsSettingsView;
                 if (editor != null)
                 {
                     // TTS
@@ -417,7 +417,7 @@ namespace Kinectv1.UI.Settings
             {
                 _suppressDirty = true;
                 var snapshot = _svc.Reload();
-                var editor = _viewModel?.SelectedCategory?.EditorView as Kinectv1.ModelsSettingsView;
+                var editor = _viewModel?.SelectedCategory?.EditorView as ModelsSettingsView;
                 if (editor != null)
                 {
                     // TTS
@@ -535,7 +535,7 @@ namespace Kinectv1.UI.Settings
                 }
             }
 
-            _attachedEditor = _viewModel?.SelectedCategory?.EditorView as Kinectv1.ModelsSettingsView;
+            _attachedEditor = _viewModel?.SelectedCategory?.EditorView as ModelsSettingsView;
             if (_attachedEditor != null)
             {
                 _attachedEditor.TtsModelPathTextBox.TextChanged += OnEditorDirty;
