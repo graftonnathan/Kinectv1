@@ -261,8 +261,10 @@ namespace Kinectv1
                         // Update statistics
                         UpdateStatistics(rms, _smoothedGain);
 
-                        // Calculate final RMS for UI display (scale to expected range)
-                        float displayRms = rms * 3000f; // Scale for UI compatibility
+                        // Calculate final RMS for UI display
+                        // New target: meter tops at 4000. Previous scale (3000) peaked ~1500, so increase ~2.67x.
+                        float scaledRms = rms * 8000f; // 3000 * (4000/1500) ? 8000
+                        float displayRms = Math.Max(0f, Math.Min(4000f, scaledRms));
 
                         // Minimal logging - only show every 100 chunks or significant events
                         if (_processedChunks % 100 == 0)

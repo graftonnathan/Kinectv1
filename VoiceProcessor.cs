@@ -148,6 +148,16 @@ namespace Kinectv1
         {
             try
             {
+                // Priority 0: If we are processing Discord audio (hint set), prefer the Discord username
+                if (SpeakerIdentifier.HasValidDiscordSpeakerHint())
+                {
+                    var discordName = SpeakerIdentifier.GetDiscordSpeakerHint();
+                    if (!string.IsNullOrWhiteSpace(discordName))
+                    {
+                        return (discordName, 1.0f, "Discord username");
+                    }
+                }
+
                 string finalSpeakerName = "Unknown";
                 float finalConfidence = 0f;
                 string identificationMethod = "No identification";
