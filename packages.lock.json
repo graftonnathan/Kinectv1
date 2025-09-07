@@ -137,6 +137,12 @@
           "System.CodeDom": "6.0.0"
         }
       },
+      "System.Speech": {
+        "type": "Direct",
+        "requested": "[6.0.0, )",
+        "resolved": "6.0.0",
+        "contentHash": "GQovERMrNP0Vbtgk8LzH4PlFS6lqHgsL9WkUmv8Kkxa0m0vNakitytpHZlfJ9WR7n9WKLXh68nn2kyL9mflnLg=="
+      },
       "System.Threading.Channels": {
         "type": "Direct",
         "requested": "[7.0.0, )",

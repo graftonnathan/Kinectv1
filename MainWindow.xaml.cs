@@ -1019,7 +1019,7 @@ namespace Kinectv1
             }
             catch { }
         }
-        private void OnTtsSpeakingStarted(string text) { }
+        private void OnTtsSpeakingStarted() { }
         private void OnTtsSpeakingFinished() { }
         private void OnTtsError(string error) { }
         private void OnDiscordBotStatusChanged(string status) { }

@@ -86,6 +86,13 @@ namespace Kinectv1.Settings
             Changed?.Invoke(this, _current);
         }
 
+        // Async-friendly wrapper to match docs contract
+        public System.Threading.Tasks.Task SaveAsync(AppSettings next)
+        {
+            Save(next);
+            return System.Threading.Tasks.Task.CompletedTask;
+        }
+
         // ----- externals -----
         public AppSettings GetDefaults()
         {

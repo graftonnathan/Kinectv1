@@ -34,6 +34,21 @@
     <Page Remove="src\UI\Settings\**\*.xaml" />
   </ItemGroup>
 
+  <!-- Remove legacy duplicate root files if any exist -->
+  <ItemGroup>
+    <Compile Remove="VoiceRecognizer.cs" />
+    <Compile Remove="EnhancedKinectFaceTracker.cs" />
+    <Compile Remove="IdentityFusionTracker.cs" />
+    <Compile Remove="SpeakerIdentifier.cs" />
+    <Compile Remove="ConsoleManager.cs" />
+    <Compile Remove="Telemetry.cs" />
+    <Compile Remove="MemoryStore.cs" />
+    <Compile Remove="CoquiTtsService.cs" />
+    <Compile Remove="KokoroTtsService.cs" />
+    <Compile Remove="OllamaConversationManager.cs" />
+    <Compile Remove="OnnxSessionFactory.cs" />
+  </ItemGroup>
+
   <Target Name="OrganizeDevLibs" BeforeTargets="Build">
     <MakeDir Directories="$(ProjectDir)lib" Condition="!Exists('$(ProjectDir)lib')" />
     <MakeDir Directories="$(ProjectDir)lib\onnxruntime" Condition="!Exists('$(ProjectDir)lib\onnxruntime')" />
@@ -172,6 +187,7 @@
     <PackageReference Include="System.Threading.Channels" Version="7.0.0" />
     <PackageReference Include="Concentus" Version="1.1.7" />
     <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="8.0.0" />
+    <PackageReference Include="System.Speech" Version="6.0.0" />
   </ItemGroup>
   
   <ItemGroup>
@@ -179,6 +195,7 @@
     <Reference Include="System.Net.Http" />
     <Reference Include="System.Configuration" />
     <Reference Include="System.ComponentModel.DataAnnotations" />
+    <Reference Include="System.Speech" />
   </ItemGroup>
   
   <ItemGroup>
@@ -234,6 +251,6 @@
     <ItemGroup>
       <DiscordLibs Include="$(ProjectDir)lib\discord\opus.dll;$(ProjectDir)lib\discord\libsodium.dll" />
     </ItemGroup>
-    <Copy SourceFiles="@(DiscordLibs)" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" Condition=" '@(DiscordLibs)' != '' " />
+    <Copy SourceFiles="@(DiscordLibs)" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" Condition=" '@(DiscordLibs)' != '' "/>
   </Target>
 </Project>

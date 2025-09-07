@@ -313,20 +313,14 @@ namespace Kinectv1.Discord
                 }
                 if (string.IsNullOrEmpty(token) || token.Length < 50)
                 {
-                    var error = AppError.Discord("DISCORD_TOKEN_INVALID", 
-                        "Discord bot token invalid or too short",
-                        "Check DiscordBotToken in settings on Diagnostics page.");
-                    OnErrorOccurred?.Invoke(error.GetDisplayString());
+                    OnErrorOccurred?.Invoke("Discord bot token invalid or too short. Check Discord token in settings.");
                     return false;
                 }
                 return true;
             }
             catch (Exception ex)
             {
-                var error = AppError.Discord("DISCORD_CONFIG_TEST_ERROR", 
-                    $"Config test failed: {ex.Message}",
-                    "Check Discord configuration and network connectivity.", ex);
-                OnErrorOccurred?.Invoke(error.GetDisplayString());
+                OnErrorOccurred?.Invoke($"Discord config test failed: {ex.Message}");
                 return false;
             }
         }
@@ -659,10 +653,6 @@ namespace Kinectv1.Discord
                     await Task.Delay(300);
 
                     Console.WriteLine($"✅ ConnectAsync succeeded in {joinTimer.ElapsedMilliseconds}ms, state: {audioClient.ConnectionState}");
-                    Telemetry.Timer("timer.discord.voice.join.ms", joinTimer.ElapsedMilliseconds);
-                    Telemetry.Gauge("gauge.discord.voice.connected", 1);
-                    Telemetry.Counter("discord.voice.join.success");
-
                     return audioClient;
                 }
                 catch (HttpException httpEx) when (httpEx.DiscordCode.HasValue && (int)httpEx.DiscordCode.Value == 4006)
@@ -689,8 +679,6 @@ namespace Kinectv1.Discord
             }
 
             joinTimer.Stop();
-            Telemetry.Counter("discord.voice.join.failed");
-            Telemetry.Gauge("gauge.discord.voice.connected", 0);
             throw new InvalidOperationException($"Voice join failed after {maxRetries} attempts");
         }
 
@@ -736,10 +724,8 @@ namespace Kinectv1.Discord
                 if (wasQueueFull)
                 {
                     Interlocked.Increment(ref _totalTtsDrops);
-                    Telemetry.Counter("counter.queue.drop.tts");
                     Console.WriteLine($"⚠️ TTS backpressure: Dropped previous job due to preemption (total drops: {_totalTtsDrops})");
                 }
-                Telemetry.Gauge("gauge.queue.depth.tts", 1); // Always 1 for single-item queue
             }
             StartTtsWorkerIfNeeded();
             return job.Tcs.Task;
@@ -965,7 +951,7 @@ namespace Kinectv1.Discord
         private static Task Log(LogMessage msg)
         {
             Console.WriteLine($"[{msg.Severity}] {msg.Source}: {msg.Message}");
-            if (msg.Exception != null) Console.WriteLine(msg.Exception);  // <-- SHOW IT
+            if (msg.Exception != null) Console.WriteLine(msg.Exception);
             return Task.CompletedTask;
         }
 

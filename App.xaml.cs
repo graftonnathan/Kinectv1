@@ -1,7 +1,7 @@
 ﻿using System;
-using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Threading;
+using System.Threading.Tasks;
 using Kinectv1.Discord;
 using System.IO;
 using Kinectv1.Settings;
@@ -28,9 +28,6 @@ namespace Kinectv1
             }
             catch { /* Non-fatal if console host does not support */ }
         }
-
-        // Global hosted services manager instance
-        public static HostedServicesManager ServicesManager { get; private set; }
 
         // Minimal JSON settings provider (defaults + user overlay)
         public static SettingsService SettingsProvider { get; private set; }
@@ -80,18 +77,12 @@ namespace Kinectv1
                 // Perform lightweight startup self-checks for critical resources
                 SelfCheckCriticalResources();
 
-                // Initialize telemetry system
-                Console.WriteLine("📊 Initializing telemetry...");
-                Telemetry.RefreshSettings();
-                Telemetry.Event("app.startup", new { version = "1.0", timestamp = DateTime.UtcNow });
-                Console.WriteLine("✅ Telemetry initialized successfully");
-
                 // Create and show main window
                 var win = new MainWindow();
                 win.Show();
                 win.Activate();
                 
-                // Start background services through hosted services manager
+                // Start background services (direct start; hosted services manager removed)
                 StartServices();
             }
             catch (Exception ex)
@@ -146,43 +137,13 @@ namespace Kinectv1
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"SelfCheckCriticalResources failed: {ex.Message}");
+                Console.WriteLine($"Self-check failed: {ex.Message}");
             }
         }
 
         private void StartServices()
         {
-            try
-            {
-                ServicesManager = new HostedServicesManager();
-
-                // Register Vosk/ASR using settings-driven model path (per docs/settings.md)
-                try
-                {
-                    var sttPath = SettingsProvider?.Current?.Stt?.ModelPath;
-                    if (!string.IsNullOrWhiteSpace(sttPath))
-                    {
-                        var baseDir = AppDomain.CurrentDomain.BaseDirectory;
-                        var fullSttPath = Path.IsPathRooted(sttPath) ? sttPath : Path.Combine(baseDir, sttPath);
-                        ServicesManager.RegisterService(new VoiceRecognizerHostedService(fullSttPath, string.Empty));
-                    }
-                    else
-                    {
-                        Console.WriteLine("⚠️ STT model path not configured in settings; skipping VoiceRecognizer service registration");
-                    }
-                }
-                catch (Exception regEx)
-                {
-                    Console.WriteLine($"⚠️ Failed to register VoiceRecognizer service: {regEx.Message}");
-                }
-
-                // Start all registered services
-                ServicesManager.StartAllAsync().GetAwaiter().GetResult();
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Hosted services failed to start: {ex.Message}");
-            }
+            // Placeholder for direct-start services if needed
         }
 
         private void SetupGlobalExceptionHandlers()

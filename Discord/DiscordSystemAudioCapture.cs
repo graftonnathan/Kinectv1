@@ -39,14 +39,11 @@ namespace Kinectv1.Discord
 
                     _capture.StartRecording();
                     _isRunning = true;
-                    Console.WriteLine("?? System loopback capture started (default output)");
-                    
-                    // Update telemetry gauge - system loopback is active
-                    Telemetry.Counter("audio.ingest.active", 1);
+                    Console.WriteLine("🎧 System loopback capture started (default output)");
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"? Failed to start system loopback capture: {ex.Message}");
+                    Console.WriteLine($"❌ Failed to start system loopback capture: {ex.Message}");
                     Stop();
                 }
             }
@@ -73,9 +70,7 @@ namespace Kinectv1.Discord
                 {
                     if (_isRunning)
                     {
-                        Console.WriteLine("?? System loopback capture stopped");
-                        // Update telemetry gauge - system loopback is inactive
-                        Telemetry.Counter("audio.ingest.active", 0);
+                        Console.WriteLine("🛑 System loopback capture stopped");
                     }
                     _isRunning = false;
                 }
@@ -86,7 +81,7 @@ namespace Kinectv1.Discord
         {
             if (e.Exception != null)
             {
-                Console.WriteLine($"? Loopback capture error: {e.Exception.Message}");
+                Console.WriteLine($"⚠️ Loopback capture error: {e.Exception.Message}");
             }
         }
 
@@ -124,7 +119,7 @@ namespace Kinectv1.Discord
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"? Loopback capture processing error: {ex.Message}");
+                Console.WriteLine($"⚠️ Loopback capture processing error: {ex.Message}");
             }
         }
     }
