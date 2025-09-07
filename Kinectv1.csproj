@@ -221,6 +221,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Folder Include="Settings\UI\Models\" />
     <Folder Include="Settings\Validation\" />
     <Folder Include="src\Audio\" />
     <Folder Include="src\UI\Settings\Editors\" />
@@ -251,6 +252,6 @@
     <ItemGroup>
       <DiscordLibs Include="$(ProjectDir)lib\discord\opus.dll;$(ProjectDir)lib\discord\libsodium.dll" />
     </ItemGroup>
-    <Copy SourceFiles="@(DiscordLibs)" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" Condition=" '@(DiscordLibs)' != '' "/>
+    <Copy SourceFiles="@(DiscordLibs)" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" Condition=" '@(DiscordLibs)' != '' " />
   </Target>
 </Project>

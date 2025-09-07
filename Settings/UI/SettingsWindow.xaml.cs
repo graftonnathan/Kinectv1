@@ -26,6 +26,11 @@ namespace Kinectv1.UI.Settings
             AttachDirtyHandlersToCurrentEditor();
         }
 
+        // Expose actions so the embedded editor (ModelsSettingsView) can forward button clicks
+        public void TriggerValidate() => Verify_Click(this, new RoutedEventArgs());
+        public void TriggerSave() => Save_Click(this, new RoutedEventArgs());
+        public void TriggerDefaults() => Defaults_Click(this, new RoutedEventArgs());
+
         private void SettingsWindow_Loaded(object sender, RoutedEventArgs e)
         {
             try
@@ -54,9 +59,32 @@ namespace Kinectv1.UI.Settings
                         {
                             editor.TtsVoiceComboBox.SelectedItem = snapshot.Tts.Speaker;
                         }
+                        // Extra TTS fields
+                        if (editor.TtsOutputDeviceComboBox != null)
+                        {
+                            editor.TtsOutputDeviceComboBox.Text = snapshot.Tts.OutputDevice ?? string.Empty;
+                        }
+                        if (editor.TtsIpaServiceTimeoutTextBox != null)
+                        {
+                            editor.TtsIpaServiceTimeoutTextBox.Text = snapshot.Tts.IpaServiceTimeoutMs.ToString(CultureInfo.InvariantCulture);
+                        }
+                        if (editor.TtsIpaOneShotTimeoutTextBox != null)
+                        {
+                            editor.TtsIpaOneShotTimeoutTextBox.Text = snapshot.Tts.IpaOneShotTimeoutMs.ToString(CultureInfo.InvariantCulture);
+                        }
+
+                        // STT
+                        if (editor.SttModelPathTextBox != null)
+                            editor.SttModelPathTextBox.Text = snapshot.Stt.ModelPath ?? string.Empty;
+                        if (editor.MicInputComboBox != null)
+                            editor.MicInputComboBox.Text = snapshot.Stt.InputDevice ?? string.Empty;
 
                         // Audio
                         editor.AudioVoiceThresholdTextBox.Text = snapshot.Audio.VoiceThreshold.ToString(CultureInfo.InvariantCulture);
+                        if (editor.AudioVoiceHighThresholdTextBox != null)
+                            editor.AudioVoiceHighThresholdTextBox.Text = snapshot.Asr.VoiceHighConfidenceThreshold.ToString(CultureInfo.InvariantCulture);
+                        if (editor.VoiceConfidenceLoggingCheckBox != null)
+                            editor.VoiceConfidenceLoggingCheckBox.IsChecked = snapshot.Asr.VoiceConfidenceLoggingEnabled;
                         editor.AudioVadThresholdTextBox.Text = snapshot.Audio.VadThreshold.ToString(CultureInfo.InvariantCulture);
                         editor.AudioBufferSizeTextBox.Text = snapshot.Audio.BufferSize.ToString(CultureInfo.InvariantCulture);
                         // New: Speaker match min score
@@ -67,6 +95,24 @@ namespace Kinectv1.UI.Settings
 
                         // VAD
                         editor.VadThresholdTextBox.Text = snapshot.Vad.Threshold.ToString(CultureInfo.InvariantCulture);
+                        if (editor.RequireWakeWordCheckBox != null)
+                            editor.RequireWakeWordCheckBox.IsChecked = snapshot.App.RequireWakeWord;
+
+                        // Face
+                        if (editor.FaceThresholdTextBox != null)
+                            editor.FaceThresholdTextBox.Text = snapshot.Face.Threshold.ToString(CultureInfo.InvariantCulture);
+                        if (editor.FusionFaceWeightTextBox != null)
+                            editor.FusionFaceWeightTextBox.Text = snapshot.Face.FusionFaceWeight.ToString(CultureInfo.InvariantCulture);
+                        if (editor.FusionVoiceWeightTextBox != null)
+                            editor.FusionVoiceWeightTextBox.Text = snapshot.Face.FusionVoiceWeight.ToString(CultureInfo.InvariantCulture);
+                        if (editor.FusionHalfLifeTextBox != null)
+                            editor.FusionHalfLifeTextBox.Text = snapshot.Face.FusionDecayHalfLifeMs.ToString(CultureInfo.InvariantCulture);
+                        if (editor.FusionUnknownThresholdTextBox != null)
+                            editor.FusionUnknownThresholdTextBox.Text = snapshot.Face.FusionUnknownThreshold.ToString(CultureInfo.InvariantCulture);
+                        if (editor.ArcFaceModelPathTextBox != null)
+                            editor.ArcFaceModelPathTextBox.Text = snapshot.Face.ArcFaceModelPath ?? string.Empty;
+                        if (editor.SpeakerModelPathTextBox != null)
+                            editor.SpeakerModelPathTextBox.Text = snapshot.Face.SpeakerEmbeddingModelPath ?? string.Empty;
                     }
                 }
                 _viewModel.HasUnsavedChanges = false; // initial load is clean
@@ -123,6 +169,13 @@ namespace Kinectv1.UI.Settings
             string speaker = editor.TtsVoiceComboBox.SelectedItem?.ToString() ?? current.Tts.Speaker;
             string execTag = (editor.ExecutionModeComboBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? current.Tts.Execution.ToString();
             var exec = string.Equals(execTag, "GPU", StringComparison.OrdinalIgnoreCase) ? global::Kinectv1.Settings.TtsExecution.GPU : global::Kinectv1.Settings.TtsExecution.CPU;
+            string outputDevice = editor.TtsOutputDeviceComboBox?.Text ?? current.Tts.OutputDevice;
+            int ipaServiceTimeoutMs = current.Tts.IpaServiceTimeoutMs;
+            int ipaOneShotTimeoutMs = current.Tts.IpaOneShotTimeoutMs;
+            if (!string.IsNullOrWhiteSpace(editor.TtsIpaServiceTimeoutTextBox?.Text))
+                ipaServiceTimeoutMs = int.Parse(editor.TtsIpaServiceTimeoutTextBox.Text, CultureInfo.InvariantCulture);
+            if (!string.IsNullOrWhiteSpace(editor.TtsIpaOneShotTimeoutTextBox?.Text))
+                ipaOneShotTimeoutMs = int.Parse(editor.TtsIpaOneShotTimeoutTextBox.Text, CultureInfo.InvariantCulture);
 
             // Audio (strict parse; fail fast)
             double voiceThreshold = double.Parse(editor.AudioVoiceThresholdTextBox.Text, CultureInfo.InvariantCulture);
@@ -134,11 +187,48 @@ namespace Kinectv1.UI.Settings
                 speakerMatchMin = double.Parse(editor.SpeakerMatchThresholdTextBox.Text, CultureInfo.InvariantCulture);
             }
 
+            // ASR (partial, mapped to visible fields)
+            double asrHighConf = current.Asr.VoiceHighConfidenceThreshold;
+            bool asrLogging = current.Asr.VoiceConfidenceLoggingEnabled;
+            if (!string.IsNullOrWhiteSpace(editor.AudioVoiceHighThresholdTextBox?.Text))
+                asrHighConf = double.Parse(editor.AudioVoiceHighThresholdTextBox.Text, CultureInfo.InvariantCulture);
+            if (editor.VoiceConfidenceLoggingCheckBox != null)
+                asrLogging = editor.VoiceConfidenceLoggingCheckBox.IsChecked ?? current.Asr.VoiceConfidenceLoggingEnabled;
+
             // VAD
             int vadThreshold = int.Parse(editor.VadThresholdTextBox.Text, CultureInfo.InvariantCulture);
 
+            // STT
+            string sttModelPath = editor.SttModelPathTextBox?.Text ?? current.Stt.ModelPath;
+            string sttInputDevice = editor.MicInputComboBox?.Text ?? current.Stt.InputDevice;
+
+            // Face
+            double faceThreshold = current.Face.Threshold;
+            double faceW = current.Face.FusionFaceWeight;
+            double voiceW = current.Face.FusionVoiceWeight;
+            int halfLife = current.Face.FusionDecayHalfLifeMs;
+            double unkThresh = current.Face.FusionUnknownThreshold;
+            string arcPath = current.Face.ArcFaceModelPath;
+            string spkPath = current.Face.SpeakerEmbeddingModelPath;
+            if (!string.IsNullOrWhiteSpace(editor.FaceThresholdTextBox?.Text))
+                faceThreshold = double.Parse(editor.FaceThresholdTextBox.Text, CultureInfo.InvariantCulture);
+            if (!string.IsNullOrWhiteSpace(editor.FusionFaceWeightTextBox?.Text))
+                faceW = double.Parse(editor.FusionFaceWeightTextBox.Text, CultureInfo.InvariantCulture);
+            if (!string.IsNullOrWhiteSpace(editor.FusionVoiceWeightTextBox?.Text))
+                voiceW = double.Parse(editor.FusionVoiceWeightTextBox.Text, CultureInfo.InvariantCulture);
+            if (!string.IsNullOrWhiteSpace(editor.FusionHalfLifeTextBox?.Text))
+                halfLife = int.Parse(editor.FusionHalfLifeTextBox.Text, CultureInfo.InvariantCulture);
+            if (!string.IsNullOrWhiteSpace(editor.FusionUnknownThresholdTextBox?.Text))
+                unkThresh = double.Parse(editor.FusionUnknownThresholdTextBox.Text, CultureInfo.InvariantCulture);
+            if (!string.IsNullOrWhiteSpace(editor.ArcFaceModelPathTextBox?.Text))
+                arcPath = editor.ArcFaceModelPathTextBox.Text;
+            if (!string.IsNullOrWhiteSpace(editor.SpeakerModelPathTextBox?.Text))
+                spkPath = editor.SpeakerModelPathTextBox.Text;
+
+            // App-level
+            bool requireWake = editor.RequireWakeWordCheckBox?.IsChecked ?? current.App.RequireWakeWord;
+
             // Extended TTS fields from snapshot (persist unchanged here)
-            string outputDevice = current.Tts.OutputDevice;
             double localVolume = current.Tts.LocalVolume;
             double discordVolume = current.Tts.DiscordVolume;
             float speed = current.Tts.Speed;
@@ -146,8 +236,6 @@ namespace Kinectv1.UI.Settings
             int trimLeaveMs = current.Tts.TrimLeaveMs;
             int trimMaxMs = current.Tts.TrimMaxMs;
             int minClausePaddingMs = current.Tts.MinClausePaddingMs;
-            int ipaServiceTimeoutMs = current.Tts.IpaServiceTimeoutMs;
-            int ipaOneShotTimeoutMs = current.Tts.IpaOneShotTimeoutMs;
 
             var audio = new global::Kinectv1.Settings.AudioSettings(voiceThreshold, audioVadThreshold, bufferSize, speakerMatchMin);
             var vad = new global::Kinectv1.Settings.VadSettings(vadThreshold);
@@ -175,11 +263,38 @@ namespace Kinectv1.UI.Settings
             var discord = current.Discord;
             var mumble = current.Mumble;
             var app = new global::Kinectv1.Settings.AppConfig(
-                RequireWakeWord: current.App.RequireWakeWord,
+                RequireWakeWord: requireWake,
                 Scenario: current.App.Scenario,
                 InputMode: current.App.InputMode // keep existing unless saved elsewhere
             );
-            return new global::Kinectv1.Settings.AppSettings(audio, tts, vad, ollama, discord, mumble, current.Ui, current.Asr, current.Stt, current.Face, app);
+
+            var asr = new global::Kinectv1.Settings.AsrSettings(
+                VoiceConfidenceThreshold: current.Asr.VoiceConfidenceThreshold,
+                VoiceHighConfidenceThreshold: asrHighConf,
+                VoiceConfidenceBufferSize: current.Asr.VoiceConfidenceBufferSize,
+                VoiceConfidenceLoggingEnabled: asrLogging,
+                VadSilenceTimeoutMs: current.Asr.VadSilenceTimeoutMs,
+                VadDebounceTimeoutMs: current.Asr.VadDebounceTimeoutMs,
+                DiscordVadThreshold: current.Asr.DiscordVadThreshold,
+                BargeInEnabled: current.Asr.BargeInEnabled
+            );
+
+            var stt = new global::Kinectv1.Settings.SttSettings(
+                ModelPath: sttModelPath,
+                InputDevice: sttInputDevice
+            );
+
+            var face = new global::Kinectv1.Settings.FaceSettings(
+                Threshold: faceThreshold,
+                FusionFaceWeight: faceW,
+                FusionVoiceWeight: voiceW,
+                FusionDecayHalfLifeMs: halfLife,
+                FusionUnknownThreshold: unkThresh,
+                ArcFaceModelPath: arcPath,
+                SpeakerEmbeddingModelPath: spkPath
+            );
+
+            return new global::Kinectv1.Settings.AppSettings(audio, tts, vad, ollama, discord, mumble, current.Ui, asr, stt, face, app);
         }
 
         private void Verify_Click(object sender, RoutedEventArgs e)
@@ -239,9 +354,25 @@ namespace Kinectv1.UI.Settings
                     {
                         editor.TtsVoiceComboBox.SelectedItem = defaults.Tts.Speaker;
                     }
+                    if (editor.TtsOutputDeviceComboBox != null)
+                        editor.TtsOutputDeviceComboBox.Text = defaults.Tts.OutputDevice ?? string.Empty;
+                    if (editor.TtsIpaServiceTimeoutTextBox != null)
+                        editor.TtsIpaServiceTimeoutTextBox.Text = defaults.Tts.IpaServiceTimeoutMs.ToString(CultureInfo.InvariantCulture);
+                    if (editor.TtsIpaOneShotTimeoutTextBox != null)
+                        editor.TtsIpaOneShotTimeoutTextBox.Text = defaults.Tts.IpaOneShotTimeoutMs.ToString(CultureInfo.InvariantCulture);
+
+                    // STT
+                    if (editor.SttModelPathTextBox != null)
+                        editor.SttModelPathTextBox.Text = defaults.Stt.ModelPath ?? string.Empty;
+                    if (editor.MicInputComboBox != null)
+                        editor.MicInputComboBox.Text = defaults.Stt.InputDevice ?? string.Empty;
 
                     // Audio
                     editor.AudioVoiceThresholdTextBox.Text = defaults.Audio.VoiceThreshold.ToString(CultureInfo.InvariantCulture);
+                    if (editor.AudioVoiceHighThresholdTextBox != null)
+                        editor.AudioVoiceHighThresholdTextBox.Text = defaults.Asr.VoiceHighConfidenceThreshold.ToString(CultureInfo.InvariantCulture);
+                    if (editor.VoiceConfidenceLoggingCheckBox != null)
+                        editor.VoiceConfidenceLoggingCheckBox.IsChecked = defaults.Asr.VoiceConfidenceLoggingEnabled;
                     editor.AudioVadThresholdTextBox.Text = defaults.Audio.VadThreshold.ToString(CultureInfo.InvariantCulture);
                     editor.AudioBufferSizeTextBox.Text = defaults.Audio.BufferSize.ToString(CultureInfo.InvariantCulture);
                     if (editor.SpeakerMatchThresholdTextBox != null)
@@ -249,6 +380,24 @@ namespace Kinectv1.UI.Settings
 
                     // VAD
                     editor.VadThresholdTextBox.Text = defaults.Vad.Threshold.ToString(CultureInfo.InvariantCulture);
+                    if (editor.RequireWakeWordCheckBox != null)
+                        editor.RequireWakeWordCheckBox.IsChecked = defaults.App.RequireWakeWord;
+
+                    // Face
+                    if (editor.FaceThresholdTextBox != null)
+                        editor.FaceThresholdTextBox.Text = defaults.Face.Threshold.ToString(CultureInfo.InvariantCulture);
+                    if (editor.FusionFaceWeightTextBox != null)
+                        editor.FusionFaceWeightTextBox.Text = defaults.Face.FusionFaceWeight.ToString(CultureInfo.InvariantCulture);
+                    if (editor.FusionVoiceWeightTextBox != null)
+                        editor.FusionVoiceWeightTextBox.Text = defaults.Face.FusionVoiceWeight.ToString(CultureInfo.InvariantCulture);
+                    if (editor.FusionHalfLifeTextBox != null)
+                        editor.FusionHalfLifeTextBox.Text = defaults.Face.FusionDecayHalfLifeMs.ToString(CultureInfo.InvariantCulture);
+                    if (editor.FusionUnknownThresholdTextBox != null)
+                        editor.FusionUnknownThresholdTextBox.Text = defaults.Face.FusionUnknownThreshold.ToString(CultureInfo.InvariantCulture);
+                    if (editor.ArcFaceModelPathTextBox != null)
+                        editor.ArcFaceModelPathTextBox.Text = defaults.Face.ArcFaceModelPath ?? string.Empty;
+                    if (editor.SpeakerModelPathTextBox != null)
+                        editor.SpeakerModelPathTextBox.Text = defaults.Face.SpeakerEmbeddingModelPath ?? string.Empty;
                 }
             }
             catch (Exception ex)
@@ -288,9 +437,25 @@ namespace Kinectv1.UI.Settings
                     {
                         editor.TtsVoiceComboBox.SelectedItem = snapshot.Tts.Speaker;
                     }
+                    if (editor.TtsOutputDeviceComboBox != null)
+                        editor.TtsOutputDeviceComboBox.Text = snapshot.Tts.OutputDevice ?? string.Empty;
+                    if (editor.TtsIpaServiceTimeoutTextBox != null)
+                        editor.TtsIpaServiceTimeoutTextBox.Text = snapshot.Tts.IpaServiceTimeoutMs.ToString(CultureInfo.InvariantCulture);
+                    if (editor.TtsIpaOneShotTimeoutTextBox != null)
+                        editor.TtsIpaOneShotTimeoutTextBox.Text = snapshot.Tts.IpaOneShotTimeoutMs.ToString(CultureInfo.InvariantCulture);
+
+                    // STT
+                    if (editor.SttModelPathTextBox != null)
+                        editor.SttModelPathTextBox.Text = snapshot.Stt.ModelPath ?? string.Empty;
+                    if (editor.MicInputComboBox != null)
+                        editor.MicInputComboBox.Text = snapshot.Stt.InputDevice ?? string.Empty;
 
                     // Audio
                     editor.AudioVoiceThresholdTextBox.Text = snapshot.Audio.VoiceThreshold.ToString(CultureInfo.InvariantCulture);
+                    if (editor.AudioVoiceHighThresholdTextBox != null)
+                        editor.AudioVoiceHighThresholdTextBox.Text = snapshot.Asr.VoiceHighConfidenceThreshold.ToString(CultureInfo.InvariantCulture);
+                    if (editor.VoiceConfidenceLoggingCheckBox != null)
+                        editor.VoiceConfidenceLoggingCheckBox.IsChecked = snapshot.Asr.VoiceConfidenceLoggingEnabled;
                     editor.AudioVadThresholdTextBox.Text = snapshot.Audio.VadThreshold.ToString(CultureInfo.InvariantCulture);
                     editor.AudioBufferSizeTextBox.Text = snapshot.Audio.BufferSize.ToString(CultureInfo.InvariantCulture);
                     if (editor.SpeakerMatchThresholdTextBox != null)
@@ -298,6 +463,24 @@ namespace Kinectv1.UI.Settings
 
                     // VAD
                     editor.VadThresholdTextBox.Text = snapshot.Vad.Threshold.ToString(CultureInfo.InvariantCulture);
+                    if (editor.RequireWakeWordCheckBox != null)
+                        editor.RequireWakeWordCheckBox.IsChecked = snapshot.App.RequireWakeWord;
+
+                    // Face
+                    if (editor.FaceThresholdTextBox != null)
+                        editor.FaceThresholdTextBox.Text = snapshot.Face.Threshold.ToString(CultureInfo.InvariantCulture);
+                    if (editor.FusionFaceWeightTextBox != null)
+                        editor.FusionFaceWeightTextBox.Text = snapshot.Face.FusionFaceWeight.ToString(CultureInfo.InvariantCulture);
+                    if (editor.FusionVoiceWeightTextBox != null)
+                        editor.FusionVoiceWeightTextBox.Text = snapshot.Face.FusionVoiceWeight.ToString(CultureInfo.InvariantCulture);
+                    if (editor.FusionHalfLifeTextBox != null)
+                        editor.FusionHalfLifeTextBox.Text = snapshot.Face.FusionDecayHalfLifeMs.ToString(CultureInfo.InvariantCulture);
+                    if (editor.FusionUnknownThresholdTextBox != null)
+                        editor.FusionUnknownThresholdTextBox.Text = snapshot.Face.FusionUnknownThreshold.ToString(CultureInfo.InvariantCulture);
+                    if (editor.ArcFaceModelPathTextBox != null)
+                        editor.ArcFaceModelPathTextBox.Text = snapshot.Face.ArcFaceModelPath ?? string.Empty;
+                    if (editor.SpeakerModelPathTextBox != null)
+                        editor.SpeakerModelPathTextBox.Text = snapshot.Face.SpeakerEmbeddingModelPath ?? string.Empty;
                 }
                 _viewModel.RefreshSnapshotFromService();
                 _viewModel.HasUnsavedChanges = false; // reload -> clean
@@ -330,6 +513,26 @@ namespace Kinectv1.UI.Settings
                 _attachedEditor.VadThresholdTextBox.TextChanged -= OnEditorDirty;
                 if (_attachedEditor.SpeakerMatchThresholdTextBox != null)
                     _attachedEditor.SpeakerMatchThresholdTextBox.TextChanged -= OnEditorDirty;
+                if (_attachedEditor.AudioVoiceHighThresholdTextBox != null)
+                    _attachedEditor.AudioVoiceHighThresholdTextBox.TextChanged -= OnEditorDirty;
+                if (_attachedEditor.TtsIpaServiceTimeoutTextBox != null)
+                    _attachedEditor.TtsIpaServiceTimeoutTextBox.TextChanged -= OnEditorDirty;
+                if (_attachedEditor.TtsIpaOneShotTimeoutTextBox != null)
+                    _attachedEditor.TtsIpaOneShotTimeoutTextBox.TextChanged -= OnEditorDirty;
+                if (_attachedEditor.TtsOutputDeviceComboBox != null)
+                    _attachedEditor.TtsOutputDeviceComboBox.SelectionChanged -= OnEditorDirtySelection;
+                if (_attachedEditor.MicInputComboBox != null)
+                    _attachedEditor.MicInputComboBox.SelectionChanged -= OnEditorDirtySelection;
+                if (_attachedEditor.RequireWakeWordCheckBox != null)
+                {
+                    _attachedEditor.RequireWakeWordCheckBox.Checked -= OnEditorDirty;
+                    _attachedEditor.RequireWakeWordCheckBox.Unchecked -= OnEditorDirty;
+                }
+                if (_attachedEditor.VoiceConfidenceLoggingCheckBox != null)
+                {
+                    _attachedEditor.VoiceConfidenceLoggingCheckBox.Checked -= OnEditorDirty;
+                    _attachedEditor.VoiceConfidenceLoggingCheckBox.Unchecked -= OnEditorDirty;
+                }
             }
 
             _attachedEditor = _viewModel?.SelectedCategory?.EditorView as Kinectv1.ModelsSettingsView;
@@ -351,6 +554,26 @@ namespace Kinectv1.UI.Settings
                 _attachedEditor.VadThresholdTextBox.TextChanged += OnEditorDirty;
                 if (_attachedEditor.SpeakerMatchThresholdTextBox != null)
                     _attachedEditor.SpeakerMatchThresholdTextBox.TextChanged += OnEditorDirty;
+                if (_attachedEditor.AudioVoiceHighThresholdTextBox != null)
+                    _attachedEditor.AudioVoiceHighThresholdTextBox.TextChanged += OnEditorDirty;
+                if (_attachedEditor.TtsIpaServiceTimeoutTextBox != null)
+                    _attachedEditor.TtsIpaServiceTimeoutTextBox.TextChanged += OnEditorDirty;
+                if (_attachedEditor.TtsIpaOneShotTimeoutTextBox != null)
+                    _attachedEditor.TtsIpaOneShotTimeoutTextBox.TextChanged += OnEditorDirty;
+                if (_attachedEditor.TtsOutputDeviceComboBox != null)
+                    _attachedEditor.TtsOutputDeviceComboBox.SelectionChanged += OnEditorDirtySelection;
+                if (_attachedEditor.MicInputComboBox != null)
+                    _attachedEditor.MicInputComboBox.SelectionChanged += OnEditorDirtySelection;
+                if (_attachedEditor.RequireWakeWordCheckBox != null)
+                {
+                    _attachedEditor.RequireWakeWordCheckBox.Checked += OnEditorDirty;
+                    _attachedEditor.RequireWakeWordCheckBox.Unchecked += OnEditorDirty;
+                }
+                if (_attachedEditor.VoiceConfidenceLoggingCheckBox != null)
+                {
+                    _attachedEditor.VoiceConfidenceLoggingCheckBox.Checked += OnEditorDirty;
+                    _attachedEditor.VoiceConfidenceLoggingCheckBox.Unchecked += OnEditorDirty;
+                }
             }
         }
 
