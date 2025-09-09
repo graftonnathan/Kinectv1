@@ -84,9 +84,7 @@ namespace Kinectv1.Discord
         private static volatile bool _ttsWorkerRunning = false;
         private static readonly object _ttsWorkerLock = new object();
         private static readonly object _ttsCancelLock = new object();
-        private static CancellationTokenSource _currentTtsCts;
         private static volatile bool _ttsPlaying = false;
-        private static int _sttBargeHooked = 0;
         private static DateTime _lastTtsEnded = DateTime.MinValue;
         private static int _ttsGeneration = 0;
         // Discord TTS generation + write serialization
@@ -97,7 +95,6 @@ namespace Kinectv1.Discord
         // Diagnostics for voice join
         private static string _lastObservedSessionId;
         private static int _joinSequence = 0;
-        private static void EnsureSttBargeInHook() { /* intentionally no-op placeholder */ }
 
         private const int MAX_TTS_QUEUE_SIZE = 1;
         private static long _totalTtsDrops = 0;
@@ -431,7 +428,6 @@ namespace Kinectv1.Discord
                     await Task.Delay(250);
 
                 _isRunning = clientToUse.ConnectionState == ConnectionState.Connected;
-                EnsureSttBargeInHook();
                 OnBotStatusChanged?.Invoke(_isRunning ? "Connected" : "Failed");
                 return _isRunning;
             }
@@ -984,12 +980,8 @@ namespace Kinectv1.Discord
             {
                 lock (_ttsCancelLock)
                 {
-                    if (_currentTtsCts != null)
-                    {
-                        try { Console.WriteLine($"[TTS->Discord] Cancel invoked at {DateTime.UtcNow:O}"); } catch { }
-                        _currentTtsCts.Cancel();
-                        try { Kinectv1.Tts.TtsService.MarkExternalCancel(); } catch { }
-                    }
+                    try { Console.WriteLine($"[TTS->Discord] Cancel invoked at {DateTime.UtcNow:O}"); } catch { }
+                    TtsPlaybackManager.CancelActive();
                 }
             }
             catch { }
