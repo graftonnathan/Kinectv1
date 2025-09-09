@@ -52,8 +52,6 @@ await BackpressureTest.RunBackpressureTestsAsync();
 var (externalCount, discordQueues, discordItems, audioDrops, discordDrops) = 
     VoiceRecognizer.GetBackpressureMetrics();
 
-// Get TTS queue metrics  
-var (ttsCount, ttsDrops) = DiscordNetBotManager.GetTtsBackpressureMetrics();
 ```
 
 ## Telemetry Integration
@@ -63,12 +61,10 @@ Backpressure metrics are automatically included in the health snapshot telemetry
 ```json
 {
   "external_queue_count": 0,
-  "discord_queue_count": 2, 
+  "discord_queue_count": 2,
   "discord_queue_items": 5,
   "audio_drops_total": 12,
-  "discord_drops_total": 3,
-  "tts_queue_count": 1,
-  "tts_drops_total": 0
+  "discord_drops_total": 3
 }
 ```
 
