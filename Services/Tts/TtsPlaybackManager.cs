@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Collections.Concurrent;
 using NAudio.Wave;
+using NAudio.Wave.SampleProviders;
 using Kinectv1.Tts;
 using Discord;
 using Discord.Audio;
@@ -72,27 +73,20 @@ namespace Kinectv1.Tts
 
             Initialize();
 
-            CancellationTokenSource prevCts = null;
-            Task prevTask = null;
-            lock (_lock)
+            if (preempt)
             {
-                if (preempt && _currentCts != null)
-                {
-                    prevCts = _currentCts;
-                    prevTask = _playbackTask;
-                }
-                _currentCts = new CancellationTokenSource();
-            }
-            try { prevCts?.Cancel(); } catch { }
-            if (prevTask != null)
-            {
-                try { prevTask.Wait(); } catch { }
+                try { CancelActiveAsync().GetAwaiter().GetResult(); } catch { }
             }
 
-            var cts = _currentCts;
+            var cts = new CancellationTokenSource();
             int id = Interlocked.Increment(ref _jobCounter);
             var job = new TtsPlaybackJob { Text = text, Speaker = speaker, Targets = targets, Id = id, Cts = cts };
-            lock (_lock) { _activeJob = job; }
+
+            lock (_lock)
+            {
+                _currentCts = cts;
+                _activeJob = job;
+            }
 
             _playbackTask = Task.Run(() => RunJobAsync(job), cts.Token);
         }
@@ -174,46 +168,71 @@ namespace Kinectv1.Tts
                     var audioClient = audioClientField?.GetValue(null) as global::Discord.Audio.IAudioClient;
                     if (audioClient == null || audioClient.ConnectionState != global::Discord.ConnectionState.Connected) return;
 
-                float gain = Math.Max(0f, (float)(Kinectv1.App.SettingsProvider?.Current?.Tts?.DiscordVolume ?? 1.0));
-                var pcmSrc = FloatsToPcm16(audio, gain);
-                int srcRate = TtsService.GetSampleRate();
+                    float gain = Math.Max(0f, (float)(Kinectv1.App.SettingsProvider?.Current?.Tts?.DiscordVolume ?? 1.0));
+                    int srcRate = TtsService.GetSampleRate();
 
-                using var ms = new MemoryStream(pcmSrc, false);
-                using var raw = new RawSourceWaveStream(ms, new WaveFormat(srcRate, 16, 1));
-                using var resampler = new MediaFoundationResampler(raw, new WaveFormat(48000, 16, 2)) { ResamplerQuality = 60 };
-                using var stream = audioClient.CreatePCMStream(global::Discord.Audio.AudioApplication.Mixed, bitrate: 96000, bufferMillis: 200);
-
-                // Discord expects 20ms PCM frames (3840 bytes at 48kHz stereo 16-bit).
-                // The resampler can return arbitrary sized chunks, so accumulate
-                // into a frame-sized buffer and pad the final frame with zeros.
-                byte[] frame = new byte[3840];
-                int filled = 0;
-
-                await audioClient.SetSpeakingAsync(true);
-                try
-                {
-                    int read;
-                    while ((read = resampler.Read(frame, filled, frame.Length - filled)) > 0)
+                    // apply gain and convert to IEEE float bytes
+                    var floatBytes = new byte[audio.Length * 4];
+                    if (gain != 1f)
                     {
-                        ct.ThrowIfCancellationRequested();
-                        filled += read;
-                        if (filled == frame.Length)
+                        for (int i = 0; i < audio.Length; i++) audio[i] *= gain;
+                    }
+                    Buffer.BlockCopy(audio, 0, floatBytes, 0, floatBytes.Length);
+
+                    // resample and convert to 48kHz stereo PCM16
+                    byte[] pcm48;
+                    var floatFormat = WaveFormat.CreateIeeeFloatWaveFormat(srcRate, 1);
+                    var buffer = new BufferedWaveProvider(floatFormat) { BufferLength = floatBytes.Length };
+                    buffer.AddSamples(floatBytes, 0, floatBytes.Length);
+                    ISampleProvider provider = buffer.ToSampleProvider();
+                    var resampled = new WdlResamplingSampleProvider(provider, 48000);
+                    var stereo = new MonoToStereoSampleProvider(resampled);
+                    var pcm16 = new SampleToWaveProvider16(stereo);
+                    using (var outStream = new MemoryStream())
+                    {
+                        byte[] tmp = new byte[pcm16.WaveFormat.AverageBytesPerSecond];
+                        int read;
+                        while ((read = pcm16.Read(tmp, 0, tmp.Length)) > 0)
                         {
-                            await stream.WriteAsync(frame, 0, frame.Length, ct);
-                            filled = 0;
+                            outStream.Write(tmp, 0, read);
+                        }
+                        pcm48 = outStream.ToArray();
+                    }
+
+                    const int frameSize = 3840; // 20ms at 48kHz stereo 16-bit
+                    int frameCount = (pcm48.Length + frameSize - 1) / frameSize;
+                    var frames = new byte[frameCount][];
+                    for (int i = 0; i < frameCount; i++)
+                    {
+                        frames[i] = new byte[frameSize];
+                        int offset = i * frameSize;
+                        int count = Math.Min(frameSize, pcm48.Length - offset);
+                        Buffer.BlockCopy(pcm48, offset, frames[i], 0, count);
+                        if (count < frameSize)
+                            Array.Clear(frames[i], count, frameSize - count);
+                    }
+
+                    using var stream = audioClient.CreatePCMStream(global::Discord.Audio.AudioApplication.Mixed, bitrate: 96000, bufferMillis: 200);
+
+                    await audioClient.SetSpeakingAsync(true);
+                    try
+                    {
+                        var sw = System.Diagnostics.Stopwatch.StartNew();
+                        for (int i = 0; i < frames.Length; i++)
+                        {
+                            ct.ThrowIfCancellationRequested();
+                            await stream.WriteAsync(frames[i], 0, frames[i].Length, ct);
+                            var target = (i + 1) * 20;
+                            var wait = target - sw.ElapsedMilliseconds;
+                            if (wait > 0)
+                                await Task.Delay((int)wait, ct);
                         }
                     }
-                    if (filled > 0)
+                    finally
                     {
-                        Array.Clear(frame, filled, frame.Length - filled);
-                        await stream.WriteAsync(frame, 0, frame.Length, ct);
+                        try { await stream.FlushAsync(); } catch { }
+                        try { await audioClient.SetSpeakingAsync(false); } catch { }
                     }
-                }
-                finally
-                {
-                    try { await stream.FlushAsync(); } catch { }
-                    try { await audioClient.SetSpeakingAsync(false); } catch { }
-                }
                 }
             }
             catch (OperationCanceledException) { }
@@ -227,20 +246,5 @@ namespace Kinectv1.Tts
             }
         }
 
-        private static byte[] FloatsToPcm16(float[] src, float gain)
-        {
-            if (gain <= 0f) gain = 1f;
-            var dst = new byte[src.Length * 2];
-            int j = 0;
-            for (int i = 0; i < src.Length; i++)
-            {
-                float f = src[i] * gain;
-                if (f > 0.98f) f = 0.98f; else if (f < -0.98f) f = -0.98f;
-                short s = (short)(f * 32767f);
-                dst[j++] = (byte)(s & 0xFF);
-                dst[j++] = (byte)((s >> 8) & 0xFF);
-            }
-            return dst;
-        }
     }
 }
