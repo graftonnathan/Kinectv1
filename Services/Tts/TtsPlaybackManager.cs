@@ -39,6 +39,7 @@ namespace Kinectv1.Tts
         private static Task _playbackTask = Task.CompletedTask;
         private static int _jobCounter = 0;
         private static bool _initialized;
+        private static readonly SemaphoreSlim _discordStreamLock = new SemaphoreSlim(1, 1);
 
         public static void Initialize()
         {
@@ -164,11 +165,14 @@ namespace Kinectv1.Tts
         {
             try
             {
-                var client = Kinectv1.Discord.DiscordNetBotManager.GetClient();
-                if (client == null || !Kinectv1.Discord.DiscordNetBotManager.IsInVoiceChannel) return;
-                var audioClientField = typeof(Kinectv1.Discord.DiscordNetBotManager).GetField("_currentAudioClient", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
-                var audioClient = audioClientField?.GetValue(null) as global::Discord.Audio.IAudioClient;
-                if (audioClient == null || audioClient.ConnectionState != global::Discord.ConnectionState.Connected) return;
+                await _discordStreamLock.WaitAsync(ct);
+                try
+                {
+                    var client = Kinectv1.Discord.DiscordNetBotManager.GetClient();
+                    if (client == null || !Kinectv1.Discord.DiscordNetBotManager.IsInVoiceChannel) return;
+                    var audioClientField = typeof(Kinectv1.Discord.DiscordNetBotManager).GetField("_currentAudioClient", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+                    var audioClient = audioClientField?.GetValue(null) as global::Discord.Audio.IAudioClient;
+                    if (audioClient == null || audioClient.ConnectionState != global::Discord.ConnectionState.Connected) return;
 
                 float gain = Math.Max(0f, (float)(Kinectv1.App.SettingsProvider?.Current?.Tts?.DiscordVolume ?? 1.0));
                 var pcmSrc = FloatsToPcm16(audio, gain);
@@ -210,11 +214,16 @@ namespace Kinectv1.Tts
                     try { await stream.FlushAsync(); } catch { }
                     try { await audioClient.SetSpeakingAsync(false); } catch { }
                 }
+                }
             }
             catch (OperationCanceledException) { }
             catch (Exception ex)
             {
                 Console.WriteLine($"[Playback][Discord] error: {ex.Message}");
+            }
+            finally
+            {
+                try { _discordStreamLock.Release(); } catch { }
             }
         }
 
