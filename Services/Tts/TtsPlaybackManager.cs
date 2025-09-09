@@ -166,15 +166,31 @@ namespace Kinectv1.Tts
                 using var raw = new RawSourceWaveStream(ms, new WaveFormat(srcRate, 16, 1));
                 using var resampler = new MediaFoundationResampler(raw, new WaveFormat(48000, 16, 2)) { ResamplerQuality = 60 };
                 using var stream = audioClient.CreatePCMStream(global::Discord.Audio.AudioApplication.Mixed, bitrate: 96000, bufferMillis: 200);
-                byte[] buf = new byte[3840];
-                int read;
+
+                // Discord expects 20ms PCM frames (3840 bytes at 48kHz stereo 16-bit).
+                // The resampler can return arbitrary sized chunks, so accumulate
+                // into a frame-sized buffer and pad the final frame with zeros.
+                byte[] frame = new byte[3840];
+                int filled = 0;
+
                 await audioClient.SetSpeakingAsync(true);
                 try
                 {
-                    while ((read = resampler.Read(buf, 0, buf.Length)) > 0)
+                    int read;
+                    while ((read = resampler.Read(frame, filled, frame.Length - filled)) > 0)
                     {
                         ct.ThrowIfCancellationRequested();
-                        await stream.WriteAsync(buf, 0, read, ct);
+                        filled += read;
+                        if (filled == frame.Length)
+                        {
+                            await stream.WriteAsync(frame, 0, frame.Length, ct);
+                            filled = 0;
+                        }
+                    }
+                    if (filled > 0)
+                    {
+                        Array.Clear(frame, filled, frame.Length - filled);
+                        await stream.WriteAsync(frame, 0, frame.Length, ct);
                     }
                 }
                 finally
