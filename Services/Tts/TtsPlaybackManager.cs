@@ -35,8 +35,11 @@ namespace Kinectv1.Tts
     {
         private static readonly object _lock = new object();
         private static TtsPlaybackJob _activeJob;
+        private static CancellationTokenSource _currentCts;
+        private static Task _playbackTask = Task.CompletedTask;
         private static int _jobCounter = 0;
         private static bool _initialized;
+        private static readonly SemaphoreSlim _discordStreamLock = new SemaphoreSlim(1, 1);
 
         public static void Initialize()
         {
@@ -44,15 +47,21 @@ namespace Kinectv1.Tts
             _initialized = true;
         }
 
-        public static void CancelActive()
+        public static async Task CancelActiveAsync()
         {
-            TtsPlaybackJob job = null;
+            CancellationTokenSource cts;
+            Task task;
             lock (_lock)
             {
-                job = _activeJob;
+                cts = _currentCts;
+                task = _playbackTask;
             }
-            try { job?.Cts.Cancel(); } catch { }
+            try { cts?.Cancel(); } catch { }
             try { TtsService.MarkExternalCancel(); } catch { }
+            if (task != null)
+            {
+                try { await task.ConfigureAwait(false); } catch { }
+            }
         }
 
         public static void Enqueue(string text, TtsOutputTarget targets, string speaker = null, bool preempt = true)
@@ -63,25 +72,29 @@ namespace Kinectv1.Tts
 
             Initialize();
 
-            TtsPlaybackJob toCancel = null;
-            var cts = new CancellationTokenSource();
-            int id = Interlocked.Increment(ref _jobCounter);
-            var job = new TtsPlaybackJob { Text = text, Speaker = speaker, Targets = targets, Id = id, Cts = cts };
-
+            CancellationTokenSource prevCts = null;
+            Task prevTask = null;
             lock (_lock)
             {
-                if (preempt && _activeJob != null)
+                if (preempt && _currentCts != null)
                 {
-                    toCancel = _activeJob;
+                    prevCts = _currentCts;
+                    prevTask = _playbackTask;
                 }
-                _activeJob = job;
+                _currentCts = new CancellationTokenSource();
             }
-            if (toCancel != null)
+            try { prevCts?.Cancel(); } catch { }
+            if (prevTask != null)
             {
-                try { toCancel.Cts.Cancel(); } catch { }
+                try { prevTask.Wait(); } catch { }
             }
 
-            _ = Task.Run(() => RunJobAsync(job), cts.Token);
+            var cts = _currentCts;
+            int id = Interlocked.Increment(ref _jobCounter);
+            var job = new TtsPlaybackJob { Text = text, Speaker = speaker, Targets = targets, Id = id, Cts = cts };
+            lock (_lock) { _activeJob = job; }
+
+            _playbackTask = Task.Run(() => RunJobAsync(job), cts.Token);
         }
 
         private static async Task RunJobAsync(TtsPlaybackJob job)
@@ -152,11 +165,14 @@ namespace Kinectv1.Tts
         {
             try
             {
-                var client = Kinectv1.Discord.DiscordNetBotManager.GetClient();
-                if (client == null || !Kinectv1.Discord.DiscordNetBotManager.IsInVoiceChannel) return;
-                var audioClientField = typeof(Kinectv1.Discord.DiscordNetBotManager).GetField("_currentAudioClient", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
-                var audioClient = audioClientField?.GetValue(null) as global::Discord.Audio.IAudioClient;
-                if (audioClient == null || audioClient.ConnectionState != global::Discord.ConnectionState.Connected) return;
+                await _discordStreamLock.WaitAsync(ct);
+                try
+                {
+                    var client = Kinectv1.Discord.DiscordNetBotManager.GetClient();
+                    if (client == null || !Kinectv1.Discord.DiscordNetBotManager.IsInVoiceChannel) return;
+                    var audioClientField = typeof(Kinectv1.Discord.DiscordNetBotManager).GetField("_currentAudioClient", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+                    var audioClient = audioClientField?.GetValue(null) as global::Discord.Audio.IAudioClient;
+                    if (audioClient == null || audioClient.ConnectionState != global::Discord.ConnectionState.Connected) return;
 
                 float gain = Math.Max(0f, (float)(Kinectv1.App.SettingsProvider?.Current?.Tts?.DiscordVolume ?? 1.0));
                 var pcmSrc = FloatsToPcm16(audio, gain);
@@ -198,11 +214,16 @@ namespace Kinectv1.Tts
                     try { await stream.FlushAsync(); } catch { }
                     try { await audioClient.SetSpeakingAsync(false); } catch { }
                 }
+                }
             }
             catch (OperationCanceledException) { }
             catch (Exception ex)
             {
                 Console.WriteLine($"[Playback][Discord] error: {ex.Message}");
+            }
+            finally
+            {
+                try { _discordStreamLock.Release(); } catch { }
             }
         }
 

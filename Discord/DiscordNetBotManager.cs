@@ -9,10 +9,7 @@ using Discord.Commands;
 using Discord.WebSocket;
 using System.Reflection;
 using System.Collections.Concurrent;
-using System.IO;
-using NAudio.Wave;
 using System.Diagnostics;
-using System.Threading.Channels;
 using Discord.Net; // Added for HttpException
 using Kinectv1.Tts;
 using System.Security.Cryptography; // added for single-instance hash
@@ -64,47 +61,14 @@ namespace Kinectv1.Discord
         private static readonly SemaphoreSlim _speakLock = new SemaphoreSlim(1, 1);
         private static CancellationTokenSource _speakHoldCts;
 
-        // TTS queue with System.Threading.Channels - length=1 with preempt policy
-        private class TtsJob
-        {
-            public string Text { get; set; }
-            public string SpeakerRefId { get; set; }
-            public TaskCompletionSource<bool> Tcs { get; set; }
-            public CancellationTokenSource Cts { get; set; }
-            public int Generation { get; set; }
-        }
-        private static readonly Channel<TtsJob> _ttsChannel = Channel.CreateBounded<TtsJob>(new BoundedChannelOptions(1)
-        {
-            FullMode = BoundedChannelFullMode.DropOldest,
-            SingleReader = true,
-            SingleWriter = false
-        });
-        private static readonly ChannelWriter<TtsJob> _ttsWriter = _ttsChannel.Writer;
-        private static readonly ChannelReader<TtsJob> _ttsReader = _ttsChannel.Reader;
-        private static volatile bool _ttsWorkerRunning = false;
-        private static readonly object _ttsWorkerLock = new object();
-        private static readonly object _ttsCancelLock = new object();
-        private static volatile bool _ttsPlaying = false;
-        private static DateTime _lastTtsEnded = DateTime.MinValue;
-        private static int _ttsGeneration = 0;
-        // Discord TTS generation + write serialization
-        private static int _discordTtsGeneration = 0;
-        private static readonly SemaphoreSlim _discordTtsWriteLock = new SemaphoreSlim(1,1);
-        private static volatile bool _discordTtsActive = false; // indicates an active Discord TTS write
+        // Discord TTS coordination
+        private static readonly object _discordTtsLock = new object();
 
         // Diagnostics for voice join
         private static string _lastObservedSessionId;
         private static int _joinSequence = 0;
 
-        private const int MAX_TTS_QUEUE_SIZE = 1;
-        private static long _totalTtsDrops = 0;
-
-        private class VoiceJoinHandshake { }
-
-        /// <summary>
-        /// Voice join handshake state for preventing 4006 errors
-        /// </summary>
-        // private class VoiceJoinHandshake { } // Removed redundant VoiceJoinHandshake class duplicate
+        // Legacy TTS queue fields removed; remaining lock coordinates Send/Cancel
 
         /// <summary>
         /// Enhanced Discord.Net bot shutdown with proper blocking pattern for application exit
@@ -169,17 +133,6 @@ namespace Kinectv1.Discord
                 Interlocked.Exchange(ref _modulesRegistered, 0);
                 Interlocked.Exchange(ref _clientCreated, 0);
                 Interlocked.Exchange(ref _commandServiceCreated, 0);
-                
-                // Clean up TTS channel with proper disposal and cancellation
-                try 
-                { 
-                    _ttsWriter?.Complete();
-                    while (_ttsReader.TryRead(out var job))
-                    {
-                        try { job.Cts?.Cancel(); job.Tcs?.SetCanceled(); } catch { }
-                    }
-                } 
-                catch { }
                 
                 OnBotStatusChanged?.Invoke("Disconnected");
             }
@@ -863,7 +816,7 @@ namespace Kinectv1.Discord
         {
             try
             {
-                lock (_ttsCancelLock)
+                lock (_discordTtsLock)
                 {
                     if (!string.IsNullOrWhiteSpace(text) &&
                         _lastDiscordTtsText == text &&
@@ -883,22 +836,6 @@ namespace Kinectv1.Discord
             var speaker = speakerRefId ?? Kinectv1.App.SettingsProvider?.Current?.Tts?.Speaker;
             TtsPlaybackManager.Enqueue(text, Kinectv1.Tts.TtsOutputTarget.Discord, speaker, preempt: true);
             return Task.FromResult(true);
-        }
-
-        private static byte[] FloatsToPcm16(float[] src, float gain)
-        {
-            if (gain <= 0f) gain = 1f;
-            var dst = new byte[src.Length * 2];
-            int j = 0;
-            for (int i = 0; i < src.Length; i++)
-            {
-                float f = src[i] * gain;
-                if (f > 0.98f) f = 0.98f; else if (f < -0.98f) f = -0.98f;
-                short s = (short)(f * 32767f);
-                dst[j++] = (byte)(s & 0xFF);
-                dst[j++] = (byte)((s >> 8) & 0xFF);
-            }
-            return dst;
         }
 
         // Resolve a human-friendly display name (Nickname > Username > fallback)
@@ -947,41 +884,16 @@ namespace Kinectv1.Discord
         }
 
         /// <summary>
-        /// Get TTS backpressure metrics for monitoring queue health
+        /// Cancel any active Discord TTS playback
         /// </summary>
-        public static (int ttsQueueCount, long totalTtsDrops) GetTtsBackpressureMetrics()
-        {
-            try
-            {
-                // With single-item channel, no reliable count API here; return 0 or 1 heuristically
-                var queueCount = 0;
-                return (queueCount, _totalTtsDrops);
-            }
-            catch
-            {
-                return (0, _totalTtsDrops);
-            }
-        }
-
-        /// <summary>
-        /// Resample audio sample from source rate to target rate using linear interpolation
-        /// </summary>
-        private static float[] ResampleAudio(float[] source, int sourceRate, int targetRate)
-        {
-            if (source == null || source.Length == 0 || sourceRate == targetRate) return source?.ToArray();
-            int sourceLength = source.Length; int targetLength = (int)((double)sourceLength * targetRate / sourceRate); float[] target = new float[targetLength];
-            for (int n = 0; n < targetLength; n++) { double t = (double)n * sourceRate / targetRate; int t0 = (int)t; int t1 = Math.Min(t0 + 1, sourceLength - 1); double frac = t - t0; target[n] = (float)((1.0 - frac) * source[t0] + frac * source[t1]); }
-            return target;
-        }
-
         public static void CancelCurrentTts()
         {
             try
             {
-                lock (_ttsCancelLock)
+                lock (_discordTtsLock)
                 {
                     try { Console.WriteLine($"[TTS->Discord] Cancel invoked at {DateTime.UtcNow:O}"); } catch { }
-                    TtsPlaybackManager.CancelActive();
+                    TtsPlaybackManager.CancelActiveAsync().GetAwaiter().GetResult();
                 }
             }
             catch { }
