@@ -52,6 +52,7 @@ namespace Kinectv1.Llm
                 while (!r.EndOfStream && !ct.IsCancellationRequested)
                 {
                     var line = await r.ReadLineAsync().ConfigureAwait(false);
+                    if (ct.IsCancellationRequested) yield break;
                     if (string.IsNullOrWhiteSpace(line)) continue;
                     if (!line.StartsWith("data:")) continue;
                     var payload = line.Substring("data:".Length).Trim();
@@ -60,14 +61,23 @@ namespace Kinectv1.Llm
                     string piece = null;
                     try
                     {
-                        var obj = JObject.Parse(payload);
-                        var delta = obj["choices"][0]["delta"] as JObject;
-                        if (delta != null && delta.TryGetValue("content", out var t))
+                        if (payload.StartsWith("{"))
                         {
-                            piece = t?.ToString();
+                            var obj = JObject.Parse(payload);
+                            if (obj.TryGetValue("choices", out var choicesTok) && choicesTok is JArray arr && arr.Count > 0)
+                            {
+                                var first = arr[0];
+                                // Try delta.content first (streaming), fallback to message.content (final style)
+                                piece = first?["delta"]?["content"]?.ToString();
+                                if (string.IsNullOrEmpty(piece))
+                                    piece = first?["message"]?["content"]?.ToString();
+                            }
                         }
                     }
-                    catch { /* ignore keepalives/chunks */ }
+                    catch
+                    {
+                        // swallow malformed keepalive / partial JSON chunks
+                    }
 
                     if (!string.IsNullOrEmpty(piece)) yield return piece;
                 }

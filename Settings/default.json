@@ -2,7 +2,6 @@
   "schemaVersion": 1,
   "audio": {
     "voiceThreshold": 0.2,
-    "vadThreshold": 50,
     "bufferSize": 7,
     "speakerMatchMinScore": 0.6
   },
@@ -24,19 +23,18 @@
     "ipaServiceTimeoutMs": 1500,
     "ipaOneShotTimeoutMs": 1500
   },
-  "vad": { "threshold": 50 },
   "asr": {
     "voiceConfidenceThreshold": 0.6,
     "voiceHighConfidenceThreshold": 0.8,
     "voiceConfidenceBufferSize": 3,
     "voiceConfidenceLoggingEnabled": false,
-    "vadSilenceTimeoutMs": 1000,
+    "vadSilenceTimeoutMs": 300,
     "vadDebounceTimeoutMs": 150,
     "discordVadThreshold": 25.0,
     "bargeInEnabled": true
   },
   "stt": {
-    "modelPath": "models/stt/vosk-model-en-us-0.22",
+    "modelPath": "models/vosk-model-en-us-0.22",
     "inputDevice": "Default"
   },
   "face": {

@@ -13,6 +13,9 @@ namespace Kinectv1.UI.Settings
     /// </summary>
     public partial class SettingsWindow : Window
     {
+        // When embedded into another window, host can set this so child views can route actions
+        public static SettingsWindow CurrentEmbedded { get; set; }
+
         private SettingsViewModel _viewModel;
         private SettingsService _svc => App.SettingsProvider;
         private ModelsSettingsView _attachedEditor;
@@ -55,7 +58,6 @@ namespace Kinectv1.UI.Settings
                         editor.TtsModelPathTextBox.Text = snapshot.Tts.ModelPath;
                         editor.TtsModelFolderTextBox.Text = snapshot.Tts.ModelFolder;
                         editor.TtsVocoderPathTextBox.Text = snapshot.Tts.VocoderPath;
-                        editor.TtsVoiceComboBox.ItemsSource = TtsPlaybackController.GetInstalledVoices();
                         foreach (var item in editor.ExecutionModeComboBox.Items)
                         {
                             if (item is ComboBoxItem cbi && string.Equals(cbi.Tag?.ToString(), snapshot.Tts.Execution.ToString(), StringComparison.OrdinalIgnoreCase))
@@ -68,13 +70,6 @@ namespace Kinectv1.UI.Settings
                         {
                             editor.TtsVoiceComboBox.SelectedItem = snapshot.Tts.Speaker;
                         }
-                        editor.LocalVolumeSlider.Value = snapshot.Tts.LocalVolume * 100;
-                        editor.DiscordVolumeSlider.Value = snapshot.Tts.DiscordVolume * 100;
-                        editor.TtsSpeedSlider.Value = snapshot.Tts.Speed * 100;
-                        editor.TrimSilenceThresholdSlider.Value = snapshot.Tts.TrimThreshold * 1000;
-                        editor.TtsTrimLeaveSlider.Value = snapshot.Tts.TrimLeaveMs;
-                        editor.TtsTrimMaxSlider.Value = snapshot.Tts.TrimMaxMs;
-                        editor.TtsPaddingSlider.Value = snapshot.Tts.MinClausePaddingMs;
                         // Extra TTS fields
                         if (editor.TtsOutputDeviceComboBox != null)
                         {
@@ -88,6 +83,14 @@ namespace Kinectv1.UI.Settings
                         {
                             editor.TtsIpaOneShotTimeoutTextBox.Text = snapshot.Tts.IpaOneShotTimeoutMs.ToString(CultureInfo.InvariantCulture);
                         }
+                        // Initialize all sliders from snapshot
+                        editor.LocalVolumeSlider.Value = snapshot.Tts.LocalVolume * 100;
+                        editor.DiscordVolumeSlider.Value = snapshot.Tts.DiscordVolume * 100;
+                        editor.TtsSpeedSlider.Value = snapshot.Tts.Speed * 100;
+                        editor.TrimSilenceThresholdSlider.Value = snapshot.Tts.TrimThreshold * 1000;
+                        editor.TtsTrimLeaveSlider.Value = snapshot.Tts.TrimLeaveMs;
+                        editor.TtsTrimMaxSlider.Value = snapshot.Tts.TrimMaxMs;
+                        editor.TtsPaddingSlider.Value = snapshot.Tts.MinClausePaddingMs;
 
                         // STT
                         if (editor.SttModelPathTextBox != null)
@@ -96,12 +99,12 @@ namespace Kinectv1.UI.Settings
                             editor.MicInputComboBox.Text = snapshot.Stt.InputDevice ?? string.Empty;
 
                         // Audio
-                        editor.AudioVoiceThresholdTextBox.Text = snapshot.Audio.VoiceThreshold.ToString(CultureInfo.InvariantCulture);
+                        // Show normalized voice threshold as RMS 0-10000 integer
+                        editor.AudioVoiceThresholdTextBox.Text = ((int)Math.Round(snapshot.Audio.VoiceThreshold * 10000.0)).ToString(CultureInfo.InvariantCulture);
                         if (editor.AudioVoiceHighThresholdTextBox != null)
                             editor.AudioVoiceHighThresholdTextBox.Text = snapshot.Asr.VoiceHighConfidenceThreshold.ToString(CultureInfo.InvariantCulture);
                         if (editor.VoiceConfidenceLoggingCheckBox != null)
                             editor.VoiceConfidenceLoggingCheckBox.IsChecked = snapshot.Asr.VoiceConfidenceLoggingEnabled;
-                        editor.AudioVadThresholdTextBox.Text = snapshot.Audio.VadThreshold.ToString(CultureInfo.InvariantCulture);
                         editor.AudioBufferSizeTextBox.Text = snapshot.Audio.BufferSize.ToString(CultureInfo.InvariantCulture);
                         // New: Speaker match min score
                         if (editor.SpeakerMatchThresholdTextBox != null)
@@ -109,8 +112,7 @@ namespace Kinectv1.UI.Settings
                             editor.SpeakerMatchThresholdTextBox.Text = snapshot.Audio.SpeakerMatchMinScore.ToString(CultureInfo.InvariantCulture);
                         }
 
-                        // VAD
-                        editor.VadThresholdTextBox.Text = snapshot.Vad.Threshold.ToString(CultureInfo.InvariantCulture);
+                        // VAD legacy control removed; wake word only now
                         if (editor.RequireWakeWordCheckBox != null)
                             editor.RequireWakeWordCheckBox.IsChecked = snapshot.App.RequireWakeWord;
 
@@ -193,15 +195,14 @@ namespace Kinectv1.UI.Settings
             if (!string.IsNullOrWhiteSpace(editor.TtsIpaOneShotTimeoutTextBox?.Text))
                 ipaOneShotTimeoutMs = int.Parse(editor.TtsIpaOneShotTimeoutTextBox.Text, CultureInfo.InvariantCulture);
 
-            // Audio (strict parse; fail fast)
-            double voiceThreshold = double.Parse(editor.AudioVoiceThresholdTextBox.Text, CultureInfo.InvariantCulture);
-            int audioVadThreshold = int.Parse(editor.AudioVadThresholdTextBox.Text, CultureInfo.InvariantCulture);
+            // Audio: parse RMS (0-10000) then normalize 0..1
+            double voiceThresholdRms = double.Parse(editor.AudioVoiceThresholdTextBox.Text, CultureInfo.InvariantCulture);
+            if (voiceThresholdRms < 0 || voiceThresholdRms > 10000) throw new InvalidOperationException("Voice threshold RMS must be 0–10000");
+            double voiceThreshold = voiceThresholdRms / 10000.0; // normalized stored value
             int bufferSize = int.Parse(editor.AudioBufferSizeTextBox.Text, CultureInfo.InvariantCulture);
             double speakerMatchMin = 0.6;
             if (editor.SpeakerMatchThresholdTextBox != null && !string.IsNullOrWhiteSpace(editor.SpeakerMatchThresholdTextBox.Text))
-            {
                 speakerMatchMin = double.Parse(editor.SpeakerMatchThresholdTextBox.Text, CultureInfo.InvariantCulture);
-            }
 
             // ASR (partial, mapped to visible fields)
             double asrHighConf = current.Asr.VoiceHighConfidenceThreshold;
@@ -211,8 +212,7 @@ namespace Kinectv1.UI.Settings
             if (editor.VoiceConfidenceLoggingCheckBox != null)
                 asrLogging = editor.VoiceConfidenceLoggingCheckBox.IsChecked ?? current.Asr.VoiceConfidenceLoggingEnabled;
 
-            // VAD
-            int vadThreshold = int.Parse(editor.VadThresholdTextBox.Text, CultureInfo.InvariantCulture);
+            // VAD (legacy removed)
 
             // STT
             string sttModelPath = editor.SttModelPathTextBox?.Text ?? current.Stt.ModelPath;
@@ -253,8 +253,8 @@ namespace Kinectv1.UI.Settings
             int trimMaxMs = (int)editor.TtsTrimMaxSlider.Value;
             int minClausePaddingMs = (int)editor.TtsPaddingSlider.Value;
 
-            var audio = new global::Kinectv1.Settings.AudioSettings(voiceThreshold, audioVadThreshold, bufferSize, speakerMatchMin);
-            var vad = new global::Kinectv1.Settings.VadSettings(vadThreshold);
+            var audio = new global::Kinectv1.Settings.AudioSettings(voiceThreshold, bufferSize, speakerMatchMin);
+            // var vad = new global::Kinectv1.Settings.VadSettings(vadThreshold); // removed
 
             var tts = new global::Kinectv1.Settings.TtsSettings(
                 Enabled: ttsEnabled,
@@ -310,7 +310,7 @@ namespace Kinectv1.UI.Settings
                 SpeakerEmbeddingModelPath: spkPath
             );
 
-            return new global::Kinectv1.Settings.AppSettings(audio, tts, vad, ollama, discord, mumble, current.Ui, asr, stt, face, app);
+            return new global::Kinectv1.Settings.AppSettings(audio, tts, ollama, discord, mumble, current.Ui, asr, stt, face, app);
         }
 
         private void Verify_Click(object sender, RoutedEventArgs e)
@@ -370,8 +370,6 @@ namespace Kinectv1.UI.Settings
                     {
                         editor.TtsVoiceComboBox.SelectedItem = defaults.Tts.Speaker;
                     }
-                    if (editor.TtsVoiceComboBox.ItemsSource == null)
-                        editor.TtsVoiceComboBox.ItemsSource = TtsPlaybackController.GetInstalledVoices();
                     editor.LocalVolumeSlider.Value = defaults.Tts.LocalVolume * 100;
                     editor.DiscordVolumeSlider.Value = defaults.Tts.DiscordVolume * 100;
                     editor.TtsSpeedSlider.Value = defaults.Tts.Speed * 100;
@@ -393,18 +391,16 @@ namespace Kinectv1.UI.Settings
                         editor.MicInputComboBox.Text = defaults.Stt.InputDevice ?? string.Empty;
 
                     // Audio
-                    editor.AudioVoiceThresholdTextBox.Text = defaults.Audio.VoiceThreshold.ToString(CultureInfo.InvariantCulture);
+                    editor.AudioVoiceThresholdTextBox.Text = ((int)Math.Round(defaults.Audio.VoiceThreshold * 10000.0)).ToString(CultureInfo.InvariantCulture);
                     if (editor.AudioVoiceHighThresholdTextBox != null)
                         editor.AudioVoiceHighThresholdTextBox.Text = defaults.Asr.VoiceHighConfidenceThreshold.ToString(CultureInfo.InvariantCulture);
                     if (editor.VoiceConfidenceLoggingCheckBox != null)
                         editor.VoiceConfidenceLoggingCheckBox.IsChecked = defaults.Asr.VoiceConfidenceLoggingEnabled;
-                    editor.AudioVadThresholdTextBox.Text = defaults.Audio.VadThreshold.ToString(CultureInfo.InvariantCulture);
                     editor.AudioBufferSizeTextBox.Text = defaults.Audio.BufferSize.ToString(CultureInfo.InvariantCulture);
                     if (editor.SpeakerMatchThresholdTextBox != null)
                         editor.SpeakerMatchThresholdTextBox.Text = defaults.Audio.SpeakerMatchMinScore.ToString(CultureInfo.InvariantCulture);
 
-                    // VAD
-                    editor.VadThresholdTextBox.Text = defaults.Vad.Threshold.ToString(CultureInfo.InvariantCulture);
+                    // VAD legacy removed
                     if (editor.RequireWakeWordCheckBox != null)
                         editor.RequireWakeWordCheckBox.IsChecked = defaults.App.RequireWakeWord;
 
@@ -450,7 +446,7 @@ namespace Kinectv1.UI.Settings
                     editor.TtsModelPathTextBox.Text = snapshot.Tts.ModelPath;
                     editor.TtsModelFolderTextBox.Text = snapshot.Tts.ModelFolder;
                     editor.TtsVocoderPathTextBox.Text = snapshot.Tts.VocoderPath;
-                    editor.TtsVoiceComboBox.ItemsSource = TtsPlaybackController.GetInstalledVoices();
+                    // Voice list is populated from folder by ModelsSettingsView
                     foreach (var item in editor.ExecutionModeComboBox.Items)
                     {
                         if (item is ComboBoxItem cbi && string.Equals(cbi.Tag?.ToString(), snapshot.Tts.Execution.ToString(), StringComparison.OrdinalIgnoreCase))
@@ -484,18 +480,16 @@ namespace Kinectv1.UI.Settings
                         editor.MicInputComboBox.Text = snapshot.Stt.InputDevice ?? string.Empty;
 
                     // Audio
-                    editor.AudioVoiceThresholdTextBox.Text = snapshot.Audio.VoiceThreshold.ToString(CultureInfo.InvariantCulture);
+                    editor.AudioVoiceThresholdTextBox.Text = ((int)Math.Round(snapshot.Audio.VoiceThreshold * 10000.0)).ToString(CultureInfo.InvariantCulture);
                     if (editor.AudioVoiceHighThresholdTextBox != null)
                         editor.AudioVoiceHighThresholdTextBox.Text = snapshot.Asr.VoiceHighConfidenceThreshold.ToString(CultureInfo.InvariantCulture);
                     if (editor.VoiceConfidenceLoggingCheckBox != null)
                         editor.VoiceConfidenceLoggingCheckBox.IsChecked = snapshot.Asr.VoiceConfidenceLoggingEnabled;
-                    editor.AudioVadThresholdTextBox.Text = snapshot.Audio.VadThreshold.ToString(CultureInfo.InvariantCulture);
                     editor.AudioBufferSizeTextBox.Text = snapshot.Audio.BufferSize.ToString(CultureInfo.InvariantCulture);
                     if (editor.SpeakerMatchThresholdTextBox != null)
                         editor.SpeakerMatchThresholdTextBox.Text = snapshot.Audio.SpeakerMatchMinScore.ToString(CultureInfo.InvariantCulture);
 
-                    // VAD
-                    editor.VadThresholdTextBox.Text = snapshot.Vad.Threshold.ToString(CultureInfo.InvariantCulture);
+                    // VAD legacy removed
                     if (editor.RequireWakeWordCheckBox != null)
                         editor.RequireWakeWordCheckBox.IsChecked = snapshot.App.RequireWakeWord;
 
@@ -548,9 +542,7 @@ namespace Kinectv1.UI.Settings
                 _attachedEditor.SpeakerModelPathTextBox.TextChanged -= OnEditorDirty;
                 _attachedEditor.ArcFaceModelPathTextBox.TextChanged -= OnEditorDirty;
                 _attachedEditor.AudioVoiceThresholdTextBox.TextChanged -= OnEditorDirty;
-                _attachedEditor.AudioVadThresholdTextBox.TextChanged -= OnEditorDirty;
                 _attachedEditor.AudioBufferSizeTextBox.TextChanged -= OnEditorDirty;
-                _attachedEditor.VadThresholdTextBox.TextChanged -= OnEditorDirty;
                 if (_attachedEditor.SpeakerMatchThresholdTextBox != null)
                     _attachedEditor.SpeakerMatchThresholdTextBox.TextChanged -= OnEditorDirty;
                 if (_attachedEditor.AudioVoiceHighThresholdTextBox != null)
@@ -596,9 +588,7 @@ namespace Kinectv1.UI.Settings
                 _attachedEditor.SpeakerModelPathTextBox.TextChanged += OnEditorDirty;
                 _attachedEditor.ArcFaceModelPathTextBox.TextChanged += OnEditorDirty;
                 _attachedEditor.AudioVoiceThresholdTextBox.TextChanged += OnEditorDirty;
-                _attachedEditor.AudioVadThresholdTextBox.TextChanged += OnEditorDirty;
                 _attachedEditor.AudioBufferSizeTextBox.TextChanged += OnEditorDirty;
-                _attachedEditor.VadThresholdTextBox.TextChanged += OnEditorDirty;
                 if (_attachedEditor.SpeakerMatchThresholdTextBox != null)
                     _attachedEditor.SpeakerMatchThresholdTextBox.TextChanged += OnEditorDirty;
                 if (_attachedEditor.AudioVoiceHighThresholdTextBox != null)

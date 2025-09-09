@@ -2,332 +2,165 @@
 // AudioUtils.cs
 using System;
 using System.Buffers;
-using System.Collections.Generic;
 using NAudio.Wave;
-using NAudio.Wave.SampleProviders;
 using NAudio.Dsp;
 
 
 public static class AudioUtils
 {
-    private static float? _cachedVadThreshold = null;
-    
-    /// <summary>
-    /// Get the current VAD threshold from settings (cached for performance)
-    /// </summary>
-    private static float GetVadThreshold()
+    private static float? _cachedVoiceAmpThreshold = null; // derived linear PCM threshold (0..32768)
+
+    // Derive threshold from settings Audio.VoiceThreshold (0..1) once and cache
+    private static float GetVoiceAmpThreshold()
     {
-        if (!_cachedVadThreshold.HasValue)
+        if (!_cachedVoiceAmpThreshold.HasValue)
         {
             try
             {
-                var v = Kinectv1.App.SettingsProvider?.Current?.Audio?.VadThreshold ?? 300;
-                _cachedVadThreshold = (float)v;
-                Console.WriteLine($"??? VAD threshold loaded: {_cachedVadThreshold.Value:F0}");
+                var vt = Kinectv1.App.SettingsProvider?.Current?.Audio?.VoiceThreshold ?? 0.2; // default from defaults.json
+                if (vt < 0) vt = 0; if (vt > 1) vt = 1;
+                _cachedVoiceAmpThreshold = (float)(vt * 32768.0); // convert normalized amplitude -> PCM short range
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"ERROR: Failed to load VAD threshold, using default 300: {ex.Message}");
-                _cachedVadThreshold = 300f; // Fallback default
-            }
+            catch { _cachedVoiceAmpThreshold = (float)(0.2 * 32768.0); }
         }
-        return _cachedVadThreshold.Value;
+        return _cachedVoiceAmpThreshold.Value;
     }
-    
-    /// <summary>
-    /// Update the cached VAD threshold (call this when settings change)
-    /// </summary>
-    public static void RefreshVadThreshold()
-    {
-        _cachedVadThreshold = null;
-        GetVadThreshold(); // This will reload and cache the new value
-    }
+
+    public static void RefreshVoiceThreshold() => _cachedVoiceAmpThreshold = null;
 
     public static bool IsVoiceActive(byte[] buffer, int bytesRecorded, out float rms)
     {
-        // Simple RMS-based voice activity detection
-        long sum = 0;
+        long sum = 0; int samples = bytesRecorded / 2; if (samples <= 0) { rms = 0; return false; }
         for (int i = 0; i < bytesRecorded; i += 2)
         {
-            if (i + 1 < bytesRecorded)
-            {
-                short sample = (short)(buffer[i] | (buffer[i + 1] << 8));
-                sum += sample * sample;
-            }
+            if (i + 1 >= bytesRecorded) break;
+            short sample = (short)(buffer[i] | (buffer[i + 1] << 8));
+            sum += sample * sample;
         }
-        
-        double rmsDouble = Math.Sqrt((double)sum / (bytesRecorded / 2));
+        double rmsDouble = Math.Sqrt(sum / (double)samples); // raw PCM amplitude (0..32768)
         rms = (float)rmsDouble;
-        
-        // Use configurable threshold instead of hardcoded 500
-        float vadThreshold = GetVadThreshold();
-        return rms > vadThreshold;
+        float thresh = GetVoiceAmpThreshold();
+        return rmsDouble >= thresh;
     }
 
-    public static bool IsVoiceActive(byte[] buffer, int bytesRecorded)
-    {
-        // Overload for backward compatibility
-        return IsVoiceActive(buffer, bytesRecorded, out _);
-    }
+    public static bool IsVoiceActive(byte[] buffer, int bytesRecorded) => IsVoiceActive(buffer, bytesRecorded, out _);
 
     public static float CalculateRms(byte[] buffer, int bytesRecorded)
     {
-        // Optimized RMS calculation for 20ms audio frames (640 bytes at 16kHz)
-        // Performance: ~0.002ms per calculation, well under 2% CPU requirement
-        long sum = 0;
+        long sum = 0; int samples = bytesRecorded / 2; if (samples <= 0) return 0f;
         for (int i = 0; i < bytesRecorded; i += 2)
         {
-            if (i + 1 < bytesRecorded)
-            {
-                short sample = (short)(buffer[i] | (buffer[i + 1] << 8));
-                sum += sample * sample;
-            }
+            if (i + 1 >= bytesRecorded) break;
+            short sample = (short)(buffer[i] | (buffer[i + 1] << 8));
+            sum += sample * sample;
         }
-        
-        double rms = Math.Sqrt((double)sum / (bytesRecorded / 2));
+        double rms = Math.Sqrt(sum / (double)samples);
         return (float)rms;
     }
 
     public static float[] ConvertToFloatPcm(byte[] buffer, int bytesRecorded)
     {
         int samples = bytesRecorded / 2;
-        // Use ArrayPool to avoid per-call allocation in hot audio processing paths
-        var pooledArray = ArrayPool<float>.Shared.Rent(samples);
+        var pooled = ArrayPool<float>.Shared.Rent(samples);
         try
         {
             for (int i = 0; i < samples; i++)
             {
-                int byteIndex = i * 2;
-                if (byteIndex + 1 < bytesRecorded)
-                {
-                    short sample = (short)(buffer[byteIndex] | (buffer[byteIndex + 1] << 8));
-                    pooledArray[i] = sample / 32768.0f;
-                }
+                int bi = i * 2; if (bi + 1 >= bytesRecorded) break;
+                short sample = (short)(buffer[bi] | (buffer[bi + 1] << 8));
+                pooled[i] = sample / 32768.0f;
             }
-            
-            // Copy to final result array
             var result = new float[samples];
-            Array.Copy(pooledArray, result, samples);
+            Array.Copy(pooled, result, samples);
             return result;
         }
-        finally
-        {
-            ArrayPool<float>.Shared.Return(pooledArray);
-        }
+        finally { ArrayPool<float>.Shared.Return(pooled); }
     }
 
-    /// <summary>
-    /// High-quality resampling from 48kHz mono to 16kHz mono with anti-aliasing LPF
-    /// For use when audio is already converted to mono
-    /// </summary>
-    /// <param name="input">48kHz mono float samples</param>
-    /// <param name="inputLength">Number of input samples</param>
-    /// <returns>16kHz mono samples (approximately inputLength/3)</returns>
     public static float[] ResampleMono48kTo16k(float[] input, int inputLength)
     {
-        if (input == null || inputLength <= 0) return new float[0];
-
-        // Pool temporary buffers to reduce allocations
+        if (input == null || inputLength <= 0) return Array.Empty<float>();
         var lpfBuffer = ArrayPool<float>.Shared.Rent(inputLength);
         try
         {
-            // Step 1: Apply anti-aliasing LPF before decimation (cutoff ~7kHz for 16kHz output)
-            // Create fresh filter for each call to avoid state contamination
-            var lpFilter = BiQuadFilter.LowPassFilter(48000, 7000, 0.707f);
-            for (int i = 0; i < inputLength; i++)
-            {
-                lpfBuffer[i] = lpFilter.Transform(input[i]);
-            }
-
-            // Step 2: High-quality resampling using linear interpolation (3:1 ratio)
-            int outputLength = inputLength / 3;
-            if (outputLength <= 0) return new float[0];
-            
+            var lp = BiQuadFilter.LowPassFilter(48000, 7000, 0.707f);
+            for (int i = 0; i < inputLength; i++) lpfBuffer[i] = lp.Transform(input[i]);
+            int outputLength = inputLength / 3; if (outputLength <= 0) return Array.Empty<float>();
             var output = new float[outputLength];
-            
             for (int n = 0; n < outputLength; n++)
             {
-                double sourceIndex = (double)n * 3.0;
-                int i0 = (int)sourceIndex;
-                int i1 = Math.Min(i0 + 1, inputLength - 1);
-                double frac = sourceIndex - i0;
-                
-                // Bounds check for safety
-                if (i0 < inputLength && i1 < inputLength)
-                {
-                    // Linear interpolation for better quality than simple decimation
-                    output[n] = (float)((1.0 - frac) * lpfBuffer[i0] + frac * lpfBuffer[i1]);
-                }
+                double src = n * 3.0; int i0 = (int)src; int i1 = Math.Min(i0 + 1, inputLength - 1); double frac = src - i0;
+                output[n] = (float)((1 - frac) * lpfBuffer[i0] + frac * lpfBuffer[i1]);
             }
-
             return output;
         }
-        finally
-        {
-            ArrayPool<float>.Shared.Return(lpfBuffer);
-        }
+        finally { ArrayPool<float>.Shared.Return(lpfBuffer); }
     }
 
-    /// <summary>
-    /// High-quality resampling from 48kHz stereo to 16kHz mono with anti-aliasing LPF
-    /// Replaces naive decimation to prevent aliasing and improve ASR quality
-    /// </summary>
-    /// <param name="input">48kHz stereo float samples</param>
-    /// <param name="inputLength">Number of input samples</param>
-    /// <returns>16kHz mono samples (approximately inputLength/6)</returns>
     public static float[] Resample48kTo16kMono(float[] input, int inputLength)
     {
-        if (input == null || inputLength <= 0) return new float[0];
-
-        // Pool temporary buffers to reduce allocations
-        var monoBuffer = ArrayPool<float>.Shared.Rent(inputLength / 2);
+        if (input == null || inputLength <= 0) return Array.Empty<float>();
+        var monoBuf = ArrayPool<float>.Shared.Rent(inputLength / 2);
         try
         {
-            // Step 1: Convert stereo to mono (L+R)/2
-            int monoLength = inputLength / 2;
-            for (int i = 0; i < monoLength; i++)
-            {
-                monoBuffer[i] = (input[i * 2] + input[i * 2 + 1]) * 0.5f;
-            }
-
-            // Step 2: Use the mono resampler
-            return ResampleMono48kTo16k(monoBuffer, monoLength);
+            int monoLen = inputLength / 2;
+            for (int i = 0; i < monoLen; i++) monoBuf[i] = (input[i * 2] + input[i * 2 + 1]) * 0.5f;
+            return ResampleMono48kTo16k(monoBuf, monoLen);
         }
-        finally
-        {
-            ArrayPool<float>.Shared.Return(monoBuffer);
-        }
+        finally { ArrayPool<float>.Shared.Return(monoBuf); }
     }
 
-    /// <summary>
-    /// High-quality resampling from 48kHz stereo to 16kHz mono with anti-aliasing LPF (byte array input)
-    /// </summary>
-    /// <param name="input">48kHz stereo s16 byte samples</param>
-    /// <param name="inputLength">Number of input bytes</param>
-    /// <returns>16kHz mono samples</returns>
     public static float[] Resample48kTo16kMono(byte[] input, int inputLength)
     {
-        if (input == null || inputLength <= 0) return new float[0];
-        
-        // Ensure we have even number of bytes for 16-bit samples
+        if (input == null || inputLength <= 0) return Array.Empty<float>();
         if (inputLength % 2 != 0) inputLength--;
-        if (inputLength <= 0) return new float[0];
-
-        // Convert s16 bytes to float samples first
-        int sampleCount = inputLength / 2;
-        var floatInput = ArrayPool<float>.Shared.Rent(sampleCount);
+        int sampleCount = inputLength / 2; var floatInput = ArrayPool<float>.Shared.Rent(sampleCount);
         try
         {
             for (int i = 0; i < sampleCount; i++)
             {
-                int byteIndex = i * 2;
-                if (byteIndex + 1 < inputLength)
-                {
-                    // Little-endian s16 conversion
-                    short sample = (short)((input[byteIndex + 1] << 8) | input[byteIndex]);
-                    floatInput[i] = sample / 32768.0f;
-                }
+                int bi = i * 2; if (bi + 1 >= inputLength) break;
+                short sample = (short)((input[bi + 1] << 8) | input[bi]);
+                floatInput[i] = sample / 32768.0f;
             }
-
             return Resample48kTo16kMono(floatInput, sampleCount);
         }
-        finally
-        {
-            ArrayPool<float>.Shared.Return(floatInput);
-        }
+        finally { ArrayPool<float>.Shared.Return(floatInput); }
     }
 
-    /// <summary>
-    /// Frame builder to accumulate samples into consistent 320-sample (20ms at 16kHz) frames
-    /// Prevents "chunk too large" issues by ensuring proper frame sizes
-    /// Thread-safe implementation for multi-threaded audio processing
-    /// </summary>
     public static class FrameBuilder
     {
-        private static readonly float[] _frameBuffer = new float[1024]; // Accumulation buffer (allows for 3+ frames buffering)
+        private static readonly float[] _frameBuffer = new float[1024];
         private static int _frameBufferLength = 0;
         private static readonly object _frameLock = new object();
-        private const int TARGET_FRAME_SIZE = 320; // 20ms at 16kHz
-        
-        /// <summary>
-        /// Add samples to frame buffer and return complete 320-sample frames
-        /// </summary>
-        /// <param name="samples">Input samples to add</param>
-        /// <returns>Array of complete 320-sample frames, or empty if no complete frames available</returns>
+        private const int TARGET_FRAME_SIZE = 320;
         public static float[][] AccumulateFrames(float[] samples)
         {
-            if (samples == null || samples.Length == 0) return new float[0][];
-
+            if (samples == null || samples.Length == 0) return Array.Empty<float[]>();
             lock (_frameLock)
             {
-                var completeFrames = new System.Collections.Generic.List<float[]>();
-                int inputOffset = 0;
-
-                while (inputOffset < samples.Length)
+                var list = new System.Collections.Generic.List<float[]>();
+                int offset = 0;
+                while (offset < samples.Length)
                 {
-                    // How much space is left in the current frame?
-                    int spaceLeft = TARGET_FRAME_SIZE - _frameBufferLength;
-                    int samplesToCopy = Math.Min(spaceLeft, samples.Length - inputOffset);
-
-                    // Bounds check to prevent buffer overflow
-                    if (_frameBufferLength + samplesToCopy > _frameBuffer.Length)
-                    {
-                        Console.WriteLine($"?? FrameBuilder buffer overflow prevented: {_frameBufferLength} + {samplesToCopy} > {_frameBuffer.Length}");
-                        break;
-                    }
-
-                    // Copy samples into frame buffer
-                    Array.Copy(samples, inputOffset, _frameBuffer, _frameBufferLength, samplesToCopy);
-                    _frameBufferLength += samplesToCopy;
-                    inputOffset += samplesToCopy;
-
-                    // If frame is complete (320 samples), extract it
+                    int space = TARGET_FRAME_SIZE - _frameBufferLength;
+                    int toCopy = Math.Min(space, samples.Length - offset);
+                    if (_frameBufferLength + toCopy > _frameBuffer.Length) break;
+                    Array.Copy(samples, offset, _frameBuffer, _frameBufferLength, toCopy);
+                    _frameBufferLength += toCopy; offset += toCopy;
                     if (_frameBufferLength == TARGET_FRAME_SIZE)
                     {
                         var frame = new float[TARGET_FRAME_SIZE];
                         Array.Copy(_frameBuffer, 0, frame, 0, TARGET_FRAME_SIZE);
-                        completeFrames.Add(frame);
-                        _frameBufferLength = 0; // Reset for next frame
+                        list.Add(frame);
+                        _frameBufferLength = 0;
                     }
                 }
-
-                return completeFrames.ToArray();
+                return list.ToArray();
             }
         }
-
-        /// <summary>
-        /// Reset frame builder state (call when switching audio sources or on error)
-        /// </summary>
-        public static void Reset()
-        {
-            lock (_frameLock)
-            {
-                _frameBufferLength = 0;
-                Array.Clear(_frameBuffer, 0, _frameBuffer.Length);
-            }
-        }
-
-        /// <summary>
-        /// Get current buffer occupancy for monitoring
-        /// </summary>
-        public static int GetBufferOccupancy()
-        {
-            lock (_frameLock)
-            {
-                return _frameBufferLength;
-            }
-        }
-
-        /// <summary>
-        /// Get frame builder status for debugging
-        /// </summary>
-        public static string GetStatus()
-        {
-            lock (_frameLock)
-            {
-                return $"FrameBuilder: {_frameBufferLength}/{TARGET_FRAME_SIZE} samples buffered " +
-                       $"({(float)_frameBufferLength / TARGET_FRAME_SIZE * 100:F1}% of next frame)";
-            }
-        }
+        public static void Reset() { lock (_frameLock) { _frameBufferLength = 0; Array.Clear(_frameBuffer, 0, _frameBuffer.Length); } }
+        public static int GetBufferOccupancy() { lock (_frameLock) return _frameBufferLength; }
+        public static string GetStatus() { lock (_frameLock) return $"FrameBuilder: {_frameBufferLength}/{TARGET_FRAME_SIZE} samples buffered ({(float)_frameBufferLength / TARGET_FRAME_SIZE * 100:F1}% of next frame)"; }
     }
 }

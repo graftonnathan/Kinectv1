@@ -14,6 +14,7 @@ using System.Windows.Threading;
 using Kinectv1.Discord;
 using Kinectv1.Mumble; // added
 using Kinectv1.Settings; // added for AudioInMode and other settings types
+using Kinectv1.Tts;
 
 namespace Kinectv1
 {
@@ -26,20 +27,16 @@ namespace Kinectv1
         private CancellationTokenSource _cancellationTokenSource = new CancellationTokenSource();
         private bool _isClosing = false;
 
-        // Latest-wins UI update mechanism to prevent update queue buildup
+        // Latest RMS values (pull-model)
         private volatile float _latestRmsValue = 0f;
         private volatile float _latestDiscordRmsValue = 0f;
         private volatile float _latestMumbleRmsValue = 0f; // NEW: Latest Mumble RMS value
-        private volatile int _rmsUpdatePending = 0; // 0 = no update pending, 1 = update pending
-        private volatile int _discordRmsUpdatePending = 0;
-        private volatile int _mumbleRmsUpdatePending = 0; // NEW: Update pending flag for Mumble RMS
 
         // ENHANCED DOUBLE REGISTRATION PREVENTION - Discord initialization protection
         private static int _discordInitInProgress = 0; // 0 = not in progress, 1 = in progress
 
         // Audio input settings
         private bool _isMicrophoneInputEnabled = true;
-        // Default Discord and Mumble inputs disabled at startup; toggled by mode selection
         private bool _isDiscordInputEnabled = false;
         private bool _isMumbleInputEnabled = false; // new: UI state mirror (future input)
         private AudioInMode _currentAudioMode = AudioInMode.LocalMic;
@@ -51,6 +48,23 @@ namespace Kinectv1
 
         // Embedded settings window host
         private UI.Settings.SettingsWindow _embeddedSettingsWindow;
+
+        // --- RMS Visualization Optimizations (Phase 2) ---
+        private DispatcherTimer _rmsUiTimer; // single timer drives all RMS UI updates
+        private SolidColorBrush _rmsGreenBrush, _rmsOrangeBrush, _rmsRedBrush;
+        private SolidColorBrush _discordLowBrush, _discordMidBrush, _discordHighBrush;
+        private double _lastMicPct = -1, _lastDiscordPct = -1, _lastMumblePct = -1;
+        private int _lastMicBucket = -1, _lastDiscordBucket = -1, _lastMumbleBucket = -1;
+        private float _smoothedRms = 0f; // baseline RMS (mic)
+        private float _smoothedDiscordRms = 0f; // baseline discord
+        private float _smoothedMumbleRms = 0f; // baseline mumble
+        // NEW: track last RMS update times to allow decay when capture pauses
+        private DateTime _lastMicRmsTime = DateTime.MinValue;
+        private DateTime _lastDiscordRmsTime = DateTime.MinValue;
+        private DateTime _lastMumbleRmsTime = DateTime.MinValue;
+
+        private double _localTtsVolume = 1.0; // 100%
+        private double _discordTtsVolume = 1.0; // 100%
 
         public MainWindow()
         {
@@ -123,6 +137,11 @@ namespace Kinectv1
                     // Show only resolved-at-dispatch events
                     VoiceRecognizer.OnSpeakerResolvedForOllama += ShowSpeakerResolvedForOllama;
                     VoiceRecognizer.OnNameHeard += name => EnhancedKinectFaceTracker.QueueLabel(name);
+                    VoiceRecognizer.OnVoiceEmbedding += OnVoiceEmbedding; // capture embeddings
+
+                    // Ensure final-only UI and LLM dispatch wiring
+                    WireTranscriptionEvents();
+                    WireDispatchPipeline();
                 }
                 catch (Exception ex)
                 {
@@ -143,7 +162,6 @@ namespace Kinectv1
                     VoiceEnrollmentManager.OnEnrollmentProgress += UpdateVoiceEnrollmentProgress;
                     VoiceEnrollmentManager.OnEnrollmentComplete += OnVoiceEnrollmentComplete;
                     VoiceEnrollmentManager.OnEnrollmentCancelled += OnVoiceEnrollmentCancelled;
-                    VoiceRecognizer.OnVoiceEmbedding += OnVoiceEmbedding;
                 }
                 catch (Exception ex)
                 {
@@ -186,9 +204,9 @@ namespace Kinectv1
                 // Hook TTS events
                 try
                 {
-                    CoquiTtsService.OnTtsSpeakingStarted += OnTtsSpeakingStarted;
-                    CoquiTtsService.OnTtsSpeakingFinished += OnTtsSpeakingFinished;
-                    CoquiTtsService.OnTtsError += OnTtsError;
+                    TtsService.OnTtsSpeakingStarted += OnTtsSpeakingStarted;
+                    TtsService.OnTtsSpeakingFinished += OnTtsSpeakingFinished;
+                    TtsService.OnTtsError += OnTtsError;
                     Console.WriteLine("TTS service events hooked");
                 }
                 catch (Exception ex)
@@ -245,6 +263,9 @@ namespace Kinectv1
 
                 // Initialize embedded settings into the Settings tab
                 InitializeEmbeddedSettings();
+
+                // NEW: Initialize optimized RMS visualization pull model
+                InitializeRmsVisualizer();
             }
             catch (Exception ex)
             {
@@ -268,11 +289,171 @@ namespace Kinectv1
             }
         }
 
+        private void InitializeRmsVisualizer()
+        {
+            try
+            {
+                // Cache theme brushes once (fallback to defaults if missing)
+                _rmsGreenBrush = (TryFindResource("AccentGreen") as SolidColorBrush) ?? new SolidColorBrush(Colors.Green);
+                _rmsOrangeBrush = (TryFindResource("AccentOrange") as SolidColorBrush) ?? new SolidColorBrush(Colors.Orange);
+                _rmsRedBrush = (TryFindResource("AccentRed") as SolidColorBrush) ?? new SolidColorBrush(Colors.Red);
+
+                _discordLowBrush = (TryFindResource("AccentBlue") as SolidColorBrush) ?? new SolidColorBrush(Colors.SteelBlue);
+                _discordMidBrush = (TryFindResource("AccentPurple") as SolidColorBrush) ?? new SolidColorBrush(Colors.MediumPurple);
+                _discordHighBrush = (TryFindResource("AccentOrange") as SolidColorBrush) ?? new SolidColorBrush(Colors.Orange);
+
+                _rmsUiTimer = new DispatcherTimer(DispatcherPriority.Render, Dispatcher)
+                {
+                    Interval = TimeSpan.FromMilliseconds(33) // ~30 FPS
+                };
+                _rmsUiTimer.Tick += (s, e) => RmsUiTick();
+                _rmsUiTimer.Start();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"InitializeRmsVisualizer failed: {ex.Message}");
+            }
+        }
+
+        private void RmsUiTick()
+        {
+            if (_isClosing) return;
+            var now = DateTime.UtcNow;
+
+            // MIC (Local)
+            if (_isMicrophoneInputEnabled && RmsBar != null && RmsText != null)
+            {
+                bool stale = (now - _lastMicRmsTime).TotalMilliseconds > 200; // >200ms no new frames
+                var input = stale ? 0f : _latestRmsValue; // raw scale 0..10000*
+
+                if (input > _smoothedRms)
+                    _smoothedRms = _smoothedRms * 0.4f + input * 0.6f; // attack
+                else
+                    _smoothedRms = _smoothedRms * 0.85f + input * 0.15f; // decay
+
+                // Accelerated decay when stale (capture paused / silence)
+                if (stale && input == 0f)
+                {
+                    _smoothedRms *= 0.80f; // speed up fall
+                    if (_smoothedRms < 5f) _smoothedRms = 0f; // snap to absolute zero near floor
+                }
+
+                var pct = Math.Max(0.0, Math.Min(100.0, (_smoothedRms / 10000.0) * 100.0));
+
+                // Always update if stale & decreasing even if change < 0.5 to avoid plateau perception
+                bool forceUpdate = stale && pct < _lastMicPct;
+                if (forceUpdate || Math.Abs(pct - _lastMicPct) >= 0.5)
+                {
+                    RmsBar.Value = pct;
+                    _lastMicPct = pct;
+                    int pctIntNow = (int)pct;
+                    RmsText.Text = $"RMS: {_smoothedRms:F1} ({pctIntNow}%)";
+                }
+                else if (RmsText.Text.Length == 0)
+                {
+                    RmsText.Text = $"RMS: {_smoothedRms:F1} ({(int)pct}%)";
+                }
+
+                int bucket = (pct <= 33) ? 0 : (pct <= 66 ? 1 : 2);
+                if (bucket != _lastMicBucket)
+                {
+                    _lastMicBucket = bucket;
+                    RmsBar.Foreground = bucket == 0 ? _rmsGreenBrush : bucket == 1 ? _rmsOrangeBrush : _rmsRedBrush;
+                }
+            }
+
+            // DISCORD
+            if (_isDiscordInputEnabled && DiscordRmsBar != null && DiscordRmsText != null)
+            {
+                bool staleD = (now - _lastDiscordRmsTime).TotalMilliseconds > 250;
+                var input = staleD ? 0f : _latestDiscordRmsValue; // scale 0..1000*
+
+                if (input > _smoothedDiscordRms)
+                    _smoothedDiscordRms = _smoothedDiscordRms * 0.4f + input * 0.6f;
+                else
+                    _smoothedDiscordRms = _smoothedDiscordRms * 0.85f + input * 0.15f;
+
+                if (staleD && input == 0f)
+                {
+                    _smoothedDiscordRms *= 0.80f;
+                    if (_smoothedDiscordRms < 1f) _smoothedDiscordRms = 0f;
+                }
+
+                var pct = Math.Max(0.0, Math.Min(100.0, (_smoothedDiscordRms / 1000.0) * 100.0));
+                bool forceUpdate = staleD && pct < _lastDiscordPct;
+                if (forceUpdate || Math.Abs(pct - _lastDiscordPct) >= 0.5)
+                {
+                    DiscordRmsBar.Value = pct;
+                    _lastDiscordPct = pct;
+                    DiscordRmsText.Text = $"RMS: {_smoothedDiscordRms:F1} ({(int)pct}%)";
+                }
+                else if (DiscordRmsText.Text.Length == 0)
+                {
+                    DiscordRmsText.Text = $"RMS: {_smoothedDiscordRms:F1} ({(int)pct}%)";
+                }
+
+                int bucket = (pct <= 33) ? 0 : (pct <= 66 ? 1 : 2);
+                if (bucket != _lastDiscordBucket)
+                {
+                    _lastDiscordBucket = bucket;
+                    DiscordRmsBar.Foreground = bucket == 0 ? _discordLowBrush : bucket == 1 ? _discordMidBrush : _discordHighBrush;
+                }
+            }
+
+            // MUMBLE
+            try
+            {
+                var bar = this.FindName("MumbleRmsBar") as ProgressBar;
+                var text = this.FindName("MumbleRmsText") as TextBlock;
+                if (_isMumbleInputEnabled && bar != null && text != null)
+                {
+                    bool staleM = (now - _lastMumbleRmsTime).TotalMilliseconds > 250;
+                    var input = staleM ? 0f : _latestMumbleRmsValue; // expected 0..1
+                    input = Math.Max(0f, Math.Min(1f, input));
+
+                    if (input > _smoothedMumbleRms)
+                        _smoothedMumbleRms = _smoothedMumbleRms * 0.4f + input * 0.6f;
+                    else
+                        _smoothedMumbleRms = _smoothedMumbleRms * 0.85f + input * 0.15f;
+
+                    if (staleM && input == 0f)
+                    {
+                        _smoothedMumbleRms *= 0.80f;
+                        if (_smoothedMumbleRms < 0.01f) _smoothedMumbleRms = 0f;
+                    }
+
+                    var pct = _smoothedMumbleRms * 100.0;
+                    bool forceUpdate = staleM && pct < _lastMumblePct;
+                    if (forceUpdate || Math.Abs(pct - _lastMumblePct) >= 0.5)
+                    {
+                        bar.Value = pct;
+                        _lastMumblePct = pct;
+                        text.Text = $"RMS: {_smoothedMumbleRms:F2} ({(int)pct}%)";
+                    }
+                    else if (text.Text.Length == 0)
+                    {
+                        text.Text = $"RMS: {_smoothedMumbleRms:F2} ({(int)pct}%)";
+                    }
+
+                    int bucket = (pct <= 33) ? 0 : (pct <= 66 ? 1 : 2);
+                    if (bucket != _lastMumbleBucket)
+                    {
+                        _lastMumbleBucket = bucket;
+                        bar.Foreground = bucket == 0 ? _rmsGreenBrush : bucket == 1 ? _rmsOrangeBrush : _rmsRedBrush;
+                    }
+                }
+            }
+            catch { }
+        }
+
         private void InitializeEmbeddedSettings()
         {
             try
             {
                 _embeddedSettingsWindow = new UI.Settings.SettingsWindow();
+                // Expose to embedded child editors so their buttons can route to the host
+                UI.Settings.SettingsWindow.CurrentEmbedded = _embeddedSettingsWindow;
+
                 if (_embeddedSettingsWindow.Content is FrameworkElement content && SettingsHost != null)
                 {
                     // Use the SettingsWindow's ViewModel as DataContext for embedded content
@@ -283,7 +464,7 @@ namespace Kinectv1
                     // Explicitly populate from current snapshot since Window.Loaded will not fire when embedded
                     _embeddedSettingsWindow.PopulateEditorFromCurrentSnapshot();
 
-                    // Keep UI in sync if settings change elsewhere
+                    // Keep UI in sync if settings change elsewhere and reload STT model from settings
                     try
                     {
                         var svc = Kinectv1.App.SettingsProvider;
@@ -291,6 +472,10 @@ namespace Kinectv1
                         {
                             svc.Changed += (s, snap) =>
                             {
+                                // Reload Vosk model per settings path
+                                try { VoiceRecognizer.ReloadFromSettings(); } catch { }
+
+                                // Refresh the embedded editor view
                                 try { Dispatcher.BeginInvoke(new Action(() => _embeddedSettingsWindow.PopulateEditorFromCurrentSnapshot()), DispatcherPriority.Background); } catch { }
                             };
                         }
@@ -484,208 +669,26 @@ namespace Kinectv1
             }
         }
 
-        private float _smoothedRms = 0f; // Initialize baseline RMS immediately
-        private float _smoothedDiscordRms = 0f; // Initialize baseline Discord RMS immediately
-        private float _smoothedMumbleRms = 0f; // Initialize baseline Mumble RMS
-        private double _localTtsVolume = 1.0; // 100%
-        private double _discordTtsVolume = 1.0; // 100%
-
-        // RMS Update logic
+        // RMS Update logic (EVENT THREAD): now only stores latest value; UI refresh handled by timer
         private void UpdateRmsLevel(float rawRms)
         {
-            try
-            {
-                if (_isClosing) return; // Prevent UI updates during shutdown
-
-                // Latest-wins policy: store the latest value and only dispatch if no update is pending
-                _latestRmsValue = rawRms;
-                
-                // Only schedule an update if one isn't already pending
-                if (Interlocked.CompareExchange(ref _rmsUpdatePending, 1, 0) == 0)
-                {
-                    try
-                    {
-                        Dispatcher.BeginInvoke(new Action(() =>
-                        {
-                            try
-                            {
-                                if (_isClosing) return; // Double check inside dispatcher
-
-                                // Get the latest value (may have been updated since dispatch was scheduled)
-                                var currentRms = _latestRmsValue;
-                                
-                                // Check if UI elements are still valid
-                                if (RmsBar != null && RmsText != null)
-                                {
-                                    // Only update if microphone input is enabled
-                                    if (_isMicrophoneInputEnabled)
-                                    {
-                                        // Smooth the RMS values for better visualization
-                                        _smoothedRms = 0.7f * _smoothedRms + 0.3f * currentRms;
-                                        var scaledRms = Math.Min(100, Math.Max(0, (_smoothedRms / 10000.0f) * 100));
-
-                                        RmsBar.Value = scaledRms;
-                                        RmsText.Text = $"RMS: {_smoothedRms:F1} ({scaledRms:F0}%)";
-
-                                        // FIXED: Color gradient - Green (low/quiet) -> Orange (medium) -> Red (high/loud)
-                                        var greenBrush = this.TryFindResource("AccentGreen") as SolidColorBrush ?? Brushes.Green;
-                                        var orangeBrush = this.TryFindResource("AccentOrange") as SolidColorBrush ?? Brushes.Orange;
-                                        var redBrush = this.TryFindResource("AccentRed") as SolidColorBrush ?? Brushes.Red;
-
-                                        // FIXED: Proper gradient logic - Low=Green (good), Medium=Orange, High=Red (loud/bad)
-                                        if (scaledRms <= 33)
-                                            RmsBar.Foreground = greenBrush;     // 0-33% = Green (quiet/good)
-                                        else if (scaledRms <= 66)
-                                            RmsBar.Foreground = orangeBrush;    // 34-66% = Orange (medium)
-                                        else
-                                            RmsBar.Foreground = redBrush;       // 67-100% = Red (loud/bad)
-                                    }
-                                    // If disabled, the UpdateMicrophoneStatus() method handles the display
-                                }
-                            }
-                            finally
-                            {
-                                // Reset the pending flag to allow future updates
-                                Interlocked.Exchange(ref _rmsUpdatePending, 0);
-
-                            }
-                        }), DispatcherPriority.Background);
-                    }
-                    catch (Exception ex)
-                    {
-                        // Reset the pending flag if dispatch failed
-                        Interlocked.Exchange(ref _rmsUpdatePending, 0);
-                        if (!_isClosing)
-                        {
-                            Console.WriteLine($"Error scheduling RMS update: {ex.Message}");
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                // Suppress exceptions during shutdown
-                if (!_isClosing)
-                {
-                    Console.WriteLine($"Error updating RMS level: {ex.Message}");
-                }
-            }
+            if (_isClosing) return;
+            _latestRmsValue = rawRms;
+            _lastMicRmsTime = DateTime.UtcNow; // NEW
         }
 
-        /// <summary>
-        /// Update Discord RMS level display (keeping this for the Discord RMS bar)
-        /// </summary>
         private void UpdateDiscordRmsLevel(float rawRms)
         {
-            if (_isClosing) return; // Prevent UI updates during shutdown
-
-            // Latest-wins policy: store the latest value and only dispatch if no update is pending
+            if (_isClosing) return;
             _latestDiscordRmsValue = rawRms;
-            
-            // Only schedule an update if one isn't already pending
-            if (Interlocked.CompareExchange(ref _discordRmsUpdatePending, 1, 0) == 0)
-            {
-                try
-                {
-                    Dispatcher.BeginInvoke(new Action(() =>
-                    {
-                        try
-                        {
-                            if (_isClosing) return; // Double check inside dispatcher
-
-                            // Get the latest value (may have been updated since dispatch was scheduled)
-                            var currentRms = _latestDiscordRmsValue;
-
-                            // Check if UI elements are still valid
-                            if (DiscordRmsBar != null && DiscordRmsText != null)
-                            {
-                                // Only update if Discord input is enabled
-                                if (_isDiscordInputEnabled)
-                                {
-                                    // Smooth the Discord RMS values for better visualization
-                                    _smoothedDiscordRms = 0.7f * _smoothedDiscordRms + 0.3f * currentRms;
-                                    
-                                    // Discord audio uses a different scaling since it's typically normalized differently
-                                    var scaledRms = Math.Min(100, Math.Max(0, (_smoothedDiscordRms / 1000.0f) * 100));
-
-                                    DiscordRmsBar.Value = scaledRms;
-                                    DiscordRmsText.Text = $"RMS: {_smoothedDiscordRms:F1} ({scaledRms:F0}%)";
-
-                                    // Color gradient for Discord - Blue theme
-                                    var blueBrush = this.TryFindResource("AccentBlue") as SolidColorBrush ?? Brushes.Blue;
-                                    var purpleBrush = this.TryFindResource("AccentPurple") as SolidColorBrush ?? Brushes.Purple;
-                                    var orangeBrush = this.TryFindResource("AccentOrange") as SolidColorBrush ?? Brushes.Orange;
-
-                                    // Discord-specific color gradient
-                                    if (scaledRms <= 33)
-                                        DiscordRmsBar.Foreground = blueBrush;      // 0-33% = Blue (quiet)
-                                    else if (scaledRms <= 66)
-                                        DiscordRmsBar.Foreground = purpleBrush;    // 34-66% = Purple (medium)
-                                    else
-                                        DiscordRmsBar.Foreground = orangeBrush;    // 67-100% = Orange (loud)
-                                }
-                                // If disabled, the UpdateDiscordStatus() method handles the display
-                            }
-                        }
-                        finally
-                        {
-                            // Reset the pending flag to allow future updates
-                            Interlocked.Exchange(ref _discordRmsUpdatePending, 0);
-                        }
-                    }), DispatcherPriority.Background);
-                }
-                catch (Exception ex)
-                {
-                    // Reset the pending flag if dispatch failed
-                    Interlocked.Exchange(ref _discordRmsUpdatePending, 0);
-                    if (!_isClosing)
-                    {
-                        Console.WriteLine($"Error scheduling Discord RMS update: {ex.Message}");
-                    }
-                }
-            }
+            _lastDiscordRmsTime = DateTime.UtcNow; // NEW
         }
 
-        // Add this method inside the MainWindow class near other RMS update methods
         private void UpdateMumbleRmsLevel(float rawRms)
         {
-            if (_isClosing) return; // Prevent UI updates during shutdown
-
+            if (_isClosing) return;
             _latestMumbleRmsValue = rawRms;
-            if (Interlocked.CompareExchange(ref _mumbleRmsUpdatePending, 1, 0) == 0)
-            {
-                try
-                {
-                    Dispatcher.BeginInvoke(new Action(() =>
-                    {
-                        try
-                        {
-                            if (_isClosing) return;
-                            var currentRms = _latestMumbleRmsValue;
-
-                            var bar = this.FindName("MumbleRmsBar") as ProgressBar;
-                            var text = this.FindName("MumbleRmsText") as TextBlock;
-                            if (bar != null && text != null && _isMumbleInputEnabled)
-                            {
-                                // Mumble meter emits peak 0..1; normalize and smooth separately from Discord
-                                var norm = Math.Max(0f, Math.Min(1f, currentRms));
-                                _smoothedMumbleRms = 0.7f * _smoothedMumbleRms + 0.3f * norm;
-                                var scaled = _smoothedMumbleRms * 100f;
-                                bar.Value = scaled;
-                                text.Text = $"RMS: {_smoothedMumbleRms:F2} ({scaled:F0}%)";
-                            }
-                        }
-                        finally
-                        {
-                            Interlocked.Exchange(ref _mumbleRmsUpdatePending, 0);
-                        }
-                    }), DispatcherPriority.Background);
-                }
-                catch
-                {
-                    Interlocked.Exchange(ref _mumbleRmsUpdatePending, 0);
-                }
-            }
+            _lastMumbleRmsTime = DateTime.UtcNow; // NEW
         }
         // Button Event Handlers and settings tab handler
         private void OpenSettingsButton_Click(object sender, RoutedEventArgs e)
@@ -707,6 +710,7 @@ namespace Kinectv1
         private void MainWindow_Closing(object sender, System.ComponentModel.CancelEventArgs e)
         {
             _isClosing = true;
+            try { _rmsUiTimer?.Stop(); _rmsUiTimer = null; } catch { }
             try { Application.Current.Shutdown(); } catch { }
         }
 
@@ -803,7 +807,7 @@ namespace Kinectv1
                     svc.Save(next);
                     TtsGpuToggleButton.Content = (newExec == Kinectv1.Settings.TtsExecution.GPU) ? "⚡ GPU" : "⚙ CPU";
                     // Recreate session to apply
-                    try { KokoroTtsService.RecreateSessionFromSettings(); } catch { }
+                    try { TtsService.RecreateSessionFromSettings(); } catch { }
                 }
             }
             catch (Exception ex) { Console.WriteLine($"TTS GPU toggle error: {ex.Message}"); }
@@ -972,12 +976,9 @@ namespace Kinectv1
         private void OnOllamaPromptSent(string prompt) { }
         private void OnOllamaResponseReceived(string response)
         {
-            // Speak model response if TTS is enabled and populate AI Response box
             try
             {
                 if (string.IsNullOrWhiteSpace(response)) return;
-
-                // Update AI Response UI box
                 try
                 {
                     Dispatcher.BeginInvoke(new Action(() =>
@@ -996,21 +997,19 @@ namespace Kinectv1
                 }
                 catch { }
 
-                // Prefer JSON pipeline for TTS enabled
                 var ttsEnabled = false;
                 try { ttsEnabled = Kinectv1.App.SettingsProvider?.Current?.Tts?.Enabled ?? false; } catch { }
                 if (!ttsEnabled) return;
 
-                // Prefer JSON settings snapshot speaker to avoid stale legacy speaker
                 var voice = App.SettingsProvider?.Current?.Tts?.Speaker;
-                var speakLocal = _isMicrophoneInputEnabled;      // Local output when mic mode is active
-                var speakDiscord = _isDiscordInputEnabled;       // Discord output when discord mode is active
+                var speakLocal = true;
+                var speakDiscord = _isDiscordInputEnabled;
 
                 if (speakLocal)
                 {
                     _ = Task.Run(async () =>
                     {
-                        try { await CoquiTtsService.SpeakStreamingWithPreemptionAsync(response, voice); }
+                        try { await TtsService.SpeakStreamingWithPreemptionAsync(response, voice); }
                         catch (Exception ex) { Console.WriteLine($"TTS speak error: {ex.Message}"); }
                     });
                 }
@@ -1123,7 +1122,7 @@ namespace Kinectv1
                                 ReconnectBackoffMs: mb.ReconnectBackoffMs,
                                 TextCommandsEnabled: mb.TextCommandsEnabled
                             );
-                            var next = new Kinectv1.Settings.AppSettings(curr.Audio, curr.Tts, curr.Vad, curr.Ollama, curr.Discord, nextMb, curr.Ui, curr.Asr, curr.Stt, curr.Face, curr.App);
+                            var next = new Kinectv1.Settings.AppSettings(curr.Audio, curr.Tts, curr.Ollama, curr.Discord, nextMb, curr.Ui, curr.Asr, curr.Stt, curr.Face, curr.App);
                             svc.Save(next);
                         }
                     }
@@ -1303,7 +1302,11 @@ namespace Kinectv1
         private void ToggleTtsButton_Click(object sender, RoutedEventArgs e) { /* no-op stub */ }
         private void TestTtsButton_Click(object sender, RoutedEventArgs e) { /* no-op stub */ }
         private void OllamaModelComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e) { /* already above; duplicate stub ignored by compiler if we keep one */ }
-        private void RefreshModelsButton_Click(object sender, RoutedEventArgs e) { /* already above; duplicate stub ignored if signature matches; keep minimal */ }
+        private void RefreshModelsButton_Click(object sender, RoutedEventArgs e)
+        {
+            // Minimal stub: actual model refresh handled inside settings views; keep no-op here
+            try { Console.WriteLine("RefreshModelsButton_Click invoked"); } catch { }
+        }
         private void ScenarioComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e) { /* no-op stub */ }
         private void ApplyScenarioButton_Click(object sender, RoutedEventArgs e) { /* no-op stub */ }
         private void RefreshValidationButton_Click(object sender, RoutedEventArgs e) { }
@@ -1319,6 +1322,83 @@ namespace Kinectv1
                 }
             }
             catch { }
+        }
+
+        // Hook to final text only; ignore partials in UI
+        private void WireTranscriptionEvents()
+        {
+            try
+            {
+                VoiceRecognizer.OnTranscription -= OnFinalTranscription;
+                VoiceRecognizer.OnPartialTranscription -= OnPartialTranscription;
+            }
+            catch { }
+
+            VoiceRecognizer.OnTranscription += OnFinalTranscription;
+            VoiceRecognizer.OnPartialTranscription += OnPartialTranscription; // no-op handler
+            VoiceRecognizer.OnSpeakerResolvedForOllama -= ShowSpeakerResolvedForOllama;
+            VoiceRecognizer.OnSpeakerResolvedForOllama += ShowSpeakerResolvedForOllama;
+        }
+
+        private void OnPartialTranscription(string text)
+        {
+            // Intentionally ignore to avoid "as spoken" UI updates
+        }
+
+        private void OnFinalTranscription(string text)
+        {
+            if (_isClosing) return;
+            try
+            {
+                Dispatcher.Invoke(() =>
+                {
+                    if (_isClosing) return;
+                    if (TranscriptionLabel != null)
+                        TranscriptionLabel.Content = text;
+                });
+            }
+            catch { }
+        }
+
+        // Call this after InitializeComponent in ctor
+        private void WireDispatchPipeline()
+        {
+            try
+            {
+                VoiceRecognizer.OnTranscription -= HandleFinalToLlm;
+                VoiceRecognizer.OnVoiceEmbedding -= OnVoiceEmbedding;
+            }
+            catch { }
+            VoiceRecognizer.OnTranscription += HandleFinalToLlm;
+            VoiceRecognizer.OnVoiceEmbedding += OnVoiceEmbedding;
+        }
+
+        private async void HandleFinalToLlm(string text)
+        {
+            try
+            {
+                string speaker = "UnknownSpeaker";
+                float score = 0f;
+                if (_lastVoiceEmbedding != null && _lastVoiceEmbedding.Length > 0)
+                {
+                    var pair = SpeakerIdentifier.IdentifyFromEmbedding(_lastVoiceEmbedding);
+                    speaker = pair.name; score = pair.score;
+                }
+                else
+                {
+                    var hint = SpeakerIdentifier.Identify();
+                    speaker = hint.name; score = hint.score;
+                }
+
+                // Reflect resolved speaker in UI
+                try { ShowSpeakerResolvedForOllama(speaker, score, "voice"); } catch { }
+
+                await OllamaService.DispatchAsync(speaker, text);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Dispatch pipeline error: {ex.Message}");
+            }
         }
     }
 }

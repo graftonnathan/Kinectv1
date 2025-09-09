@@ -14,6 +14,7 @@ using NAudio.Wave;
 using System.Diagnostics;
 using System.Threading.Channels;
 using Discord.Net; // Added for HttpException
+using Kinectv1.Tts;
 
 namespace Kinectv1.Discord
 {
@@ -810,7 +811,7 @@ namespace Kinectv1.Discord
                 Console.WriteLine("[TTS] No active Discord voice connection");
                 return false;
             }
-            if (!CoquiTtsService.IsEnabled())
+            if (!TtsService.IsEnabled())
             {
                 Console.WriteLine("[TTS] TTS service not available");
                 return false;
@@ -819,7 +820,7 @@ namespace Kinectv1.Discord
             var currentSpeaker = speakerRefId ?? Kinectv1.App.SettingsProvider?.Current?.Tts?.Speaker;
 
             // 1) TTS: float[] at 24,000 Hz (Kokoro native), mono
-            var audioFloatData = await CoquiTtsService.GenerateAudioDataAsync(text, currentSpeaker);
+            var audioFloatData = await TtsService.GenerateAudioDataAsync(text, currentSpeaker);
             ct.ThrowIfCancellationRequested();
             if (audioFloatData == null || audioFloatData.Length == 0)
             {
@@ -834,7 +835,7 @@ namespace Kinectv1.Discord
             // 3) Resample to 48000 Hz, 2 channels (Discord.Net handles Opus)
             int totalWritten = 0;
             using (var srcStream = new MemoryStream(pcm22050, writable: false))
-            using (var srcProvider = new RawSourceWaveStream(srcStream, new WaveFormat(KokoroTtsService.GetSampleRate(), 16, 1)))
+            using (var srcProvider = new RawSourceWaveStream(srcStream, new WaveFormat(TtsService.GetSampleRate(), 16, 1)))
             using (var resampler = new MediaFoundationResampler(srcProvider, new WaveFormat(48000, 16, 2)) { ResamplerQuality = 60 })
              {
                  // Avoid speaking state races across utterances
@@ -863,9 +864,6 @@ namespace Kinectv1.Discord
                     while ((n = resampler.Read(resampleBuf, 0, resampleBuf.Length)) > 0)
                     {
                         ct.ThrowIfCancellationRequested();
-
-                        // If a newer generation has been queued mid-stream, we can choose to continue to completion
-                        // but we must not allow a stale post-hold to flip speaking=false during our stream.
 
                         int offset = 0;
                         while (offset < n)

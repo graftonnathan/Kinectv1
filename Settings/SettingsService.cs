@@ -184,9 +184,11 @@ namespace Kinectv1.Settings
         private AppSettings LoadComposite()
         {
             var defaults = ReadDefaultsAsJObject();
-            var machine = ReadOptionalJsonAsJObject(SettingsPaths.MachineDefaultsPath);
-            var user = ReadOptionalJsonAsJObject(GetUserJsonPath());
-            var secrets = ReadOptionalJsonAsJObject(SettingsPaths.SecretsPath);
+            // Strip legacy keys from defaults/user overlays before binding (e.g. audio.vadThreshold, top-level vad)
+            PruneLegacyKeys(defaults);
+            var machine = ReadOptionalJsonAsJObject(SettingsPaths.MachineDefaultsPath); PruneLegacyKeys(machine);
+            var user = ReadOptionalJsonAsJObject(GetUserJsonPath()); PruneLegacyKeys(user);
+            var secrets = ReadOptionalJsonAsJObject(SettingsPaths.SecretsPath); PruneLegacyKeys(secrets);
 
             // schemaVersion migration on user overrides only (no mutations to defaults or secrets)
             var userVer = GetSchemaVersion(user);
@@ -208,6 +210,19 @@ namespace Kinectv1.Settings
                          ?? throw new InvalidDataException("Effective settings invalid");
             Validate(result);
             return result;
+        }
+
+        private static void PruneLegacyKeys(JObject root)
+        {
+            if (root == null) return;
+            try
+            {
+                // Remove obsolete top-level 'vad'
+                root.Remove("vad");
+                var audio = root["audio"] as JObject;
+                audio?.Remove("vadThreshold");
+            }
+            catch { }
         }
 
         // Helpers for overlays + schema
@@ -321,13 +336,13 @@ namespace Kinectv1.Settings
             }
 
             // 1) Existing custom rules
-            if (s == null || s.Audio == null || s.Tts == null || s.Vad == null)
-                throw new InvalidDataException("Settings missing required sections (audio/tts/vad)");
+            if (s == null || s.Audio == null || s.Tts == null)
+                throw new InvalidDataException("Settings missing required sections (audio/tts)");
 
             if (s.Audio.VoiceThreshold < 0.0 || s.Audio.VoiceThreshold > 1.0)
                 throw new InvalidDataException("audio.voiceThreshold out of range [0,1]");
-            if (s.Audio.VadThreshold < 0 || s.Audio.BufferSize <= 0)
-                throw new InvalidDataException("audio vadThreshold>=0 and bufferSize>0 required");
+            if (s.Audio.BufferSize <= 0)
+                throw new InvalidDataException("audio.bufferSize must be >0");
             if (s.Audio.SpeakerMatchMinScore < 0.0 || s.Audio.SpeakerMatchMinScore > 1.0)
                 throw new InvalidDataException("audio.speakerMatchMinScore must be 0..1");
 
@@ -379,8 +394,6 @@ namespace Kinectv1.Settings
                     throw new InvalidDataException("mumble.username required when mumble.enabled");
                 if (s.Mumble.OpusBitrate < 6000 || s.Mumble.OpusBitrate > 96000)
                     throw new InvalidDataException("mumble.opusBitrate must be 6000..96000");
-                if (s.Mumble.VadThreshold < 1 || s.Mumble.VadThreshold > 10000)
-                    throw new InvalidDataException("mumble.vadThreshold must be 1..10000");
                 if (s.Mumble.ReconnectBackoffMs < 0 || s.Mumble.ReconnectBackoffMs > 60000)
                     throw new InvalidDataException("mumble.reconnectBackOffMs must be 0..60000");
             }

@@ -8,7 +8,6 @@ namespace Kinectv1.Settings
     public sealed record AppSettings(
         [property: Required] AudioSettings Audio,
         [property: Required] TtsSettings Tts,
-        [property: Required] VadSettings Vad,
         [property: Required] OllamaSettings Ollama,
         [property: Required] DiscordSettings Discord,
         [property: Required] MumbleSettings Mumble,
@@ -19,9 +18,9 @@ namespace Kinectv1.Settings
         [property: Required] AppConfig App
     );
 
+    // Unified audio settings – removed legacy VadThreshold (RMS gating now derived from VoiceThreshold)
     public sealed record AudioSettings(
         [property: Range(0, 1)] double VoiceThreshold,
-        [property: Range(0, int.MaxValue)] int VadThreshold,
         [property: Range(1, int.MaxValue)] int BufferSize,
         [property: Range(0, 1)] double SpeakerMatchMinScore
     );
@@ -47,10 +46,6 @@ namespace Kinectv1.Settings
         [property: Range(0, 200)] int MinClausePaddingMs,
         [property: Range(200, 5000)] int IpaServiceTimeoutMs,
         [property: Range(200, 5000)] int IpaOneShotTimeoutMs
-    );
-
-    public sealed record VadSettings(
-        [property: Range(0, int.MaxValue)] int Threshold
     );
 
     // New: ASR/Discord VAD and confidence controls
@@ -114,7 +109,11 @@ namespace Kinectv1.Settings
         [property: Range(0, int.MaxValue)] int ConversationTimeoutMinutes,
         string ConversationHistoryPath,
         string SystemPromptPath,
-        bool OutputThink // when false, <think>..</think> is removed
+        bool OutputThink, // when false, <think>..</think> is removed
+        // New: provider endpoints + API key (optional)
+        string BaseUrl,
+        string LmStudioBaseUrl,
+        string ApiKey
     );
 
     // New: Discord settings for bot configuration

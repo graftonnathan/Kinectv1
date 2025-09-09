@@ -46,7 +46,6 @@
     <Compile Remove="CoquiTtsService.cs" />
     <Compile Remove="KokoroTtsService.cs" />
     <Compile Remove="OllamaConversationManager.cs" />
-    <Compile Remove="OnnxSessionFactory.cs" />
   </ItemGroup>
 
   <Target Name="OrganizeDevLibs" BeforeTargets="Build">

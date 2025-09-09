@@ -34,9 +34,10 @@ This document describes the streamlined settings pipeline for the Kinectv1 proje
 
 * **Settings/AppSettings.cs**
 
-  * Immutable record tree (`AppSettings`, `AudioSettings`, `TtsSettings`, `VadSettings`, etc.).
+  * Immutable record tree (`AppSettings`, `AudioSettings`, `TtsSettings`, `OllamaSettings`, etc.).
   * Annotated with `[Required]`, `[Range]`, etc.
   * Optional `IValidatableObject` for cross‑field checks.
+  * Legacy `VadSettings` has been removed; VAD RMS gating now derives from `Audio.VoiceThreshold` and timing from `AsrSettings`.
 
 * **Settings/SettingsService.cs**
 
@@ -137,3 +138,4 @@ This document describes the streamlined settings pipeline for the Kinectv1 proje
 * **Safer writes:** `File.Replace` handles both atomic update + backup.
 * **Cleaner UI:** ViewModel handles field validation, no manual parse logic.
 * **Future‑proof:** schema version + migrations prevent upgrade pain.
+* **Simpler VAD:** single RMS threshold derived from `Audio.VoiceThreshold`, timing via `AsrSettings` (silence/debounce) – removed duplicate legacy threshold.

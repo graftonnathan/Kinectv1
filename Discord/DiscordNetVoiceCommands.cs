@@ -10,6 +10,7 @@ using Discord.Audio;
 using Discord.Commands;
 using Discord.Net;
 using Discord.WebSocket;
+using Kinectv1.Tts;
 
 namespace Kinectv1.Discord
 {
@@ -939,64 +940,22 @@ namespace Kinectv1.Discord
         /// </summary>
         [Command("testtts")]
         [Summary("Test TTS audio generation and Discord streaming")]
-        public async Task TestTtsAsync()
+        public async Task TestTtsAsync([Remainder] string text = "This is a test of the TTS system.")
         {
             try
             {
-                var guildId = Context.Guild.Id;
-                if (!_audioClients.TryGetValue(guildId, out var audioClient) || audioClient.ConnectionState != ConnectionState.Connected)
+                if (!TtsService.IsEnabled())
                 {
-                    await ReplyAsync("? Bot is not connected to a voice channel. Use `!join <channel>` first.");
+                    await ReplyAsync("TTS service not enabled in settings.");
                     return;
                 }
 
-                await ReplyAsync("?? **Testing TTS pipeline for Discord...**");
-                Console.WriteLine($"?? Testing TTS pipeline for Discord voice channel...");
-
-                // Test with a short phrase that should be clearly audible
-                var testText = "Testing Discord TTS pipeline - this should sound clear, normal volume, and proper pitch";
-                
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        if (!CoquiTtsService.IsEnabled())
-                        {
-                            Console.WriteLine($"? TTS service is disabled - enable it first");
-                            return;
-                        }
-
-                        Console.WriteLine($"?? Testing TTS generation: \"{testText}\"");
-                        Console.WriteLine($"?? Expected format: Ultra-aggressive volume boost");
-                        
-                        // Use the Discord TTS method directly
-                        var success = await DiscordNetBotManager.SendTtsToDiscordAsync(testText);
-                        
-                        if (success)
-                        {
-                            Console.WriteLine($"?? TTS test completed successfully!");
-                            Console.WriteLine($"?? Audio should now be:");
-                            Console.WriteLine($"   � MAXIMUM volume (30x+ ultra-aggressive boost)");
-                            Console.WriteLine($"   � Near full-scale output (-1 dBFS target)");
-                            Console.WriteLine($"   � Minimal limiting (only at 98% scale)");
-                            Console.WriteLine($"   � May have some distortion for maximum volume");
-                        }
-                        else
-                        {
-                            Console.WriteLine($"? TTS test failed - check console for details");
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"? TTS test failed: {ex.Message}");
-                        Console.WriteLine($"?? Stack trace: {ex.StackTrace}");
-                    }
-                });
+                var ok = await DiscordNetBotManager.SendTtsToDiscordAsync(text);
+                await ReplyAsync(ok ? "✅ TTS sent to Discord." : "❌ Failed to send TTS.");
             }
             catch (Exception ex)
             {
-                await ReplyAsync($"? TTS test failed: {ex.Message}");
-                Console.WriteLine($"? TTS test command failed: {ex.Message}");
+                await ReplyAsync($"Error: {ex.Message}");
             }
         }
     }

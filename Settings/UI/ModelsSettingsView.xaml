@@ -524,7 +524,7 @@
                                 <ColumnDefinition Width="200"/>
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="Voice Threshold (0..1)" VerticalAlignment="Center" 
+                            <TextBlock Grid.Column="0" Text="Voice Threshold (RMS 0–10000)" VerticalAlignment="Center" 
                                        Foreground="{DynamicResource TextSecondary}"/>
                             <TextBox Grid.Column="1" Name="AudioVoiceThresholdTextBox" Margin="0,0,8,0" 
                                      Style="{StaticResource ThemedTextBoxStyle}" Height="30"/>
@@ -555,19 +555,6 @@
                             <CheckBox Grid.Column="1" Name="VoiceConfidenceLoggingCheckBox" Content="Enable"/>
                         </Grid>
 
-                        <!-- VAD Threshold (audio) -->
-                        <Grid Margin="0,0,0,8">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="220"/>
-                                <ColumnDefinition Width="200"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="VAD Threshold (audio)" VerticalAlignment="Center" 
-                                       Foreground="{DynamicResource TextSecondary}"/>
-                            <TextBox Grid.Column="1" Name="AudioVadThresholdTextBox" Margin="0,0,8,0" 
-                                     Style="{StaticResource ThemedTextBoxStyle}" Height="30"/>
-                        </Grid>
-
                         <!-- Buffer Size -->
                         <Grid Margin="0,0,0,8">
                             <Grid.ColumnDefinitions>
@@ -583,24 +570,12 @@
                     </StackPanel>
                 </Border>
 
-                <!-- VAD Settings -->
+                <!-- App Behavior -->
                 <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0" CornerRadius="0" 
                         Background="{DynamicResource WindowBackground}" Margin="0,0,0,16">
                     <StackPanel>
-                        <TextBlock Text="VAD" FontSize="14" FontWeight="SemiBold" 
+                        <TextBlock Text="App Behavior" FontSize="14" FontWeight="SemiBold" 
                                    Foreground="{DynamicResource TextPrimary}" Margin="0,0,0,8"/>
-
-                        <Grid Margin="0,0,0,8">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="220"/>
-                                <ColumnDefinition Width="200"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="VAD Threshold" VerticalAlignment="Center" 
-                                       Foreground="{DynamicResource TextSecondary}"/>
-                            <TextBox Grid.Column="1" Name="VadThresholdTextBox" Margin="0,0,8,0" 
-                                     Style="{StaticResource ThemedTextBoxStyle}" Height="30"/>
-                        </Grid>
 
                         <!-- Wake word requirement toggle -->
                         <Grid Margin="0,0,0,8">
