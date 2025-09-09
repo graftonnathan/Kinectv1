@@ -72,27 +72,20 @@ namespace Kinectv1.Tts
 
             Initialize();
 
-            CancellationTokenSource prevCts = null;
-            Task prevTask = null;
-            lock (_lock)
+            if (preempt)
             {
-                if (preempt && _currentCts != null)
-                {
-                    prevCts = _currentCts;
-                    prevTask = _playbackTask;
-                }
-                _currentCts = new CancellationTokenSource();
-            }
-            try { prevCts?.Cancel(); } catch { }
-            if (prevTask != null)
-            {
-                try { prevTask.Wait(); } catch { }
+                try { CancelActiveAsync().GetAwaiter().GetResult(); } catch { }
             }
 
-            var cts = _currentCts;
+            var cts = new CancellationTokenSource();
             int id = Interlocked.Increment(ref _jobCounter);
             var job = new TtsPlaybackJob { Text = text, Speaker = speaker, Targets = targets, Id = id, Cts = cts };
-            lock (_lock) { _activeJob = job; }
+
+            lock (_lock)
+            {
+                _currentCts = cts;
+                _activeJob = job;
+            }
 
             _playbackTask = Task.Run(() => RunJobAsync(job), cts.Token);
         }
@@ -178,35 +171,44 @@ namespace Kinectv1.Tts
                 var pcmSrc = FloatsToPcm16(audio, gain);
                 int srcRate = TtsService.GetSampleRate();
 
-                using var ms = new MemoryStream(pcmSrc, false);
-                using var raw = new RawSourceWaveStream(ms, new WaveFormat(srcRate, 16, 1));
-                using var resampler = new MediaFoundationResampler(raw, new WaveFormat(48000, 16, 2)) { ResamplerQuality = 60 };
-                using var stream = audioClient.CreatePCMStream(global::Discord.Audio.AudioApplication.Mixed, bitrate: 96000, bufferMillis: 200);
+                byte[] pcm48;
+                using (var ms = new MemoryStream(pcmSrc, false))
+                using (var raw = new RawSourceWaveStream(ms, new WaveFormat(srcRate, 16, 1)))
+                using (var resampler = new MediaFoundationResampler(raw, new WaveFormat(48000, 16, 2)) { ResamplerQuality = 60 })
+                using (var outStream = new MemoryStream())
+                {
+                    byte[] buffer = new byte[resampler.OutputWaveFormat.AverageBytesPerSecond];
+                    int read;
+                    while ((read = resampler.Read(buffer, 0, buffer.Length)) > 0)
+                    {
+                        outStream.Write(buffer, 0, read);
+                    }
+                    pcm48 = outStream.ToArray();
+                }
 
-                // Discord expects 20ms PCM frames (3840 bytes at 48kHz stereo 16-bit).
-                // The resampler can return arbitrary sized chunks, so accumulate
-                // into a frame-sized buffer and pad the final frame with zeros.
-                byte[] frame = new byte[3840];
-                int filled = 0;
+                const int frameSize = 3840; // 20ms at 48kHz stereo 16-bit
+                int frameCount = (pcm48.Length + frameSize - 1) / frameSize;
+                var frames = new byte[frameCount][];
+                for (int i = 0; i < frameCount; i++)
+                {
+                    frames[i] = new byte[frameSize];
+                    int offset = i * frameSize;
+                    int count = Math.Min(frameSize, pcm48.Length - offset);
+                    Buffer.BlockCopy(pcm48, offset, frames[i], 0, count);
+                    if (count < frameSize)
+                        Array.Clear(frames[i], count, frameSize - count);
+                }
+
+                using var stream = audioClient.CreatePCMStream(global::Discord.Audio.AudioApplication.Mixed, bitrate: 96000, bufferMillis: 200);
 
                 await audioClient.SetSpeakingAsync(true);
                 try
                 {
-                    int read;
-                    while ((read = resampler.Read(frame, filled, frame.Length - filled)) > 0)
+                    foreach (var frame in frames)
                     {
                         ct.ThrowIfCancellationRequested();
-                        filled += read;
-                        if (filled == frame.Length)
-                        {
-                            await stream.WriteAsync(frame, 0, frame.Length, ct);
-                            filled = 0;
-                        }
-                    }
-                    if (filled > 0)
-                    {
-                        Array.Clear(frame, filled, frame.Length - filled);
                         await stream.WriteAsync(frame, 0, frame.Length, ct);
+                        await Task.Delay(20, ct);
                     }
                 }
                 finally
