@@ -6,8 +6,6 @@ using System.Threading.Tasks;
 using NAudio.Wave;
 using Vosk;
 using Newtonsoft.Json.Linq;
-using Kinectv1.Tts; // for TtsService cancellation
-using Kinectv1.Discord; // for DiscordNetBotManager cancellation
 
 namespace Kinectv1
 {
@@ -57,8 +55,6 @@ namespace Kinectv1
         private static int _vadSilenceMs = 800;
         private static DateTime _lastAbove = DateTime.MinValue;
         private static bool _speechActive;
-        private static DateTime _lastBargeIn = DateTime.MinValue;
-        private const int BARGE_IN_DEBOUNCE_MS = 150;
         private static double _vadRmsThreshold = 2000.0; // user-derived RMS threshold (0-10000)
 
         // Pre-roll + gating (Option A)
@@ -227,7 +223,6 @@ namespace Kinectv1
                     {
                         _speechActive = true;
                         VRLog("VAD", $"ACTIVATE rms={rms:F1} thr={_vadRmsThreshold:F1}");
-                        // Removed: barge-in on mic activation; now only triggered for external frames in ProcessFrame
                     }
                 }
             }
@@ -239,22 +234,6 @@ namespace Kinectv1
                     VRLog("VAD", $"DEACTIVATE rms={rms:F1} silenceMs={(now - _lastAbove).TotalMilliseconds:F0}");
                 }
             }
-        }
-
-        private static void TryBargeIn(DateTime now)
-        {
-            // Barge-in temporarily disabled for stability diagnostics
-            return;
-            try
-            {
-                var snap = Kinectv1.App.SettingsProvider?.Current;
-                if (snap?.Asr?.BargeInEnabled != true) return;
-                if ((now - _lastBargeIn).TotalMilliseconds < BARGE_IN_DEBOUNCE_MS) return;
-                _lastBargeIn = now;
-                TtsService.CancelCurrentLocalTts();
-                DiscordNetBotManager.CancelCurrentTts();
-            }
-            catch { }
         }
 
         // ==== PRE-ROLL SUPPORT ====

@@ -52,6 +52,7 @@ namespace Kinectv1.Tts
                 job = _activeJob;
             }
             try { job?.Cts.Cancel(); } catch { }
+            try { TtsService.MarkExternalCancel(); } catch { }
         }
 
         public static void Enqueue(string text, TtsOutputTarget targets, string speaker = null, bool preempt = true)
