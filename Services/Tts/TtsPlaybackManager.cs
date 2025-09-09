@@ -171,6 +171,7 @@ namespace Kinectv1.Tts
                     float gain = Math.Max(0f, (float)(Kinectv1.App.SettingsProvider?.Current?.Tts?.DiscordVolume ?? 1.0));
                     int srcRate = TtsService.GetSampleRate();
 
+
                     // apply gain and convert to IEEE float bytes
                     var floatBytes = new byte[audio.Length * 4];
                     if (gain != 1f)
@@ -232,6 +233,7 @@ namespace Kinectv1.Tts
                     {
                         try { await stream.FlushAsync(); } catch { }
                         try { await audioClient.SetSpeakingAsync(false); } catch { }
+
                     }
                 }
             }
