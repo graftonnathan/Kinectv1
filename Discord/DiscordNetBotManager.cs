@@ -15,11 +15,16 @@ using System.Diagnostics;
 using System.Threading.Channels;
 using Discord.Net; // Added for HttpException
 using Kinectv1.Tts;
+using System.Security.Cryptography; // added for single-instance hash
+using System.Text; // added for single-instance hash
 
 namespace Kinectv1.Discord
 {
     public static class DiscordNetBotManager
     {
+        // Added single-instance mutex fields (were missing before)
+        private static System.Threading.Mutex _instanceMutex;
+        private static bool _ownsMutex;
         // Global voice operation lock to prevent overlapping join/leave/record ops
         private static readonly SemaphoreSlim _voiceOpLock = new SemaphoreSlim(1, 1);
         public static SemaphoreSlim VoiceOpLock => _voiceOpLock;
@@ -33,7 +38,7 @@ namespace Kinectv1.Discord
         private static DiscordSocketClient _client;
         private static CommandService _commands;
         private static IAudioClient _currentAudioClient;
-        private static AudioOutStream _discordPcmStream; // persistent PCM stream for Discord TTS
+        // REMOVED persistent AudioOutStream field (use short-lived streams per playback)
 
         // State tracking
         private static bool _isRunning = false;
@@ -55,7 +60,6 @@ namespace Kinectv1.Discord
         // Speaking CTS (managed atomically)
         private static CancellationTokenSource _currentSpeakCts;
 
-        // Removed persistent output stream and 20ms manual framing
         private static volatile int _speakGeneration = 0;
         private static readonly SemaphoreSlim _speakLock = new SemaphoreSlim(1, 1);
         private static CancellationTokenSource _speakHoldCts;
@@ -84,19 +88,26 @@ namespace Kinectv1.Discord
         private static volatile bool _ttsPlaying = false;
         private static int _sttBargeHooked = 0;
         private static DateTime _lastTtsEnded = DateTime.MinValue;
-        private static int _ttsGeneration = 0; // increment per enqueue, used to avoid speaking state races
+        private static int _ttsGeneration = 0;
+        // Discord TTS generation + write serialization
+        private static int _discordTtsGeneration = 0;
+        private static readonly SemaphoreSlim _discordTtsWriteLock = new SemaphoreSlim(1,1);
+        private static volatile bool _discordTtsActive = false; // indicates an active Discord TTS write
 
-        // Backpressure configuration and metrics for TTS queue - length=1 with preemption
-        private const int MAX_TTS_QUEUE_SIZE = 1; // TTS queue length=1 with preempt policy
+        // Diagnostics for voice join
+        private static string _lastObservedSessionId;
+        private static int _joinSequence = 0;
+        private static void EnsureSttBargeInHook() { /* intentionally no-op placeholder */ }
+
+        private const int MAX_TTS_QUEUE_SIZE = 1;
         private static long _totalTtsDrops = 0;
 
-        // Voice join handshake state management (4006 prevention)
-        // Handshake cache removed; using standard Discord.Net connect flow
+        private class VoiceJoinHandshake { }
 
         /// <summary>
         /// Voice join handshake state for preventing 4006 errors
         /// </summary>
-        private class VoiceJoinHandshake { }
+        // private class VoiceJoinHandshake { } // Removed redundant VoiceJoinHandshake class duplicate
 
         /// <summary>
         /// Enhanced Discord.Net bot shutdown with proper blocking pattern for application exit
@@ -180,6 +191,9 @@ namespace Kinectv1.Discord
                 try { _cancellationTokenSource?.Dispose(); } catch { }
                 _cancellationTokenSource = null;
                 Interlocked.Exchange(ref _shutdownInProgress, 0);
+                // release single-instance mutex
+                try { if (_ownsMutex) { _instanceMutex?.ReleaseMutex(); _ownsMutex = false; } } catch { }
+                try { _instanceMutex?.Dispose(); } catch { _instanceMutex = null; }
             }
         }
 
@@ -256,6 +270,9 @@ namespace Kinectv1.Discord
                 Interlocked.Exchange(ref _modulesRegistered, 0);
                 Interlocked.Exchange(ref _clientCreated, 0);
                 Interlocked.Exchange(ref _commandServiceCreated, 0);
+                // release single-instance mutex
+                try { if (_ownsMutex) { _instanceMutex?.ReleaseMutex(); _ownsMutex = false; } } catch { }
+                try { _instanceMutex?.Dispose(); } catch { _instanceMutex = null; }
             }
         }
 
@@ -331,7 +348,6 @@ namespace Kinectv1.Discord
         /// </summary>
         public static async Task<bool> StartAsync()
         {
-            // ATOMIC CHECK: Prevent multiple startup attempts
             if (Interlocked.CompareExchange(ref _startupInProgress, 1, 0) != 0)
                 return _isRunning;
 
@@ -346,16 +362,37 @@ namespace Kinectv1.Discord
                 // Test configuration first
                 if (!await TestConfigurationAsync()) return false;
 
+                // Acquire single-instance mutex per token (hashed) to prevent competing processes
+                try
+                {
+                    var token = Kinectv1.App.SettingsProvider?.Current?.Discord?.Token ?? string.Empty;
+                    byte[] tokenHashBytes;
+                    using (var sha = SHA256.Create())
+                    {
+                        tokenHashBytes = sha.ComputeHash(Encoding.UTF8.GetBytes(token));
+                    }
+                    var tokenKey = Convert.ToBase64String(tokenHashBytes);
+                    var mutexName = $"Global\\DiscordBot_{tokenKey}";
+                    _instanceMutex = new System.Threading.Mutex(true, mutexName, out _ownsMutex);
+                    if (!_ownsMutex)
+                    {
+                        OnErrorOccurred?.Invoke("Another instance of this bot is already running on this token. Aborting to avoid 4006 loops.");
+                        return false;
+                    }
+                }
+                catch (Exception mex)
+                {
+                    OnErrorOccurred?.Invoke($"Single-instance check failed: {mex.Message}");
+                }
+
                 // ATOMIC OPERATIONS: Create Discord client and services with atomic protection
                 DiscordSocketClient clientToUse = null;
                 CommandService commandsToUse = null;
 
-                // ATOMIC CLIENT CREATION - Prevent double creation
                 if (Interlocked.CompareExchange(ref _clientCreated, 1, 0) == 0)
                 {
                     _client = new DiscordSocketClient(new DiscordSocketConfig
                     {
-                        // Specific intents required for message and voice functionality
                         GatewayIntents = GatewayIntents.Guilds | GatewayIntents.GuildVoiceStates | GatewayIntents.MessageContent | GatewayIntents.GuildMessages,
                         LogLevel = LogSeverity.Debug,
                         ConnectionTimeout = 30000,
@@ -363,7 +400,6 @@ namespace Kinectv1.Discord
                         MessageCacheSize = 100
                     });
 
-                    // Set up event handlers that should only be registered once
                     _client.Log += Log;
                     _client.Ready += Client_Ready;
                     _client.UserVoiceStateUpdated += Client_UserVoiceStateUpdated;
@@ -407,6 +443,9 @@ namespace Kinectv1.Discord
                 Interlocked.Exchange(ref _messageHandlerHooked, 0);
                 Interlocked.Exchange(ref _commandServiceCreated, 0);
                 Interlocked.Exchange(ref _modulesRegistered, 0);
+                // release mutex if we acquired it but failed
+                try { if (_ownsMutex) { _instanceMutex?.ReleaseMutex(); _ownsMutex = false; } } catch { }
+                try { _instanceMutex?.Dispose(); } catch { _instanceMutex = null; }
                 return false;
             }
             finally
@@ -426,8 +465,16 @@ namespace Kinectv1.Discord
                 if (!VoiceRecognizer.IsDiscordInputEnabled()) return;
                 if (audioData?.Length < 100) return;
 
-                var (processedAudio, processedLength, normalizedRms) = DiscordAudioProcessor.ProcessDiscordAudio(audioData, audioData.Length, username);
-                VoiceRecognizer.OnDiscordRmsLevel?.Invoke(normalizedRms);
+                var (processedAudio, processedLength, rawRms) = DiscordAudioProcessor.ProcessDiscordAudio(audioData, audioData.Length, username);
+                // Align Discord RMS scaling with local mic (0..10000 range) for uniform UI + VAD perception
+                float scaledRms = 0f;
+                if (rawRms > 0f)
+                {
+                    // rawRms from AudioUtils.CalculateRms is 0..32768 (PCM amplitude). Normalize then scale to 0..10000 like mic (ComputeRms16 logic)
+                    scaledRms = (rawRms / 32768f) * 10000f;
+                    if (scaledRms > 10000f) scaledRms = 10000f;
+                }
+                VoiceRecognizer.OnDiscordRmsLevel?.Invoke(scaledRms); // early UI update (external path also raises inside recognizer)
 
                 if (processedAudio != null && processedLength > 320 && VoiceRecognizer.IsReady())
                 {
@@ -452,10 +499,6 @@ namespace Kinectv1.Discord
                 _currentAudioClient = audioClient;
                 _currentChannelId = channelId;
                 _currentChannelName = channelName;
-
-                // Create/recreate a persistent PCM stream for TTS output (reuse across utterances)
-                try { _discordPcmStream?.Dispose(); } catch { }
-                _discordPcmStream = _currentAudioClient?.CreatePCMStream(AudioApplication.Mixed, bitrate: 96000, bufferMillis: 200);
 
                 if (_currentAudioClient != null)
                 {
@@ -485,6 +528,9 @@ namespace Kinectv1.Discord
             }
         }
 
+        private static readonly ConcurrentDictionary<ulong,(AudioInStream stream, CancellationTokenSource cts)> _activeInputStreams = new();
+        private static int _unobservedHooked = 0;
+
         /// <summary>
         /// Handle user audio stream: Read from AudioInStream to get 48 kHz PCM directly
         /// </summary>
@@ -492,10 +538,12 @@ namespace Kinectv1.Discord
         {
             _ = Task.Run(async () =>
             {
+                var cts = new CancellationTokenSource();
+                _activeInputStreams[userId] = (audioStream, cts);
                 try
                 {
                     var buffer = new byte[3840]; // 20ms of 48kHz stereo
-                    while (_currentAudioClient?.ConnectionState == ConnectionState.Connected)
+                    while (!cts.IsCancellationRequested && _currentAudioClient?.ConnectionState == ConnectionState.Connected)
                     {
                         try
                         {
@@ -507,14 +555,12 @@ namespace Kinectv1.Discord
                                 // Resolve a friendly name for logs and speaker hint
                                 var name = ResolveUserDisplayName(userId);
 
-                                // Drop incomplete/short frames to avoid Decoder warnings
-                                if (bytesRead != buffer.Length && bytesRead < 1920) { await Task.Delay(1); continue; }
-
-                                ProcessVoiceData(buffer.Take(bytesRead).ToArray(), name);
+                                // Forward partial frames exactly (no drop of <1920 short reads)
+                                ProcessVoiceData(buffer.AsSpan(0, bytesRead).ToArray(), name);
                             }
                             else
                             {
-                                await Task.Delay(1);
+                                await Task.Delay(1, cts.Token);
                             }
                         }
                         catch (Exception streamEx)
@@ -528,74 +574,58 @@ namespace Kinectv1.Discord
                 {
                     Console.WriteLine($"? Error in audio handler for user {userId}: {ex.Message}", 2);
                 }
+                finally
+                {
+                    _activeInputStreams.TryRemove(userId, out var tuple);
+                    try { tuple.stream?.Dispose(); } catch { }
+                    try { tuple.cts?.Dispose(); } catch { }
+                }
             });
         }
 
         /// <summary>
-        /// Called when voice channel is left
+        /// Close all active voice pipes and cancel ongoing audio streams
         /// </summary>
-        public static async Task OnVoiceChannelLeft()
+        public static async Task ForceCloseAllVoicePipesAsync()
         {
             try
             {
-                if (_currentAudioClient != null)
+                foreach (var kv in _activeInputStreams.ToArray())
                 {
-                    try { _discordPcmStream?.Dispose(); } catch { }
-                    _discordPcmStream = null;
-                    await _currentAudioClient.StopAsync();
-                    _currentAudioClient = null;
+                    if (_activeInputStreams.TryRemove(kv.Key, out var tuple))
+                    {
+                        try { tuple.cts.Cancel(); } catch { }
+                        try { tuple.stream.Dispose(); } catch { }
+                        try { tuple.cts.Dispose(); } catch { }
+                    }
                 }
-                
-                var channelName = _currentChannelName ?? "voice channel";
+                var ac = _currentAudioClient;
+                if (ac != null)
+                {
+                    try { await ac.StopAsync(); } catch { }
+                    try { ac.Dispose(); } catch { }
+                }
+            }
+            finally
+            {
+                _currentAudioClient = null;
                 _currentChannelId = null;
                 _currentChannelName = null;
-                
-                // Fix 4: Safety clear at gateway level if still in a voice channel
-                try
-                {
-                    // Iterate guilds to find any lingering voice state for the bot and clear it
-                    var meGlobal = _client?.CurrentUser;
-                    foreach (var g in _client?.Guilds ?? Enumerable.Empty<SocketGuild>())
-                    {
-                        var me = g.CurrentUser;
-                        if (me != null && meGlobal != null && me.Id == meGlobal.Id && me.VoiceChannel != null)
-                        {
-                            Console.WriteLine($"🧹 Safety clear: guild={g.Id} channel=null for lingering voice state ({me.VoiceChannel.Name})");
-                            await me.ModifyAsync(p => p.Channel = null);
-                            await Task.Delay(200);
-                        }
-                    }
-                 }
-                 catch (Exception clearEx)
-                 {
-                     Console.WriteLine($"⚠️ Safety clear warning: {clearEx.Message}");
-                 }
-
-                OnBotStatusChanged?.Invoke("Connected");
-                Console.WriteLine($"?? Left voice channel: {channelName}");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"? Error leaving voice channel: {ex.Message}");
-                OnErrorOccurred?.Invoke($"Voice channel leave error: {ex.Message}");
             }
         }
 
         /// <summary>
-        /// Get Discord.Net bot status summary
+        /// Get Discord.Net bot status summary (single source for UI and commands)
         /// </summary>
         public static string GetStatusSummary()
         {
             try
             {
                 var enabled = Kinectv1.App.SettingsProvider?.Current?.Discord?.Enabled ?? false;
-                var token = Kinectv1.App.SettingsProvider?.Current?.Discord?.Token;
                 var prefix = Kinectv1.App.SettingsProvider?.Current?.Discord?.Prefix;
-                
                 var connectionState = _client?.ConnectionState.ToString() ?? "Disconnected";
                 var guildCount = _client?.Guilds?.Count ?? 0;
                 var latency = _client?.Latency ?? 0;
-
                 return $"Bot enabled: {enabled}\n" +
                        $"Running: {_isRunning}\n" +
                        $"Command prefix: {prefix}\n" +
@@ -604,410 +634,276 @@ namespace Kinectv1.Discord
                        $"Latency: {latency}ms\n" +
                        $"Voice connection: {(_currentAudioClient != null ? $"In {_currentChannelName}" : "Not connected")}";
             }
-            catch (Exception ex)
-            {
-                return $"Error getting status: {ex.Message}";
-            }
+            catch (Exception ex) { return $"Status error: {ex.Message}"; }
         }
 
         /// <summary>
-        /// Enhanced voice join with proper handshake state machine to prevent 4006 errors
+        /// Enhanced voice join with retry + 4006 hard pipe reset handling.
         /// </summary>
         public static async Task<IAudioClient> JoinVoiceAsync(IVoiceChannel voiceChannel, int maxRetries = 3)
         {
             if (voiceChannel == null) throw new ArgumentNullException(nameof(voiceChannel));
+            var seq = Interlocked.Increment(ref _joinSequence);
+            var preJoinSession = _lastObservedSessionId; // capture session before any attempt
+            Console.WriteLine($"[JoinDBG] seq={seq} guild={voiceChannel.Guild.Id} chan={voiceChannel.Name} start lastSession={preJoinSession ?? "None"}");
 
-            var guildId = voiceChannel.Guild.Id;
-            var channelName = voiceChannel.Name;
-
-            Console.WriteLine($"🎯 JoinVoiceAsync: Standard Discord.Net connect to {channelName} (guild {guildId})");
-            var joinTimer = Stopwatch.StartNew();
-
-            // Small pre-clean if we somehow still have an audio client
+            bool performedPreClean = false;
             try
             {
+                if (voiceChannel is SocketVoiceChannel svc)
+                {
+                    var me = svc.Guild.CurrentUser;
+                    if (me?.VoiceChannel != null && me.VoiceChannel.Id != voiceChannel.Id)
+                    {
+                        performedPreClean = true;
+                        Console.WriteLine($"[JoinDBG] seq={seq} pre-clean disconnect from {me.VoiceChannel.Name}");
+                        try { await me.VoiceChannel.DisconnectAsync(); } catch { }
+                        await WaitForVoiceNullAsync(seq, 1500);
+                    }
+                }
+            }
+            catch { }
+
+            // Cooldown to allow old session to retire (important after leaving previous channel)
+            if (performedPreClean)
+            {
+                Console.WriteLine($"[JoinDBG] seq={seq} cooldown after pre-clean (2000ms)");
+                await Task.Delay(2000);
+            }
+
+            var sw = Stopwatch.StartNew();
+            for (int attempt = 1; attempt <= Math.Max(1, maxRetries); attempt++)
+            {
+                var attemptSessionPre = _lastObservedSessionId;
+                try
+                {
+                    Console.WriteLine($"[JoinDBG] seq={seq} attempt={attempt} session(before)={attemptSessionPre ?? "None"}");
+                    var connectTask = voiceChannel.ConnectAsync(selfDeaf: false, selfMute: false);
+                    var completed = await Task.WhenAny(connectTask, Task.Delay(TimeSpan.FromSeconds(20)));
+                    if (completed != connectTask) throw new TimeoutException("ConnectAsync timed out after 20s");
+                    var ac = await connectTask;
+                    if (ac == null) throw new InvalidOperationException("ConnectAsync returned null");
+                    await Task.Delay(300);
+                    var afterSession = _lastObservedSessionId;
+                    if (attemptSessionPre != null && afterSession == attemptSessionPre)
+                    {
+                        Console.WriteLine($"[JoinDBG] seq={seq} WARNING: session id unchanged ({afterSession}) after successful ConnectAsync");
+                    }
+                    Console.WriteLine($"[JoinDBG] seq={seq} success after {sw.ElapsedMilliseconds}ms state={ac.ConnectionState} session(now)={afterSession ?? "None"}");
+                    return ac;
+                }
+                catch (HttpException hex) when (hex.DiscordCode.HasValue && (int)hex.DiscordCode.Value == 4006)
+                {
+                    Console.WriteLine($"[JoinDBG] seq={seq} 4006 attempt={attempt} invoking ForceCloseAllVoicePipes + cooldown");
+                    await ForceCloseAllVoicePipesAsync();
+                    await WaitForVoiceNullAsync(seq, 1000);
+                    if (attempt == maxRetries)
+                        throw; // bubble last 4006
+                    Console.WriteLine($"[JoinDBG] seq={seq} 4006 cooldown 2500ms before retry");
+                    await Task.Delay(2500); // give region time to retire session
+                }
+                catch (TimeoutException tex)
+                {
+                    Console.WriteLine($"[JoinDBG] seq={seq} timeout attempt={attempt} {tex.Message}");
+                    if (attempt == maxRetries) throw;
+                    await ForceCloseAllVoicePipesAsync();
+                    await WaitForVoiceNullAsync(seq, 800);
+                    await Task.Delay(1200);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[JoinDBG] seq={seq} fail attempt={attempt} {ex.GetType().Name}:{ex.Message}");
+                    if (attempt == maxRetries) throw;
+                    await ForceCloseAllVoicePipesAsync();
+                    await WaitForVoiceNullAsync(seq, 600);
+                    await Task.Delay(800);
+                }
+            }
+            throw new InvalidOperationException($"Voice join failed seq={seq}");
+        }
+
+        private static async Task WaitForVoiceNullAsync(int seq, int timeoutMs)
+        {
+            try
+            {
+                var start = Stopwatch.StartNew();
+                while (start.ElapsedMilliseconds < timeoutMs)
+                {
+                    bool inChannel = _client?.Guilds.Any(g => g.CurrentUser?.VoiceChannel != null) ?? false;
+                    if (!inChannel)
+                    {
+                        Console.WriteLine($"[JoinDBG] seq={seq} voice cleared after {start.ElapsedMilliseconds}ms");
+                        return;
+                    }
+                    await Task.Delay(100);
+                }
+                Console.WriteLine($"[JoinDBG] seq={seq} voice NOT cleared after {timeoutMs}ms (session={_lastObservedSessionId ?? "None"})");
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// Standard leave invoked by commands; flushes input streams and audio client.
+        /// </summary>
+        public static async Task OnVoiceChannelLeft()
+        {
+            try
+            {
+                // cancel inbound streams first
+                foreach (var kv in _activeInputStreams.ToArray())
+                {
+                    if (_activeInputStreams.TryRemove(kv.Key, out var tuple))
+                    {
+                        try { tuple.cts.Cancel(); } catch { }
+                        try { tuple.stream.Dispose(); } catch { }
+                        try { tuple.cts.Dispose(); } catch { }
+                    }
+                }
                 if (_currentAudioClient != null)
                 {
                     try { await _currentAudioClient.StopAsync(); } catch { }
                     try { _currentAudioClient.Dispose(); } catch { }
                     _currentAudioClient = null;
                 }
+                _currentChannelId = null;
+                _currentChannelName = null;
+            }
+            catch (Exception ex) { Console.WriteLine($"leave cleanup error: {ex.Message}"); }
+        }
+
+        /// <summary>
+        /// Enhanced Discord.Net bot shutdown with proper blocking pattern for application exit
+        /// Adds watchdog timeouts to force close stuck sessions.
+        /// </summary>
+        public static async Task FullShutdownAsync()
+        {
+            try
+            {
+                await _voiceOpLock.WaitAsync().ConfigureAwait(false);
+                try
+                {
+                    var client = _client;
+                    if (client != null)
+                    {
+                        foreach (var g in client.Guilds)
+                        {
+                            try
+                            {
+                                var me = g.CurrentUser;
+                                if (me?.VoiceChannel != null)
+                                {
+                                    try { await me.VoiceChannel.DisconnectAsync(); } catch { }
+                                    try { await me.ModifyAsync(p => p.Channel = null); } catch { }
+                                }
+                            }
+                            catch { }
+                        }
+                    }
+                }
+                finally { _voiceOpLock.Release(); }
+
+                try { await LeaveAllVoiceAsync(); } catch { }
+
+                try
+                {
+                    var c = _client;
+                    if (c != null)
+                    {
+                        try { await c.StopAsync().ConfigureAwait(false); } catch { }
+                        try { await c.LogoutAsync().ConfigureAwait(false); } catch { }
+                        try { c.Dispose(); } catch { }
+                        _client = null;
+                    }
+                }
+                catch { }
             }
             catch { }
+        }
 
-            for (int attempt = 1; attempt <= Math.Max(1, maxRetries); attempt++)
+        public static void ForceImmediateVoiceClose()
+        {
+            try
             {
-                try
+                // Synchronous best-effort cleanup (process exit)
+                var client = _client;
+                if (client != null)
                 {
-                    Console.WriteLine($"🎯 ConnectAsync attempt {attempt}/{maxRetries}...");
-
-                    var connectTask = voiceChannel.ConnectAsync(selfDeaf: false, selfMute: false);
-                    var completed = await Task.WhenAny(connectTask, Task.Delay(TimeSpan.FromSeconds(20)));
-                    if (completed != connectTask)
-                        throw new TimeoutException("ConnectAsync timed out after 20 seconds");
-
-                    var audioClient = await connectTask;
-                    if (audioClient == null)
-                        throw new InvalidOperationException("ConnectAsync returned null audio client");
-
-                    // Small settle delay
-                    await Task.Delay(300);
-
-                    Console.WriteLine($"✅ ConnectAsync succeeded in {joinTimer.ElapsedMilliseconds}ms, state: {audioClient.ConnectionState}");
-                    return audioClient;
+                    foreach (var g in client.Guilds)
+                    {
+                        try
+                        {
+                            var me = g.CurrentUser;
+                            if (me?.VoiceChannel != null)
+                            {
+                                try { me.VoiceChannel.DisconnectAsync().GetAwaiter().GetResult(); } catch { }
+                                try { me.ModifyAsync(p => p.Channel = null).GetAwaiter().GetResult(); } catch { }
+                            }
+                        }
+                        catch { }
+                    }
                 }
-                catch (HttpException httpEx) when (httpEx.DiscordCode.HasValue && (int)httpEx.DiscordCode.Value == 4006)
+                var ac = _currentAudioClient;
+                if (ac != null)
                 {
-                    Console.WriteLine($"❌ 4006 on ConnectAsync attempt {attempt}: {httpEx.Message}");
-                    if (attempt == maxRetries) throw;
-                    var backoffMs = 500 * attempt;
-                    await Task.Delay(backoffMs);
+                    try { ac.StopAsync().GetAwaiter().GetResult(); } catch { }
+                    try { ac.Dispose(); } catch { }
+                    _currentAudioClient = null;
                 }
-                catch (TimeoutException tex)
+                if (client != null)
                 {
-                    Console.WriteLine($"⚠️ ConnectAsync timeout on attempt {attempt}: {tex.Message}");
-                    if (attempt == maxRetries) throw;
-                    var backoffMs = 500 * attempt;
-                    await Task.Delay(backoffMs);
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"❌ ConnectAsync failed on attempt {attempt}: {ex.GetType().Name}: {ex.Message}");
-                    if (attempt == maxRetries) throw;
-                    var backoffMs = 500 * attempt;
-                    await Task.Delay(backoffMs);
+                    try { client.StopAsync().GetAwaiter().GetResult(); } catch { }
+                    try { client.LogoutAsync().GetAwaiter().GetResult(); } catch { }
+                    try { client.Dispose(); } catch { }
+                    _client = null;
                 }
             }
-
-            joinTimer.Stop();
-            throw new InvalidOperationException($"Voice join failed after {maxRetries} attempts");
+            catch { }
         }
 
-        /// <summary>
-        /// Get voice connection status
-        /// </summary>
-        public static string GetVoiceConnectionStatus()
-        {
-            return (_currentAudioClient != null && _currentAudioClient.ConnectionState == ConnectionState.Connected)
-                ? $"Connected to: {_currentChannelName}\nReady for voice processing"
-                : "Not connected to voice channel";
-        }
+        private static string _lastDiscordTtsText; // debounce last spoken text
+        private static DateTime _lastDiscordTtsTime = DateTime.MinValue;
 
-        /// <summary>
-        /// Send TTS audio to Discord voice channel via PCM (Discord.Net handles Opus)
-        /// </summary>
         public static Task<bool> SendTtsToDiscordAsync(string text, string speakerRefId = null)
         {
-            // per-utterance CTS
-            var linked = new CancellationTokenSource();
-            var prev = Interlocked.Exchange(ref _currentSpeakCts, linked);
-            if (prev != null) { try { prev.Cancel(); } catch (ObjectDisposedException) { } try { prev.Dispose(); } catch { } }
-
-            var job = new TtsJob
+            try
             {
-                Text = text,
-                SpeakerRefId = speakerRefId,
-                Tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously),
-                Cts = linked,
-                Generation = Interlocked.Increment(ref _ttsGeneration)
-            };
-            
-            // Backpressure: With length=1 and DropOldest, check if queue is full before writing
-            bool wasQueueFull = false; // ChannelReader does not expose CanRead; treat as unknown
-            if (!_ttsWriter.TryWrite(job))
-            {
-                // Channel is closed or writer is completed
-                job.Tcs.SetException(new InvalidOperationException("TTS channel closed - service shutting down"));
-            }
-            else
-            {
-                // Successfully enqueued - if queue was full, count as drop (DropOldest policy)
-                if (wasQueueFull)
+                lock (_ttsCancelLock)
                 {
-                    Interlocked.Increment(ref _totalTtsDrops);
-                    Console.WriteLine($"⚠️ TTS backpressure: Dropped previous job due to preemption (total drops: {_totalTtsDrops})");
+                    if (!string.IsNullOrWhiteSpace(text) &&
+                        _lastDiscordTtsText == text &&
+                        (DateTime.UtcNow - _lastDiscordTtsTime).TotalMilliseconds < 1500)
+                    {
+                        try { Console.WriteLine("[TTS->Discord] Suppressed duplicate text (within 1500ms window)"); } catch { }
+                        return Task.FromResult(false);
+                    }
+                    _lastDiscordTtsText = text;
+                    _lastDiscordTtsTime = DateTime.UtcNow;
                 }
             }
-            StartTtsWorkerIfNeeded();
-            return job.Tcs.Task;
-        }
-
-        // Interrupt current TTS when incoming Discord voice is detected (barge-in on VAD)
-        private static void InterruptTtsForIncomingVoice()
-        {
-            // Barge-in removed; do nothing
-        }
-
-        // Ensure STT barge-in is disabled
-        private static void EnsureSttBargeInHook()
-        {
-            if (Interlocked.CompareExchange(ref _sttBargeHooked, 1, 0) != 0) return;
-            Console.WriteLine("[TTS] Barge-in disabled");
-        }
-
-        private static void StartTtsWorkerIfNeeded()
-        {
-            if (_ttsWorkerRunning) return;
-            lock (_ttsWorkerLock)
-            {
-                if (_ttsWorkerRunning) return;
-                _ttsWorkerRunning = true;
-
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        while (true)
-                        {
-                            // Wait for next TTS job from channel
-                            if (!await _ttsReader.WaitToReadAsync())
-                            {
-                                // Channel is closed
-                                lock (_ttsWorkerLock) { _ttsWorkerRunning = false; }
-                                return;
-                            }
-
-                            if (!_ttsReader.TryRead(out var job))
-                            {
-                                await Task.Delay(25);
-                                continue;
-                            }
-
-                            Console.WriteLine($"[TTS] Dequeued job (len={job.Text?.Length ?? 0}). Queue size=1 (single item channel)");
-                            lock (_ttsCancelLock) { _currentTtsCts = job.Cts; }
-
-                            bool ok = false;
-                            try { ok = await SendTtsToDiscordCoreAsync(job.Text, job.SpeakerRefId, job.Cts.Token, job.Generation); }
-                            catch (OperationCanceledException) { ok = false; }
-                            catch (Exception ex) { Console.WriteLine($"[TTS] Job failed: {ex.Message}"); }
-                            finally { job.Tcs.TrySetResult(ok); Console.WriteLine($"[TTS] Job finished. Success={ok}"); }
-                            await Task.Delay(1);
-
-                        }
-                    }
-                    finally { lock (_ttsWorkerLock) { _ttsWorkerRunning = false; } }
-                });
-            }
-        }
-
-        private static async Task SpeakingIdleHoldAsync()
-        {
-            try { _speakHoldCts?.Cancel(); } catch { }
-            var cts = new CancellationTokenSource();
-            _speakHoldCts = cts;
-            try { await Task.Delay(250, cts.Token); if (_currentAudioClient != null && _currentAudioClient.ConnectionState == ConnectionState.Connected) await _currentAudioClient.SetSpeakingAsync(false); }
-            catch (OperationCanceledException) { }
-            catch (Exception ex) { Console.WriteLine($"[TTS] Speaking hold error: {ex.Message}"); }
-            finally { try { cts.Dispose(); } catch { } }
-        }
-
-        private static async Task<bool> SendTtsToDiscordCoreAsync(string text, string speakerRefId, CancellationToken ct, int generation)
-        {
-            Console.WriteLine($"[TTS] Enter SendTtsToDiscordCoreAsync gen={generation}. Connected={( _currentAudioClient!=null ? _currentAudioClient.ConnectionState.ToString():"null")} SpeakerRef={speakerRefId ?? Kinectv1.App.SettingsProvider?.Current?.Tts?.Speaker} TextLen={text?.Length ?? 0}");
-            ct.ThrowIfCancellationRequested();
-
-            if (_currentAudioClient == null || _currentAudioClient.ConnectionState != ConnectionState.Connected)
-            {
-                Console.WriteLine("[TTS] No active Discord voice connection");
-                return false;
-            }
-            if (!TtsService.IsEnabled())
-            {
-                Console.WriteLine("[TTS] TTS service not available");
-                return false;
-            }
-
-            var currentSpeaker = speakerRefId ?? Kinectv1.App.SettingsProvider?.Current?.Tts?.Speaker;
-
-            // 1) TTS: float[] at 24,000 Hz (Kokoro native), mono
-            var audioFloatData = await TtsService.GenerateAudioDataAsync(text, currentSpeaker);
-            ct.ThrowIfCancellationRequested();
-            if (audioFloatData == null || audioFloatData.Length == 0)
-            {
-                Console.WriteLine("[TTS] Empty TTS audio");
-                return false;
-            }
-
-            // 2) Convert float [-1..1] -> PCM16 bytes at Kokoro's native rate (mono)
-            float gain = Math.Max(0f, (float)(Kinectv1.App.SettingsProvider?.Current?.Tts?.DiscordVolume ?? 1.0));
-            byte[] pcm22050 = FloatsToPcm16(audioFloatData, gain);
-
-            // 3) Resample to 48000 Hz, 2 channels (Discord.Net handles Opus)
-            int totalWritten = 0;
-            using (var srcStream = new MemoryStream(pcm22050, writable: false))
-            using (var srcProvider = new RawSourceWaveStream(srcStream, new WaveFormat(TtsService.GetSampleRate(), 16, 1)))
-            using (var resampler = new MediaFoundationResampler(srcProvider, new WaveFormat(48000, 16, 2)) { ResamplerQuality = 60 })
-             {
-                 // Avoid speaking state races across utterances
-                 CancelSpeakingHoldSafe();
-
-                 // Only set speaking if we are still the latest generation (next utterance not queued)
-                 if (generation < Volatile.Read(ref _ttsGeneration))
-                 {
-                     Console.WriteLine($"[TTS] Gen {generation} canceled before start by newer gen {_ttsGeneration}");
-                     return false;
-                 }
-
-                await _currentAudioClient.SetSpeakingAsync(true);
-                await Task.Delay(60, ct); // allow state to propagate
-                try
-                {
-                    const int frameBytes = 3840; // 20ms
-                    byte[] resampleBuf = new byte[8192];
-                    byte[] carry = new byte[frameBytes];
-                    int carryLen = 0;
-                    int n;
-
-                    var sw = Stopwatch.StartNew();
-                    int framesSent = 0;
-
-                    while ((n = resampler.Read(resampleBuf, 0, resampleBuf.Length)) > 0)
-                    {
-                        ct.ThrowIfCancellationRequested();
-
-                        int offset = 0;
-                        while (offset < n)
-                        {
-                            int toCopy = Math.Min(frameBytes - carryLen, n - offset);
-                            Buffer.BlockCopy(resampleBuf, offset, carry, carryLen, toCopy);
-                            carryLen += toCopy;
-                            offset += toCopy;
-
-                            if (carryLen == frameBytes)
-                            {
-                                long expectedMs = (long)(framesSent * 20);
-                                long nowMs = sw.ElapsedMilliseconds;
-                                if (nowMs < expectedMs)
-                                {
-                                    var delay = (int)(expectedMs - nowMs);
-                                    if (delay > 0) await Task.Delay(delay, ct);
-                                }
-
-                                var stream = _discordPcmStream ?? _currentAudioClient.CreatePCMStream(AudioApplication.Mixed, bitrate: 96000, bufferMillis: 200);
-                                if (_discordPcmStream == null) _discordPcmStream = stream; // cache for future
-                                await stream.WriteAsync(carry, 0, frameBytes, ct).ConfigureAwait(false);
-                                totalWritten += frameBytes;
-                                carryLen = 0;
-                                framesSent++;
-                            }
-                        }
-                    }
-
-                    if (carryLen > 0)
-                    {
-                        Array.Clear(carry, carryLen, frameBytes - carryLen);
-                        long expectedMs = (long)(framesSent * 20);
-                        long nowMs = sw.ElapsedMilliseconds;
-                        if (nowMs < expectedMs)
-                        {
-                            var delay = (int)(expectedMs - nowMs);
-                            if (delay > 0) await Task.Delay(delay, ct);
-                        }
-                        var stream = _discordPcmStream ?? _currentAudioClient.CreatePCMStream(AudioApplication.Mixed, bitrate: 96000, bufferMillis: 200);
-                        if (_discordPcmStream == null) _discordPcmStream = stream;
-                        await stream.WriteAsync(carry, 0, frameBytes, ct).ConfigureAwait(false);
-                        totalWritten += frameBytes;
-                        framesSent++;
-                    }
-
-                    try { await (_discordPcmStream?.FlushAsync(ct) ?? Task.CompletedTask).ConfigureAwait(false); } catch { }
-                    Console.WriteLine($"[TTS] Sent {totalWritten} PCM bytes to Discord (48k/16-bit/2ch).\n");
-                    return totalWritten > 0;
-                }
-                finally
-                {
-                    _ = SpeakingIdleHoldAsync();
-                }
-             }
-        }
-       
-
-        private static void CancelSpeakingHoldSafe()
-        {
-            try { _speakHoldCts?.Cancel(); } catch { }
-            try { _speakHoldCts?.Dispose(); } catch { }
-            _speakHoldCts = null;
+            catch { }
+            if (string.IsNullOrWhiteSpace(text)) return Task.FromResult(false);
+            if (!IsInVoiceChannel) return Task.FromResult(false);
+            if (!TtsService.IsEnabled()) return Task.FromResult(false);
+            var speaker = speakerRefId ?? Kinectv1.App.SettingsProvider?.Current?.Tts?.Speaker;
+            TtsPlaybackManager.Enqueue(text, Kinectv1.Tts.TtsOutputTarget.Discord, speaker, preempt: true);
+            return Task.FromResult(true);
         }
 
         private static byte[] FloatsToPcm16(float[] src, float gain)
         {
             if (gain <= 0f) gain = 1f;
-            byte[] dst = new byte[src.Length * 2];
-            int b = 0;
+            var dst = new byte[src.Length * 2];
+            int j = 0;
             for (int i = 0; i < src.Length; i++)
             {
                 float f = src[i] * gain;
                 if (f > 0.98f) f = 0.98f; else if (f < -0.98f) f = -0.98f;
-                short s = (short)Math.Round(f * 32767f);
-                dst[b++] = (byte)(s & 0xFF);
-                dst[b++] = (byte)((s >> 8) & 0xFF);
+                short s = (short)(f * 32767f);
+                dst[j++] = (byte)(s & 0xFF);
+                dst[j++] = (byte)((s >> 8) & 0xFF);
             }
             return dst;
         }
-
-        // Event handlers
-        private static Task Log(LogMessage msg)
-        {
-            Console.WriteLine($"[{msg.Severity}] {msg.Source}: {msg.Message}");
-            if (msg.Exception != null) Console.WriteLine(msg.Exception);
-            return Task.CompletedTask;
-        }
-
-        private static Task Client_Ready()
-        {
-            Console.WriteLine($"?? Discord.Net bot ready as {_client.CurrentUser.Username}#{_client.CurrentUser.Discriminator}");
-            
-            // SANITY CHECK: Mark as initialized when Ready event fires
-            _isInitialized = true;
-            
-            OnBotStatusChanged?.Invoke($"Ready as {_client.CurrentUser.Username}");
-            return Task.CompletedTask;
-        }
-
-        private static async Task HandleCommandAsync(SocketMessage messageParam)
-        {
-            try
-            {
-                var message = messageParam as SocketUserMessage; if (message == null) return; int argPos = 0; var prefix = Kinectv1.App.SettingsProvider?.Current?.Discord?.Prefix;
-                if (!(message.HasStringPrefix(prefix, ref argPos) || message.HasMentionPrefix(_client.CurrentUser, ref argPos)) || message.Author.IsBot) return;
-                var context = new SocketCommandContext(_client, message);
-                var result = await _commands.ExecuteAsync(context, argPos, null);
-                if (!result.IsSuccess) await context.Channel.SendMessageAsync($"Command failed: {result.ErrorReason}");
-            }
-            catch (Exception ex) { Console.WriteLine($"HandleCommandAsync exception: {ex.Message}"); }
-        }
-
-        private static Task Client_UserVoiceStateUpdated(SocketUser user, SocketVoiceState before, SocketVoiceState after)
-        {
-            if (user.Id == _client.CurrentUser.Id)
-            {
-                var timingMs = DateTime.UtcNow.ToString("HH:mm:ss.fff");
-                Console.WriteLine($"[{timingMs}] SELF VoiceState: {before.VoiceChannel?.Name} -> {after.VoiceChannel?.Name} | session={after.VoiceSessionId ?? "None"}");
-                
-                // No handshake resolution needed in standard path
-            }
-            return Task.CompletedTask;
-        }
-
-        private static Task Client_VoiceServerUpdated(SocketVoiceServer voiceServer)
-        {
-            var timingMs = DateTime.UtcNow.ToString("HH:mm:ss.fff");
-            Console.WriteLine($"[{timingMs}] VoiceServer: guild={voiceServer.Guild.Id} endpoint={MaskEndpoint(voiceServer.Endpoint)} token={MaskToken(voiceServer.Token)}");
-            
-            // Standard path: no custom handshake; keep log only
-            
-            return Task.CompletedTask;
-        }
-
-        // Helper methods for masking sensitive data in logs
-        private static string MaskSessionId(string sessionId) 
-            => string.IsNullOrEmpty(sessionId) ? "None" : sessionId.Substring(0, Math.Min(8, sessionId.Length)) + "***";
-        
-        private static string MaskToken(string token) 
-            => string.IsNullOrEmpty(token) ? "None" : token.Substring(0, Math.Min(8, token.Length)) + "***";
-        
-        private static string MaskEndpoint(string endpoint) 
-            => string.IsNullOrEmpty(endpoint) ? "None" : endpoint.Contains(".") ? endpoint.Split('.')[0] + ".***" : endpoint;
 
         // Resolve a human-friendly display name (Nickname > Username > fallback)
         private static string GetDisplayName(ulong userId)
@@ -1088,10 +984,108 @@ namespace Kinectv1.Discord
             {
                 lock (_ttsCancelLock)
                 {
-                    _currentTtsCts?.Cancel();
+                    if (_currentTtsCts != null)
+                    {
+                        try { Console.WriteLine($"[TTS->Discord] Cancel invoked at {DateTime.UtcNow:O}"); } catch { }
+                        _currentTtsCts.Cancel();
+                        try { Kinectv1.Tts.TtsService.MarkExternalCancel(); } catch { }
+                    }
                 }
             }
             catch { }
         }
+
+        public static async Task<bool> ClearSessionAsync(bool restartGateway)
+        {
+            try
+            {
+                // Close any active voice pipes (readers + audio client)
+                try { await ForceCloseAllVoicePipesAsync(); } catch { }
+                // Close gateway (idempotent if already null)
+                try { await CloseGatewayAsync(); } catch { }
+                if (restartGateway)
+                {
+                    await Task.Delay(1500);
+                    return await StartAsync();
+                }
+                return true;
+            }
+            catch { return false; }
+        }
+
+        static DiscordNetBotManager()
+        {
+            try
+            {
+                AppDomain.CurrentDomain.ProcessExit += (_, __) =>
+                {
+                    try { ClearSessionAsync(false).GetAwaiter().GetResult(); } catch { }
+                };
+            }
+            catch { }
+        }
+
+        // Event handlers
+        private static Task Log(LogMessage msg)
+        {
+            Console.WriteLine($"[{msg.Severity}] {msg.Source}: {msg.Message}");
+            if (msg.Exception != null) Console.WriteLine(msg.Exception);
+            return Task.CompletedTask;
+        }
+
+        private static Task Client_Ready()
+        {
+            Console.WriteLine($"?? Discord.Net bot ready as {_client.CurrentUser.Username}#{_client.CurrentUser.Discriminator}");
+            
+            // SANITY CHECK: Mark as initialized when Ready event fires
+            _isInitialized = true;
+            
+            OnBotStatusChanged?.Invoke($"Ready as {_client.CurrentUser.Username}");
+            return Task.CompletedTask;
+        }
+
+        private static async Task HandleCommandAsync(SocketMessage messageParam)
+        {
+            try
+            {
+                var message = messageParam as SocketUserMessage; if (message == null) return; int argPos = 0; var prefix = Kinectv1.App.SettingsProvider?.Current?.Discord?.Prefix;
+                if (!(message.HasStringPrefix(prefix, ref argPos) || message.HasMentionPrefix(_client.CurrentUser, ref argPos)) || message.Author.IsBot) return;
+                var context = new SocketCommandContext(_client, message);
+                var result = await _commands.ExecuteAsync(context, argPos, null);
+                if (!result.IsSuccess) await context.Channel.SendMessageAsync($"Command failed: {result.ErrorReason}");
+            }
+            catch (Exception ex) { Console.WriteLine($"HandleCommandAsync exception: {ex.Message}"); }
+        }
+
+        private static Task Client_UserVoiceStateUpdated(SocketUser user, SocketVoiceState before, SocketVoiceState after)
+        {
+            if (user.Id == _client.CurrentUser.Id)
+            {
+                var timingMs = DateTime.UtcNow.ToString("HH:mm:ss.fff");
+                _lastObservedSessionId = after.VoiceSessionId; // capture latest
+                Console.WriteLine($"[{timingMs}] SELF VoiceState: {before.VoiceChannel?.Name} -> {after.VoiceChannel?.Name} | session={after.VoiceSessionId ?? "None"}");
+            }
+            return Task.CompletedTask;
+        }
+
+        private static Task Client_VoiceServerUpdated(SocketVoiceServer voiceServer)
+        {
+            var timingMs = DateTime.UtcNow.ToString("HH:mm:ss.fff");
+            Console.WriteLine($"[{timingMs}] VoiceServer: guild={voiceServer.Guild.Id} endpoint={MaskEndpoint(voiceServer.Endpoint)} token={MaskToken(voiceServer.Token)}");
+            
+            // Standard path: no custom handshake; keep log only
+            
+            return Task.CompletedTask;
+        }
+
+        // Helper methods for masking sensitive data in logs
+        private static string MaskSessionId(string sessionId) 
+            => string.IsNullOrEmpty(sessionId) ? "None" : sessionId.Substring(0, Math.Min(8, sessionId.Length)) + "***";
+        
+        private static string MaskToken(string token) 
+            => string.IsNullOrEmpty(token) ? "None" : token.Substring(0, Math.Min(8, token.Length)) + "***";
+        
+        private static string MaskEndpoint(string endpoint) 
+            => string.IsNullOrEmpty(endpoint) ? "None" : endpoint.Contains(".") ? endpoint.Split('.')[0] + ".***" : endpoint;
     }
 }

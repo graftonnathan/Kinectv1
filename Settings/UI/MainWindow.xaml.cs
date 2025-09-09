@@ -362,24 +362,24 @@ namespace Kinectv1
                 }
             }
 
-            // DISCORD
+            // DISCORD (now unified scaling 0..10000 like mic)
             if (_isDiscordInputEnabled && DiscordRmsBar != null && DiscordRmsText != null)
             {
-                bool staleD = (now - _lastDiscordRmsTime).TotalMilliseconds > 250;
-                var input = staleD ? 0f : _latestDiscordRmsValue; // scale 0..1000*
+                bool staleD = (now - _lastDiscordRmsTime).TotalMilliseconds > 200; // align with mic stale window
+                var input = staleD ? 0f : _latestDiscordRmsValue; // raw scale 0..10000*
 
                 if (input > _smoothedDiscordRms)
-                    _smoothedDiscordRms = _smoothedDiscordRms * 0.4f + input * 0.6f;
+                    _smoothedDiscordRms = _smoothedDiscordRms * 0.4f + input * 0.6f; // same attack
                 else
-                    _smoothedDiscordRms = _smoothedDiscordRms * 0.85f + input * 0.15f;
+                    _smoothedDiscordRms = _smoothedDiscordRms * 0.85f + input * 0.15f; // same decay
 
                 if (staleD && input == 0f)
                 {
                     _smoothedDiscordRms *= 0.80f;
-                    if (_smoothedDiscordRms < 1f) _smoothedDiscordRms = 0f;
+                    if (_smoothedDiscordRms < 5f) _smoothedDiscordRms = 0f; // same floor snap as mic
                 }
 
-                var pct = Math.Max(0.0, Math.Min(100.0, (_smoothedDiscordRms / 1000.0) * 100.0));
+                var pct = Math.Max(0.0, Math.Min(100.0, (_smoothedDiscordRms / 10000.0) * 100.0));
                 bool forceUpdate = staleD && pct < _lastDiscordPct;
                 if (forceUpdate || Math.Abs(pct - _lastDiscordPct) >= 0.5)
                 {
@@ -1002,8 +1002,11 @@ namespace Kinectv1
                 if (!ttsEnabled) return;
 
                 var voice = App.SettingsProvider?.Current?.Tts?.Speaker;
-                var speakLocal = true;
-                var speakDiscord = _isDiscordInputEnabled;
+                // FIX: Only play locally if microphone input (LocalMic mode) is enabled.
+                // Previously always true, causing dual output in Discord mode.
+                var speakLocal = _isMicrophoneInputEnabled; 
+                // Only send to Discord if Discord input mode enabled and we are in a voice channel
+                var speakDiscord = _isDiscordInputEnabled && Kinectv1.Discord.DiscordNetBotManager.IsInVoiceChannel;
 
                 if (speakLocal)
                 {
@@ -1014,7 +1017,7 @@ namespace Kinectv1
                     });
                 }
 
-                if (speakDiscord && Kinectv1.Discord.DiscordNetBotManager.IsInVoiceChannel)
+                if (speakDiscord)
                 {
                     _ = Task.Run(async () =>
                     {
@@ -1088,6 +1091,11 @@ namespace Kinectv1
                 // Enforce disconnect-on-switch policy
                 if (_isDiscordInputEnabled)
                 {
+                    // HARD DISABLE mic capture in Discord mode to prevent local barge-in triggers
+                    try { VoiceRecognizer.SetMicrophoneInputEnabled(false); } catch { }
+                    try { TtsService.CancelCurrentLocalTts(); } catch { }
+                    try { Console.WriteLine("[AudioMode] Mic forcibly disabled (Discord mode)"); } catch { }
+
                     // Ensure Mumble is disconnected
                     _ = Task.Run(async () => { try { await MumbleClientManager.DisconnectAsync(); } catch { } });
 
@@ -1158,7 +1166,11 @@ namespace Kinectv1
                 }
 
                 // Apply to recognizer (mumble not implemented yet)
-                try { VoiceRecognizer.SetMicrophoneInputEnabled(_isMicrophoneInputEnabled); } catch { }
+                // Only apply mic enable for non-Discord modes; already forced off above in Discord branch
+                if (!_isDiscordInputEnabled)
+                {
+                    try { VoiceRecognizer.SetMicrophoneInputEnabled(_isMicrophoneInputEnabled); } catch { }
+                }
                 try { VoiceRecognizer.SetDiscordInputEnabled(_isDiscordInputEnabled); } catch { }
                 // Mumble gating to be added in Phase 2 when ingest lands
             }

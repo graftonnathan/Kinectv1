@@ -13,7 +13,16 @@ namespace Kinectv1
 {
     public static class VoiceRecognizer
     {
-        // Events consumed by UI and integrations
+        // Diagnostics
+        private static bool _diagEnabled = true;
+        private static int _frameCounter = 0;
+        public static void EnableDiagnostics(bool on) => _diagEnabled = on;
+        private static void VRLog(string tag, string msg)
+        {
+            if (!_diagEnabled) return;
+            try { Console.WriteLine($"[VR][{tag}] {msg}"); } catch { }
+        }
+         // Events consumed by UI and integrations
         public static event Action<string> OnTranscription; // final only
         public static event Action<string> OnPartialTranscription; // partials (only when active)
         public static event Action<float> OnRmsLevel;
@@ -75,6 +84,7 @@ namespace Kinectv1
             EnsureExternalProcessor();
             if (_micEnabled) StartMicCapture();
             _ready = true;
+            VRLog("START", $"Ready micEnabled={_micEnabled} discordEnabled={_discordEnabled} modelPath={_modelPath}");
         }
         public static void Start(string modelPath, string extra) => Start(modelPath);
         public static void ReloadFromSettings()
@@ -85,6 +95,8 @@ namespace Kinectv1
         public static void SetMicrophoneInputEnabled(bool enabled)
         {
             _micEnabled = enabled;
+            try { Console.WriteLine(enabled ? "[Mic] Enabled" : "[Mic] Disabled"); } catch { }
+            VRLog("MIC", enabled ? "Enabled" : "Disabled");
             lock (_lock)
             {
                 if (enabled)
@@ -104,6 +116,8 @@ namespace Kinectv1
             if (pcm == null || length <= 0) return;
             _externalQueue.Enqueue((pcm, length, source ?? "external"));
             EnsureExternalProcessor();
+            if ((_frameCounter++ % 100) == 0)
+                VRLog("ENQ", $"queue={_externalQueue.Count} lastLen={length} src={source}");
         }
         public static (int queueSize, bool isProcessing) GetExternalAudioStats() => (_externalQueue.Count, _processing);
 
@@ -212,6 +226,7 @@ namespace Kinectv1
                     if ((_lastAbove - (now - TimeSpan.FromMilliseconds(_vadDebounceMs))).TotalMilliseconds >= 0)
                     {
                         _speechActive = true;
+                        VRLog("VAD", $"ACTIVATE rms={rms:F1} thr={_vadRmsThreshold:F1}");
                         // Removed: barge-in on mic activation; now only triggered for external frames in ProcessFrame
                     }
                 }
@@ -219,12 +234,17 @@ namespace Kinectv1
             else
             {
                 if (_speechActive && (now - _lastAbove).TotalMilliseconds >= _vadSilenceMs)
+                {
                     _speechActive = false;
+                    VRLog("VAD", $"DEACTIVATE rms={rms:F1} silenceMs={(now - _lastAbove).TotalMilliseconds:F0}");
+                }
             }
         }
 
         private static void TryBargeIn(DateTime now)
         {
+            // Barge-in temporarily disabled for stability diagnostics
+            return;
             try
             {
                 var snap = Kinectv1.App.SettingsProvider?.Current;
@@ -279,9 +299,14 @@ namespace Kinectv1
                 if (!string.IsNullOrWhiteSpace(text))
                 {
                     try { OnTranscription?.Invoke(text); } catch { }
+                    VRLog("FINAL", $"len={text.Length} text='{(text.Length>60?text.Substring(0,60)+"...":text)}'");
+                }
+                else
+                {
+                    VRLog("FINAL", "(empty)");
                 }
             }
-            catch { }
+            catch (Exception ex) { VRLog("ERROR", "FlushFinal " + ex.Message); }
             finally { ClearPreRoll(); }
         }
 
@@ -289,6 +314,10 @@ namespace Kinectv1
         {
             if (length <= 0) return;
             float rms = ComputeRms16(data, length);
+            if (!_micEnabled && !isExternal && rms > 25f)
+            {
+                try { Console.WriteLine($"[Mic][DisabledRms] Unexpected RMS={rms:F1} length={length}"); } catch { }
+            }
             bool wasActive = _speechActive;
             UpdateVadFromRms(rms);
             try
@@ -297,32 +326,23 @@ namespace Kinectv1
             }
             catch { }
 
-            // Trigger barge-in only for external (e.g., LLM output / remote) audio activation
-            if (isExternal && !wasActive && _speechActive)
-            {
-                TryBargeIn(DateTime.UtcNow);
-            }
-
             if (!_speechActive)
             {
-                // Collect pre-roll audio only while inactive
                 StorePreRoll(data, length);
                 if (wasActive && !_speechActive)
                 {
-                    // Transitioned to inactive: flush final residual
+                    VRLog("STATE", "Transition ACTIVE->INACTIVE triggering FlushFinal");
                     FlushFinal();
                 }
-                return; // do not feed recognizer while inactive
+                return;
             }
 
-            // Activation event: was inactive -> active
             if (!wasActive && _speechActive)
             {
-                // Replay pre-roll frames before current frame to avoid clipped onset
+                VRLog("STATE", "Transition INACTIVE->ACTIVE replay prerollCount=" + _preRollCount);
                 ReplayPreRoll();
             }
 
-            // Feed current active frame
             try { SpeakerEmbedder.AddPcm16(data, length); } catch { }
             FeedRecognizer(data, length, isExternal ? "external" : "mic");
         }
@@ -337,7 +357,8 @@ namespace Kinectv1
             try
             {
                 var rec = _recognizer; if (rec == null) return;
-                if (rec.AcceptWaveform(pcm16leMono, bytes))
+                bool accepted = rec.AcceptWaveform(pcm16leMono, bytes);
+                if (accepted)
                 {
                     var json = rec.Result();
                     var text = ExtractText(json);
@@ -346,24 +367,24 @@ namespace Kinectv1
                         var sinceActiveMs = (DateTime.UtcNow - _lastAbove).TotalMilliseconds;
                         bool looksShort = text.Length < 4 && text.IndexOf(' ') < 0;
                         if (!_speechActive && sinceActiveMs > 250 && looksShort)
-                            return; // discard stray tiny final outside activity
+                            return;
                         try { OnTranscription?.Invoke(text); } catch { }
+                        VRLog("FINAL-INCR", $"len={text.Length} src={source} text='{(text.Length>60?text.Substring(0,60)+"...":text)}'");
                     }
                 }
-                else
+                else if (_speechActive)
                 {
-                    if (_speechActive)
+                    var pjson = rec.PartialResult();
+                    var ptext = ExtractPartialText(pjson);
+                    if (!string.IsNullOrWhiteSpace(ptext))
                     {
-                        var pjson = rec.PartialResult();
-                        var ptext = ExtractPartialText(pjson);
-                        if (!string.IsNullOrWhiteSpace(ptext))
-                        {
-                            try { OnPartialTranscription?.Invoke(ptext); } catch { }
-                        }
+                        try { OnPartialTranscription?.Invoke(ptext); } catch { }
+                        if ((_frameCounter++ % 25) == 0)
+                            VRLog("PART", $"len={ptext.Length} src={source} text='{(ptext.Length>50?ptext.Substring(0,50)+"...":ptext)}'");
                     }
                 }
             }
-            catch { }
+            catch (Exception ex) { VRLog("ERROR", "FeedRecognizer " + ex.Message); }
         }
 
         private static string ExtractText(string json)
@@ -389,6 +410,7 @@ namespace Kinectv1
             _procTask = Task.Run(() =>
             {
                 _processing = true;
+                VRLog("LOOP", "External processor start");
                 try
                 {
                     while (!ct.IsCancellationRequested)
@@ -402,12 +424,29 @@ namespace Kinectv1
                                     ProcessFrame(item.data, item.length, isExternal: true);
                                 }
                             }
-                            catch { }
+                            catch (Exception ex) { VRLog("ERROR", "ProcessFrame ext " + ex.Message); }
                         }
-                        else Thread.Sleep(5);
+                        else
+                        {
+                            Thread.Sleep(5);
+                            try
+                            {
+                                if (_discordEnabled && _speechActive)
+                                {
+                                    var sinceLastAbove = (DateTime.UtcNow - _lastAbove).TotalMilliseconds;
+                                    if (sinceLastAbove >= _vadSilenceMs)
+                                    {
+                                        VRLog("SILENCE", $"Flush after idle {sinceLastAbove:F0}ms");
+                                        _speechActive = false;
+                                        FlushFinal();
+                                    }
+                                }
+                            }
+                            catch (Exception ex) { VRLog("ERROR", "Silence check " + ex.Message); }
+                        }
                     }
                 }
-                finally { _processing = false; }
+                finally { _processing = false; VRLog("LOOP", "External processor end"); }
             }, ct);
         }
     }

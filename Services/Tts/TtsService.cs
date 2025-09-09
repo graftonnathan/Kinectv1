@@ -14,6 +14,22 @@ namespace Kinectv1.Tts
 {
     public static class TtsService
     {
+        private static bool _diagEnabled = true; // toggle for verbose logging
+        private static string ShortHash(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return "null";
+            unchecked
+            {
+                int h = 23; foreach (var c in s) h = h * 31 + c; return (h & 0xFFFF).ToString("X4");
+            }
+        }
+        private static void Log(string tag, string msg)
+        {
+            if (!_diagEnabled) return;
+            try { Console.WriteLine($"[TTS][{tag}] {msg}"); } catch { }
+        }
+        public static void EnableDiagnostics(bool on) => _diagEnabled = on;
+
         // Public events
         public static event Action OnTtsSpeakingStarted;
         public static event Action OnTtsSpeakingFinished;
@@ -22,6 +38,14 @@ namespace Kinectv1.Tts
         // NEW: per-utterance cancellation for local playback (barge-in)
         private static readonly object _speakLock = new object();
         private static CancellationTokenSource _currentLocalSpeakCts;
+        // Track last cancellation time to soften trimming on immediate follow-up
+        private static DateTime _lastCancel = DateTime.MinValue;
+        internal static bool RecentlyCancelled() => (DateTime.UtcNow - _lastCancel).TotalMilliseconds < 600;
+        internal static void MarkExternalCancel()
+        {
+            _lastCancel = DateTime.UtcNow;
+            Log("CANCEL", $"External mark ts={_lastCancel:O}");
+        }
 
         // --- Kokoro merged state ---
         private static readonly object _lock = new object();
@@ -73,10 +97,18 @@ namespace Kinectv1.Tts
                     cts = _currentLocalSpeakCts;
                     _currentLocalSpeakCts = null;
                 }
-                try { cts?.Cancel(); } catch { }
-                try { cts?.Dispose(); } catch { }
+                if (cts == null)
+                {
+                    Log("CANCEL", "Local cancel requested but no active CTS");
+                    return;
+                }
+                try { cts.Cancel(); } catch { }
+                try { cts.Dispose(); } catch { }
+                _lastCancel = DateTime.UtcNow; // mark for grace window
+                var st = new System.Diagnostics.StackTrace(1, true);
+                Log("CANCEL", $"Local at {_lastCancel:HH:mm:ss.fff} stackTop={st.GetFrame(0)?.GetMethod()?.Name}");
             }
-            catch { }
+            catch (Exception ex) { Log("ERROR", "CancelLocal exception " + ex.Message); }
         }
 
         // --- Initialization ---
@@ -93,6 +125,7 @@ namespace Kinectv1.Tts
         {
             try
             {
+                Log("INIT", "Initializing session");
                 ApplyRuntimeSettings();
                 ResolveModelLocationsFromSettings();
                 LoadVocab();
@@ -100,11 +133,13 @@ namespace Kinectv1.Tts
                 if (!File.Exists(_modelPath)) { OnTtsError?.Invoke("Kokoro model not found"); return false; }
                 CreateSession(Kinectv1.App.SettingsProvider?.Current?.Tts?.Execution == Kinectv1.Settings.TtsExecution.GPU);
                 _initialized = true;
+                Log("INIT", $"Initialized model={Path.GetFileName(_modelPath)} gpu={_usingGpu} voices={_voiceFiles.Count} vocab={_vocab.Count}");
                 return true;
             }
             catch (Exception ex)
             {
                 OnTtsError?.Invoke("TTS init failed: " + ex.Message);
+                Log("ERROR", "Init failed " + ex.Message);
                 return false;
             }
         }
@@ -300,8 +335,8 @@ namespace Kinectv1.Tts
         {
             text = text.Replace('\u201C', '"').Replace('\u201D', '"');
             text = text.Replace('\u2018', '\'').Replace('\u2019', '\'');
-            text = text.Replace("–", "-").Replace("—", "-");
-            text = text.Replace("…", "...");
+            text = text.Replace("?", "-").Replace("?", "-");
+            text = text.Replace("?", "...");
             text = Regex.Replace(text, @"[\x00-\x1F\x7F]", " ");
             text = Regex.Replace(text, @"\s+", " ").Trim();
             return text;
@@ -397,8 +432,11 @@ namespace Kinectv1.Tts
         // --- Core generation ---
         private static float[] GenerateAudioInternal(string text, string speaker)
         {
-            if (string.IsNullOrWhiteSpace(text)) return Array.Empty<float>();
-            if (!EnsureInitialized()) return Array.Empty<float>();
+            var hash = ShortHash(text);
+            Log("GEN", $"Start len={text?.Length} hash={hash} speaker={speaker}");
+            if (string.IsNullOrWhiteSpace(text)) { Log("GEN", "Empty text"); return Array.Empty<float>(); }
+            if (!EnsureInitialized()) { Log("GEN", "Init failed"); return Array.Empty<float>(); }
+            var start = Stopwatch.StartNew();
 
             var snap = Kinectv1.App.SettingsProvider?.Current?.Tts;
             if (snap == null || !snap.Enabled) return Array.Empty<float>();
@@ -411,6 +449,7 @@ namespace Kinectv1.Tts
             if (voicePath == null) { OnTtsError?.Invoke("Voice style not found"); return Array.Empty<float>(); }
 
             var allSegments = SplitIntoSegments(text);
+            Log("SEG", $"Segments={allSegments.Count}");
             if (allSegments.Count <= 1)
             {
                 return SynthesizeOne(text, voicePath, snap);
@@ -420,7 +459,9 @@ namespace Kinectv1.Tts
             for (int i = 0; i < allSegments.Count; i++)
             {
                 var seg = allSegments[i];
+                Log("SEG", $"Synth {i+1}/{allSegments.Count} chars={seg.Length}");
                 var audio = SynthesizeOne(seg, voicePath, snap);
+                Log("SEG", $"Done {i+1}/{allSegments.Count} samples={audio.Length}");
                 if (audio.Length > 0) final.AddRange(audio);
                 // Inter-segment padding (not after last)
                 if (i < allSegments.Count - 1 && snap.MinClausePaddingMs > 0)
@@ -432,19 +473,24 @@ namespace Kinectv1.Tts
                     }
                 }
             }
-            return final.ToArray();
+            var total = final.ToArray();
+            Log("GEN", $"Done hash={hash} samples={total.Length} ms={start.ElapsedMilliseconds}");
+            return total;
         }
 
         private static float[] SynthesizeOne(string text, string voicePath, Kinectv1.Settings.TtsSettings snap)
         {
+            var segHash = ShortHash(text);
+            var segSw = Stopwatch.StartNew();
+            Log("SEG", $"Synthesize hash={segHash} textLen={text.Length} voice={Path.GetFileName(voicePath)}");
             if (string.IsNullOrWhiteSpace(text)) return Array.Empty<float>();
             var ipa = GetIpa(text);
-            if (string.IsNullOrWhiteSpace(ipa)) { OnTtsError?.Invoke("IPA generation failed"); return Array.Empty<float>(); }
+            if (string.IsNullOrWhiteSpace(ipa)) { OnTtsError?.Invoke("IPA generation failed"); Log("SEG", $"IPA fail hash={segHash}"); return Array.Empty<float>(); }
             var ids = MapIpaToIds(ipa);
-            if (ids == null || ids.Length < 2) { OnTtsError?.Invoke("Tokenizer produced zero tokens"); return Array.Empty<float>(); }
+            if (ids == null || ids.Length < 2) { OnTtsError?.Invoke("Tokenizer produced zero tokens"); Log("SEG", $"Token fail hash={segHash}"); return Array.Empty<float>(); }
             int innerCount = Math.Max(0, ids.Length - 2);
             var style = LoadStyle(voicePath, innerCount);
-            if (style == null) { OnTtsError?.Invoke("Style vector load failed"); return Array.Empty<float>(); }
+            if (style == null) { OnTtsError?.Invoke("Style vector load failed"); Log("SEG", $"Style fail hash={segHash}"); return Array.Empty<float>(); }
 
             var inputIds = new DenseTensor<long>(new[] { 1, ids.Length });
             for (int i = 0; i < ids.Length; i++) inputIds[0, i] = ids[i];
@@ -471,13 +517,28 @@ namespace Kinectv1.Tts
             }
             if (audio == null || audio.Length == 0) return Array.Empty<float>();
 
-            double thr = snap.TrimThreshold;
-            if (thr > 0)
+            bool grace = RecentlyCancelled();
+            Log("SEG", $"Synthesis hash={segHash} rawSamples={audio.Length} grace={grace}");
+            if (!grace)
             {
-                audio = TrimLeading(audio, (float)thr, Math.Min(200, snap.TrimMaxMs));
-                audio = TrimTrailing(audio, (float)thr, snap.TrimLeaveMs, snap.TrimMaxMs);
+                double thr = snap.TrimThreshold;
+                if (thr > 0)
+                {
+                    audio = TrimLeading(audio, (float)thr, Math.Min(200, snap.TrimMaxMs));
+                    audio = TrimTrailing(audio, (float)thr, snap.TrimLeaveMs, snap.TrimMaxMs);
+                }
             }
-            // NOTE: Clause padding handled by caller for multi-segment case.
+            else
+            {
+                int padSamples = (int)(SampleRate * 0.015);
+                if (padSamples > 0)
+                {
+                    var padded = new float[padSamples + audio.Length];
+                    Array.Copy(audio, 0, padded, padSamples, audio.Length);
+                    audio = padded;
+                }
+                try { Console.WriteLine("[TTS] GraceMode pad applied"); } catch { }
+            }
             if (snap.MinClausePaddingMs > 0 && SplitIntoSegments(text).Count <= 1)
             {
                 int padSamples = (int)Math.Round(SampleRate * (snap.MinClausePaddingMs / 1000.0));
@@ -488,6 +549,7 @@ namespace Kinectv1.Tts
                     audio = padded;
                 }
             }
+            Log("SEG", $"Synthesize complete hash={segHash} samples={audio.Length} ms={segSw.ElapsedMilliseconds}");
             return audio;
         }
 
@@ -533,6 +595,8 @@ namespace Kinectv1.Tts
 
         public static async Task<bool> SpeakStreamingWithPreemptionAsync(string text, string speakerName = null)
         {
+            var hash = ShortHash(text);
+            Log("LOCAL", $"Speak request len={text?.Length} hash={hash}");
             if (string.IsNullOrWhiteSpace(text)) return false;
             if (!IsEnabled()) { OnTtsError?.Invoke("TTS disabled in settings"); return false; }
             CancellationTokenSource localCts = null;
@@ -544,28 +608,44 @@ namespace Kinectv1.Tts
                     var prev = _currentLocalSpeakCts;
                     _currentLocalSpeakCts = new CancellationTokenSource();
                     localCts = _currentLocalSpeakCts;
-                    try { prev?.Cancel(); } catch { }
-                    try { prev?.Dispose(); } catch { }
+                    if (prev != null)
+                    {
+                        try { prev.Cancel(); } catch { }
+                        try { prev.Dispose(); } catch { }
+                        Log("LOCAL", "Preempt previous");
+                    }
                 }
 
                 OnTtsSpeakingStarted?.Invoke();
+                try { Console.WriteLine($"[TTS][Local] Generate start chars={text.Length}"); } catch { }
                 var audio = await GenerateAudioDataAsync(text, speakerName, localCts.Token).ConfigureAwait(false);
-                if (localCts.IsCancellationRequested) return false;
-                if (audio == null || audio.Length == 0) { OnTtsError?.Invoke("No audio generated"); return false; }
+                if (localCts.IsCancellationRequested)
+                {
+                    Log("LOCAL", "Cancelled post-generate");
+                    return false;
+                }
+                Log("LOCAL", $"Generated samples={audio?.Length ?? 0} hash={hash}");
                 var vol = Math.Max(0f, (float)(Kinectv1.App.SettingsProvider?.Current?.Tts?.LocalVolume ?? 1.0));
                 if (vol != 1f) for (int i = 0; i < audio.Length; i++) audio[i] *= vol;
+                try { Console.WriteLine($"[TTS][Local] Playback start samples={audio.Length} vol={vol:F2}"); } catch { }
                 await AudioDeviceManager.PlayLocallyAsync(audio, SampleRate, localCts.Token).ConfigureAwait(false);
-                if (localCts.IsCancellationRequested) return false;
+                if (localCts.IsCancellationRequested)
+                {
+                    Log("LOCAL", "Cancelled after playback task");
+                    return false;
+                }
+                Log("LOCAL", "Playback complete");
                 OnTtsSpeakingFinished?.Invoke();
                 return true;
             }
             catch (OperationCanceledException)
             {
-                // Swallow clean cancellation
+                Log("LOCAL", "Playback OCE");
                 return false;
             }
             catch (Exception ex)
             {
+                Log("ERROR", "Local speak error " + ex.Message);
                 OnTtsError?.Invoke(ex.Message);
                 return false;
             }
@@ -573,11 +653,13 @@ namespace Kinectv1.Tts
             {
                 if (localCts != null)
                 {
+                    bool wasCancelled = localCts.IsCancellationRequested;
                     lock (_speakLock)
                     {
                         if (_currentLocalSpeakCts == localCts) _currentLocalSpeakCts = null;
                     }
                     try { localCts.Dispose(); } catch { }
+                    if (wasCancelled) Log("LOCAL", "Finalize: CTS cancelled");
                 }
             }
         }

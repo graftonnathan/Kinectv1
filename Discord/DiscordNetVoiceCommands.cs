@@ -16,15 +16,7 @@ namespace Kinectv1.Discord
 {
     /// <summary>
     /// Discord.Net bot commands for voice channel management and system status
-    /// Uses the prefix from Settings.settings (default: "!")
-    /// ENHANCED WITH DOUBLE REGISTRATION PREVENTION:
-    /// - Atomic protection for ConnectAsync calls
-    /// - Per-guild join attempt tracking
-    /// - Enhanced session management
-    /// - Comprehensive error handling with recovery advice
-    /// - GLOBAL VOICE OPERATION LOCK to prevent concurrent Discord operations
-    /// CLEAN IMPLEMENTATION - All complex workarounds removed, using standard Discord.Net ConnectAsync
-    /// DON'T REUSE/LINGER IAudioClient - Always StopAsync() + Dispose() old clients
+    /// (Simplified join logic – removed aggressive manual voice state manipulation to avoid 4006)
     /// </summary>
     public class DiscordNetVoiceCommands : ModuleBase<SocketCommandContext>
     {
@@ -155,12 +147,7 @@ namespace Kinectv1.Discord
         {
             try
             {
-                Console.WriteLine($"🎯 === ENHANCED VOICE JOIN START (4006 Prevention v3) ===");
-                Console.WriteLine($"🎯 Join requested by {Context.User.Username} in guild: {guild.Name}");
-                Console.WriteLine($"🎯 Current bot voice state: {(self.VoiceChannel?.Name ?? "None")}");
-                Console.WriteLine($"🎯 Current session ID: {self.VoiceSessionId ?? "None"}");
-                Console.WriteLine($"🎯 Thread ID: {Thread.CurrentThread.ManagedThreadId}");
-
+                Console.WriteLine("[VoiceJoin] start");
                 // CRITICAL: Check if Discord bot is shutting down - abort if so
                 if (!DiscordNetBotManager.IsRunning)
                 {
@@ -206,70 +193,13 @@ namespace Kinectv1.Discord
                     return;
                 }
 
-                // ENHANCED STEP 1: Clean up any existing voice connection
-                if (self.VoiceChannel != null || !string.IsNullOrEmpty(self.VoiceSessionId))
+                // If we are in some other channel, leave it cleanly (lightweight)
+                if (self.VoiceChannel != null && self.VoiceChannel.Id != target.Id)
                 {
-                    // CRITICAL: Check shutdown status before proceeding with disconnect
-                    if (!DiscordNetBotManager.IsRunning)
-                    {
-                        Console.WriteLine($"❌ ABORT: Discord bot shut down during session clearing");
-                        return;
-                    }
-
-                    Console.WriteLine($"🧹 STEP 1: Cleaning up existing voice state...");
-                    Console.WriteLine($"🧹 STEP 1: PRE-DISCONNECT - VoiceChannel: {self.VoiceChannel?.Name ?? "None"}, Session: {self.VoiceSessionId ?? "None"}");
-                    
-                    // Clean up our tracking first
-                    if (_audioClients.TryRemove(guild.Id, out var existing))
-                    {
-                        Console.WriteLine($"🧹 Disposing existing audio client...");
-                        try { await existing.StopAsync(); existing.Dispose(); } catch { /* ignore */ }
-                    }
-                    
-                    // Force disconnect if in voice
-                    if (self.VoiceChannel != null)
-                    {
-                        Console.WriteLine($"🧹 STEP 1A: Disconnecting from voice channel: {self.VoiceChannel.Name}");
-                        await self.VoiceChannel.DisconnectAsync();
-                    }
-                    
-                    // Clear any ghost sessions
-                    if (!string.IsNullOrEmpty(self.VoiceSessionId))
-                    {
-                        Console.WriteLine($"🧹 STEP 1B: Clearing ghost session via guild modification");
-                        try
-                        {
-                            await guild.CurrentUser.ModifyAsync(x => x.Channel = null);
-                        }
-                        catch (Exception ghostEx)
-                        {
-                            Console.WriteLine($"⚠️ STEP 1B: Ghost session clear failed: {ghostEx.Message}");
-                        }
-                    }
-                    
-                    Console.WriteLine($"⏱️ STEP 1: Waiting 2000ms for voice state to clear...");
-                    await Task.Delay(2000); // Give time for server-side clearing
-                    
-                    // Verification that state is clear
-                    var maxWait = 10; // Maximum 10 checks (5 seconds total)
-                    var waitCount = 0;
-                    while ((self.VoiceChannel != null || !string.IsNullOrEmpty(self.VoiceSessionId)) && waitCount < maxWait)
-                    {
-                        if (!DiscordNetBotManager.IsRunning) return; // Check shutdown
-                        
-                        Console.WriteLine($"⏱️ STEP 1: Still has voice state - VoiceChannel: {self.VoiceChannel?.Name ?? "None"}, Session: {self.VoiceSessionId ?? "None"} (check {waitCount + 1}/{maxWait})");
-                        await Task.Delay(500);
-                        waitCount++;
-                    }
-                    
-                    Console.WriteLine($"✅ STEP 1: Voice state cleanup completed");
-                }
-                else
-                {
-                    Console.WriteLine($"ℹ️ No existing voice state to clean up");
+                    await SafeLeaveAsync(self);
                 }
 
-                await ReplyAsync($"🎯 Connecting to **{target.Name}** with enhanced handshake...");
+                await ReplyAsync($"🎯 Connecting to **{target.Name}**...");
 
                 // STEP 2: Use the enhanced voice join method with handshake state machine
                 Console.WriteLine($"🎯 STEP 2: Starting enhanced voice join with handshake state machine...");
@@ -283,43 +213,63 @@ namespace Kinectv1.Discord
                 }
 
                 IAudioClient audioClient = null;
-                try
+                int tries = 0;
+                while (tries < 2)
                 {
-                    // Use the new enhanced join method with proper handshake
-                    audioClient = await DiscordNetBotManager.JoinVoiceAsync(target, maxRetries: 3);
-                    Console.WriteLine($"✅ STEP 2: Enhanced voice join completed");
-                    Console.WriteLine($"✅ AudioClient state: {audioClient?.ConnectionState}");
-                }
-                catch (HttpException httpEx) when (httpEx.DiscordCode.HasValue && (int)httpEx.DiscordCode.Value == 4006)
-                {
-                    Console.WriteLine($"❌ STEP 2: 4006 error after all retries: {httpEx.Message}");
-                    await ReplyAsync($"❌ **Voice join failed with 4006 'Session is no longer valid'**\n\n" +
-                                   "This indicates persistent session conflicts. Try:\n" +
-                                   "• `!clearsession` and wait 15 seconds\n" +
-                                   "• Check for multiple bot instances with `!tokencheck`\n" +
-                                   "• Restart the application if issues persist");
-                    return;
-                }
-                catch (TimeoutException timeoutEx)
-                {
-                    Console.WriteLine($"❌ STEP 2: Voice handshake timeout: {timeoutEx.Message}");
-                    await ReplyAsync($"❌ **Voice handshake timed out**\n\n" +
-                                   $"The bot didn't receive session/server info from Discord.\n" +
-                                   $"This may indicate Discord voice server issues.");
-                    return;
-                }
-                catch (Exception joinEx)
-                {
-                    Console.WriteLine($"❌ STEP 2: Enhanced voice join failed: {joinEx.GetType().Name}: {joinEx.Message}");
-                    await ReplyAsync($"❌ **Enhanced voice join failed:** {joinEx.Message}\n\n" +
-                                   $"Error type: {joinEx.GetType().Name}");
-                    return;
+                    try
+                    {
+                        // Use the new enhanced join method with proper handshake
+                        audioClient = await DiscordNetBotManager.JoinVoiceAsync(target, maxRetries: 3);
+                        break; // success
+                    }
+                    catch (HttpException httpEx) when (httpEx.DiscordCode.HasValue && (int)httpEx.DiscordCode.Value == 4006)
+                    {
+                        Console.WriteLine("4006 detected — auto-clearing session and retrying once");
+
+                        // 1) Kill local voice (readers + audio client)
+                        await DiscordNetBotManager.LeaveAllVoiceAsync();
+
+                        // 2) Restart the gateway (break stale/competing session)
+                        await DiscordNetBotManager.CloseGatewayAsync();
+                        await Task.Delay(1500);
+                        var restarted = await DiscordNetBotManager.StartAsync();
+                        if (!restarted)
+                        {
+                            await ReplyAsync("❌ Gateway restart failed; cannot recover from 4006.");
+                            return;
+                        }
+
+                        // 3) Small cooldown so the prior voice session fully retires
+                        await Task.Delay(1000);
+
+                        // 4) One clean retry
+                        var retryClient = await DiscordNetBotManager.JoinVoiceAsync(target, maxRetries: 1);
+                        if (retryClient == null)
+                        {
+                            await ReplyAsync("❌ 4006 recovery retry failed.");
+                            return;
+                        }
+
+                        _audioClients[guild.Id] = retryClient;
+                        await DiscordNetBotManager.SetVoiceConnection(retryClient, target.Id, target.Name);
+                        await ReplyAsync($"✅ Recovered from 4006 and joined **{target.Name}**.");
+                        return;
+                    }
+                    catch (TimeoutException tex)
+                    {
+                        await ReplyAsync($"❌ **Voice handshake timed out:** {tex.Message}");
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        await ReplyAsync($"❌ **Enhanced voice join failed:** {ex.Message}");
+                        return;
+                    }
                 }
 
                 if (audioClient == null)
                 {
-                    Console.WriteLine($"❌ STEP 2: Enhanced voice join returned null");
-                    await ReplyAsync($"❌ **Connection failed:** Enhanced join returned null audio client");
+                    await ReplyAsync("❌ **Connection failed:** no audio client");
                     return;
                 }
 
@@ -378,6 +328,28 @@ namespace Kinectv1.Discord
             }
         }
 
+        private async Task SafeLeaveAsync(SocketGuildUser self)
+        {
+            try
+            {
+                if (self?.VoiceChannel == null) return;
+                var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                Task Handler(SocketUser u, SocketVoiceState before, SocketVoiceState after)
+                {
+                    if (u.Id == self.Id && after.VoiceChannel == null)
+                        tcs.TrySetResult(true);
+                    return Task.CompletedTask;
+                }
+                Context.Client.UserVoiceStateUpdated += Handler;
+                try
+                {
+                    await self.VoiceChannel.DisconnectAsync();
+                    await Task.WhenAny(tcs.Task, Task.Delay(1500));
+                }
+                finally { Context.Client.UserVoiceStateUpdated -= Handler; }
+            }
+            catch { }
+        }
         /// <summary>
         /// Leave the current voice channel - TRULY CLEAR STATE PATTERN
         /// Usage: !leave
@@ -411,44 +383,29 @@ namespace Kinectv1.Discord
                     return;
                 }
 
-                // DON'T REUSE/LINGER: Stop/Dispose audio client if we have it
-                if (_audioClients.TryRemove(guild.Id, out var ac))
-                {
-                    try { await ac.StopAsync(); ac.Dispose(); } catch { /* ignore */ }
-                    Console.WriteLine($"?? Disposed audio client for guild {guild.Name}");
-                }
-
-                // Tell Discord to move the bot out of voice (clears session server-side)
+                // Disconnect first (gateway state null)
                 if (self.VoiceChannel != null)
                 {
                     Console.WriteLine($"?? Disconnecting from voice channel: {self.VoiceChannel.Name}");
-                    
-                    try
-                    {
-                        await self.VoiceChannel.DisconnectAsync();
-                        Console.WriteLine($"? DisconnectAsync completed");
-                    }
+                    try { await self.VoiceChannel.DisconnectAsync(); Console.WriteLine("? DisconnectAsync completed"); }
                     catch (InvalidOperationException opEx) when (opEx.Message.Contains("Client is not logged in"))
-                    {
-                        Console.WriteLine($"?? LEAVE: Discord client was logged out during disconnect - this is normal during shutdown");
-                        await ReplyAsync("? Leave canceled - Discord bot is shutting down.");
-                        return;
-                    }
-                    
-                    // Fix 3: Confirm null-state via event (up to 3s)
+                    { await ReplyAsync("? Leave canceled - Discord bot is shutting down."); return; }
+
                     var clearedTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
                     Task Handler(SocketUser u, SocketVoiceState before, SocketVoiceState after)
-                    {
-                        if (u.Id == self.Id && after.VoiceChannel == null)
-                            clearedTcs.TrySetResult(true);
-                        return Task.CompletedTask;
-                    }
+                    { if (u.Id == self.Id && after.VoiceChannel == null) clearedTcs.TrySetResult(true); return Task.CompletedTask; }
                     Context.Client.UserVoiceStateUpdated += Handler;
                     try { await Task.WhenAny(clearedTcs.Task, Task.Delay(3000)); }
                     finally { Context.Client.UserVoiceStateUpdated -= Handler; }
-                    // Guild-level safety null
                     try { await self.ModifyAsync(x => x.Channel = null); } catch { }
-                    await Task.Delay(250);
+                }
+
+                // Dispose tracked audio client after gateway disconnect
+                if (_audioClients.TryRemove(guild.Id, out var ac))
+                {
+                    try { await ac.StopAsync(); } catch { }
+                    try { ac.Dispose(); } catch { }
+                    Console.WriteLine($"?? Disposed audio client for guild {guild.Name}");
                 }
 
                 await DiscordNetBotManager.OnVoiceChannelLeft();
@@ -687,6 +644,7 @@ namespace Kinectv1.Discord
 
                 embed.AddField($"`{prefix}join <channel>`", "Join voice channel with native audio receiving", true);
                 embed.AddField($"`{prefix}leave`", "Leave current voice channel", true);
+                embed.AddField($"`{prefix}voicereset`", "Hard reset voice session (force close pipes)", true);
                 embed.AddField($"`{prefix}speak <text>`", "Speak text using TTS in voice channel", true);
                 embed.AddField($"`{prefix}testtts`", "Test TTS audio generation and Discord streaming", true);
                 embed.AddField($"`{prefix}testconnection`", "Test Discord voice connection stability", true);
@@ -957,6 +915,91 @@ namespace Kinectv1.Discord
             {
                 await ReplyAsync($"Error: {ex.Message}");
             }
+        }
+
+        /// <summary>
+        /// Force close all voice pipes and reset the Discord voice session
+        /// Usage: !voicereset
+        /// </summary>
+        [Command("voicereset")]
+        [Summary("Force close all voice pipes and reset the Discord voice session")] 
+        public async Task VoiceResetAsync()
+        {
+            var guild = (SocketGuild)Context.Guild;
+            var self = guild.CurrentUser;
+            if (!DiscordNetBotManager.IsRunning)
+            {
+                await ReplyAsync("? Bot not running.");
+                return;
+            }
+            await _discordVoiceOperationLock.WaitAsync();
+            try
+            {
+                await ReplyAsync("🔧 Hard voice reset in progress...");
+
+                // 1. Force close all audio pipes (in/out)
+                await DiscordNetBotManager.ForceCloseAllVoicePipesAsync();
+
+                // 2. Gateway disconnect (if still latched)
+                if (self?.VoiceChannel != null)
+                {
+                    try { await self.VoiceChannel.DisconnectAsync(); } catch { }
+                    var clearedTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    Task Handler(SocketUser u, SocketVoiceState before, SocketVoiceState after)
+                    { if (u.Id == self.Id && after.VoiceChannel == null) clearedTcs.TrySetResult(true); return Task.CompletedTask; }
+                    Context.Client.UserVoiceStateUpdated += Handler;
+                    try { await Task.WhenAny(clearedTcs.Task, Task.Delay(3000)); }
+                    finally { Context.Client.UserVoiceStateUpdated -= Handler; }
+                    try { await self.ModifyAsync(x => x.Channel = null); } catch { }
+                }
+
+                // 3. Cooldown to allow region to retire old session
+                await Task.Delay(2000);
+
+                await ReplyAsync("✅ Voice session hard reset complete. Use !join to reconnect.");
+            }
+            catch (Exception ex)
+            {
+                await ReplyAsync($"❌ Reset failed: {ex.Message}");
+            }
+            finally
+            {
+                _discordVoiceOperationLock.Release();
+            }
+        }
+
+        /// <summary>
+        /// Force-close all voice readers/clients and restart the gateway
+        /// Usage: !clearsession
+        /// </summary>
+        [Command("clearsession")]
+        [Summary("Force-close all voice readers/clients and restart the gateway")] 
+        public async Task ClearSessionAsync()
+        {
+            await _discordVoiceOperationLock.WaitAsync();
+            try
+            {
+                await ReplyAsync("🔧 Clearing voice session and restarting gateway…");
+                await DiscordNetBotManager.ForceCloseAllVoicePipesAsync();
+                await DiscordNetBotManager.CloseGatewayAsync();
+                await Task.Delay(1500);
+                var ok = await DiscordNetBotManager.StartAsync();
+                await ReplyAsync(ok ? "✅ Gateway restarted." : "❌ Failed to restart gateway.");
+            }
+            catch (Exception ex)
+            {
+                await ReplyAsync($"❌ Clear session error: {ex.Message}");
+            }
+            finally { _discordVoiceOperationLock.Release(); }
+        }
+
+        [Command("tokencheck")]
+        [Summary("Detect common multi-process token conflicts")] 
+        public async Task TokenCheckAsync()
+        {
+            var client = DiscordNetBotManager.GetClient();
+            var info = client != null ? $"Gateway state: {client.ConnectionState}" : "No client";
+            await ReplyAsync($"🔎 {info}\nIf another process uses this token, 4006 loops can occur. Ensure only one instance runs.");
         }
     }
 }
