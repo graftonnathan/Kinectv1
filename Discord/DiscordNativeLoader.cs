@@ -46,18 +46,21 @@ namespace Kinectv1.Discord
                         // 1. Main application directory (runtime location)
                         new { Name = "Application Directory", OpusPath = Path.Combine(appDir, "opus.dll"), SodiumPath = Path.Combine(appDir, "libsodium.dll") },
                         
-                        // 2. Project libs directory (new preferred location for fresh copies)
+                        // 2. Preferred repository location
+                        new { Name = "Audio lib Directory", OpusPath = Path.Combine(projectRoot, "lib", "audio", "opus.dll"), SodiumPath = Path.Combine(projectRoot, "lib", "audio", "libsodium.dll") },
+                        
+                        // 3. Project libs directory (older location kept for compatibility)
                         new { Name = "Project libs Directory", OpusPath = Path.Combine(projectRoot, "libs", "opus.dll"), SodiumPath = Path.Combine(projectRoot, "libs", "libsodium.dll") },
                         
-                        // 3. Runtimes directory (NuGet standard location)
+                        // 4. Runtimes directory (NuGet standard location)
                         new { Name = "Runtimes Directory", OpusPath = Path.Combine(appDir, "runtimes", "win-x64", "native", "opus.dll"), SodiumPath = Path.Combine(appDir, "runtimes", "win-x64", "native", "libsodium.dll") },
                         
-                        // 4. Old lib directory (fallback for old installations)
+                        // 5. Old lib directory (fallback for old installations)
                         new { Name = "Legacy lib Directory", OpusPath = Path.Combine(projectRoot, "lib", "libopus.dll"), SodiumPath = Path.Combine(projectRoot, "lib", "libsodium.dll") },
 
-                        // 5. User-provided custom folder: lib\\discord (common mistake) - handle both names
-                        new { Name = "Custom lib\\discord Directory", OpusPath = Path.Combine(projectRoot, "lib", "discord", "opus.dll"), SodiumPath = Path.Combine(projectRoot, "lib", "discord", "libsodium.dll") },
-                        new { Name = "Custom lib\\discord Directory (libopus)", OpusPath = Path.Combine(projectRoot, "lib", "discord", "libopus.dll"), SodiumPath = Path.Combine(projectRoot, "lib", "discord", "libsodium.dll") }
+                        // 6. Legacy custom folder: lib\\discord (kept for backward compatibility)
+                        new { Name = "Legacy lib\\discord Directory", OpusPath = Path.Combine(projectRoot, "lib", "discord", "opus.dll"), SodiumPath = Path.Combine(projectRoot, "lib", "discord", "libsodium.dll") },
+                        new { Name = "Legacy lib\\discord Directory (libopus)", OpusPath = Path.Combine(projectRoot, "lib", "discord", "libopus.dll"), SodiumPath = Path.Combine(projectRoot, "lib", "discord", "libsodium.dll") }
                     };
                     
                     Console.WriteLine($"?? Searching for native libraries in {libraryLocations.Length} locations...");
@@ -166,8 +169,7 @@ namespace Kinectv1.Discord
                         Console.WriteLine("");
                         Console.WriteLine("?? Manual installation alternative:");
                         Console.WriteLine("   Download from: https://github.com/discord-net/Discord.Net/tree/dev/voice-natives");
-                        Console.WriteLine("   Place files in: libs\\ and bin\\Debug\\net481\\");
-                        Console.WriteLine("   Or place in: lib\\discord\\ (we now search this too)");
+                        Console.WriteLine("   Place files in: lib\\audio\\ (preferred) and/or bin\\Debug\\net481\\");
                     }
                     
                     return _librariesLoaded;

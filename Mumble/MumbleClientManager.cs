@@ -1,9 +1,7 @@
 using System;
-using System.Linq;
-using System.Net;
-using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
+using MumbleSharp;
 
 namespace Kinectv1.Mumble
 {
@@ -13,22 +11,34 @@ namespace Kinectv1.Mumble
         public static SemaphoreSlim VoiceOpLock => _voiceOpLock;
 
         public static event Action<string> OnStatusChanged;
-        public static event Action<float> OnRmsLevel;
+        public static event Action<float> OnRmsLevel; // kept for UI compatibility (not used)
         public static event Action<string> OnError;
 
         private static volatile bool _isRunning = false;
         private static volatile bool _isConnected = false;
         private static CancellationTokenSource _cts;
 
-        private static MumbleSharp.MumbleConnection _conn;
-        private static MumbleSimpleClient _proto;
+        // Console demo hosting
+        private static BasicMumbleProtocol _protocol;
+        private static MumbleConnection _conn;
+        private static Thread _pump;
+        private static volatile bool _run;
+
+        // Expose last-used settings for GUI
+        public static string CurrentHost { get; private set; }
+        public static int CurrentPort { get; private set; }
+        public static string CurrentUsername { get; private set; }
+        public static string CurrentChannel { get; private set; }
+        public static bool CurrentSelfMute { get; private set; }
+        public static bool CurrentSelfDeaf { get; private set; }
 
         public static bool IsRunning => _isRunning;
         public static bool IsConnected => _isConnected;
 
         public static Task<bool> StartAsync()
         {
-            _isRunning = true; OnStatusChanged?.Invoke("Initialized");
+            _isRunning = true;
+            OnStatusChanged?.Invoke("Initialized");
             return Task.FromResult(true);
         }
 
@@ -46,53 +56,27 @@ namespace Kinectv1.Mumble
                 if (string.IsNullOrWhiteSpace(host)) { OnError?.Invoke("Mumble host is empty"); return false; }
                 if (port <= 0) { OnError?.Invoke("Mumble port must be > 0"); return false; }
 
+                // Save for GUI
+                CurrentHost = host; CurrentPort = port; CurrentUsername = username; CurrentChannel = channel;
+                CurrentSelfMute = selfMute; CurrentSelfDeaf = selfDeaf;
+
                 _cts?.Cancel();
                 _cts = new CancellationTokenSource();
 
-                // Build with IPv4 endpoint, then connect (sample pattern)
-                var ip4 = Dns.GetHostAddresses(host).First(a => a.AddressFamily == AddressFamily.InterNetwork);
-                var ep = new IPEndPoint(ip4, port);
-
-                _proto = new MumbleSimpleClient();
-                _proto.OnRms += (speaker, rms) => { try { OnRmsLevel?.Invoke(rms); } catch { } };
-                _proto.OnPcm16kFrame += (speaker, frame16k) =>
-                {
-                    try
-                    {
-                        if (frame16k == null || frame16k.Length == 0) return;
-                        var bytes = new byte[frame16k.Length * 2];
-                        Buffer.BlockCopy(frame16k, 0, bytes, 0, bytes.Length);
-                        if (VoiceRecognizer.IsReady())
-                        {
-                            SpeakerIdentifier.SetDiscordSpeakerHint(speaker);
-                            VoiceRecognizer.ProcessExternalAudio(bytes, bytes.Length, $"Mumble:{speaker}");
-                        }
-                    }
-                    catch (Exception ex) { OnError?.Invoke($"Ingest error: {ex.Message}"); }
-                };
-
-                _conn = new MumbleSharp.MumbleConnection(ep, _proto);
-
+                // Run the console protocol
+                _protocol = new MumbleClient.ConsoleMumbleProtocol();
+                _conn = new MumbleConnection(host, port, _protocol);
                 _conn.Connect(username ?? string.Empty, serverPassword ?? string.Empty, Array.Empty<string>(), host);
 
-                // Start pump loop like the sample
-                _ = Task.Run(() =>
+                _run = true;
+                _pump = new Thread(() =>
                 {
-                    try
+                    while (_run && _conn.State != ConnectionStates.Disconnected)
                     {
-                        while (_conn != null && _conn.State != MumbleSharp.ConnectionStates.Disconnected)
-                        {
-                            if (_conn.Process())
-                                Thread.Yield();
-                            else
-                                Thread.Sleep(1);
-                        }
+                        if (!_conn.Process()) Thread.Sleep(1);
                     }
-                    catch (Exception ex)
-                    {
-                        OnError?.Invoke($"Pump error: {ex.Message}");
-                    }
-                }, _cts.Token);
+                }) { IsBackground = true, Name = "MumblePump" };
+                _pump.Start();
 
                 _isConnected = true;
                 OnStatusChanged?.Invoke($"Connected to {host}:{port} as {username}");
@@ -112,9 +96,11 @@ namespace Kinectv1.Mumble
             try
             {
                 _cts?.Cancel();
+                _run = false;
+                try { _pump?.Join(500); } catch { }
                 try { _conn?.Close(); } catch { }
-                _conn = null;
-                _proto = null;
+                _protocol = null; _conn = null; _pump = null;
+
                 _isConnected = false;
                 OnStatusChanged?.Invoke("Disconnected");
                 await Task.Delay(50);
@@ -125,7 +111,6 @@ namespace Kinectv1.Mumble
         public static string GetStatusSummary() => $"Running: {_isRunning}, Connected: {_isConnected}";
         public static string GetConnectionStatus() => _isConnected ? "Connected" : "Disconnected";
 
-        // Explicitly not implementing TTS send here in the minimal refactor
         public static Task<bool> SendTtsToMumbleAsync(string text, string speakerRefId = null, CancellationToken ct = default)
             => Task.FromResult(false);
     }

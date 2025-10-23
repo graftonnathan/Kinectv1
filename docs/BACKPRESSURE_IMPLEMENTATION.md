@@ -1,105 +1,47 @@
 # Backpressure Resilience Implementation
 
-This document demonstrates the backpressure resilience implementation for audio and LLM pipelines in the Kinectv1 application.
+This document summarizes backpressure controls for audio and LLM‑adjacent pipelines.
 
-## Implementation Overview
+## VoiceRecognizer Audio Pipelines
+- External audio queue (Discord/system) bounded (50 items)
+- Per-user Discord queues bounded (25 items each)
+- Drop policy: oldest first
+- Metrics: total external drops, per‑user drops
+- Preroll buffer (10 * 50ms frames) retained outside bounded queues
 
-The backpressure implementation replaces unbounded `ConcurrentQueue` instances with bounded `BlockingCollection` instances to prevent runaway memory usage during burst conditions.
+### Barge‑In Interaction
+When `Asr.BargeInEnabled` is false, incoming frames during local TTS playback are stored only in preroll (not fed to recognizer) and do not contribute to queue pressure. When true, first VAD activation cancels TTS (via controller) and normal processing resumes immediately.
 
-### Key Components Modified
+## Local TTS Playback
+Previously a multi‑item TTS job queue existed. Now local synthesis/playback uses `TtsPlaybackController`:
+- Single active utterance (implicit queue length = 1)
+- New request immediately cancels prior (no accumulation)
+- No backpressure counters required (work is discarded early)
+- Cancellation marks grace window for trimming logic (prevents clipped starts)
 
-#### 1. VoiceRecognizer Audio Pipelines
-- **External Audio Queue**: Limited to 50 items (~1 second of 20ms chunks)
-- **Per-User Discord Queues**: Limited to 25 items per user (~0.5 seconds per user)
-- **Drop Policy**: Oldest-first eviction when capacity is reached
-- **Metrics**: Tracks total audio drops and Discord drops separately
+## Discord TTS (If Enabled)
+If remote / Discord TTS queuing persists, retain bounded channel with drop‑oldest policy (see actual implementation in Discord manager). Otherwise, documentation of multi‑slot queue is legacy.
 
-#### 2. DiscordNetBotManager TTS Pipeline  
-- **TTS Job Queue**: Limited to 10 pending TTS requests
-- **Drop Policy**: Oldest-first eviction with proper job cancellation
-- **Metrics**: Tracks total TTS job drops
-
-## Configuration
-
+## Configuration Constants (Representative)
 ```csharp
-// VoiceRecognizer queue limits
-private const int MAX_EXTERNAL_QUEUE_SIZE = 50;  // ~1 second of audio
-private const int MAX_PER_USER_QUEUE_SIZE = 25;  // ~0.5 seconds per user
-
-// DiscordNetBotManager TTS queue limit  
-private const int MAX_TTS_QUEUE_SIZE = 10;       // 10 pending TTS jobs
+const int MAX_EXTERNAL_QUEUE_SIZE = 50;
+const int MAX_PER_USER_QUEUE_SIZE = 25;
+// Local TTS: implicit single slot via controller
 ```
 
-## Testing the Implementation
-
-### Manual Testing
-
-```csharp
-// Test audio backpressure
-BackpressureTest.TestAudioBackpressure();
-
-// Test TTS backpressure  
-await BackpressureTest.TestTtsBackpressureAsync();
-
-// Run comprehensive tests
-await BackpressureTest.RunBackpressureTestsAsync();
-```
-
-### Monitoring Metrics
-
-```csharp
-// Get audio queue metrics
-var (externalCount, discordQueues, discordItems, audioDrops, discordDrops) = 
-    VoiceRecognizer.GetBackpressureMetrics();
-
-```
-
-## Telemetry Integration
-
-Backpressure metrics are automatically included in the health snapshot telemetry:
-
-```json
-{
-  "external_queue_count": 0,
-  "discord_queue_count": 2,
-  "discord_queue_items": 5,
-  "audio_drops_total": 12,
-  "discord_drops_total": 3
-}
-```
+## Telemetry
+Include queue depth + drop counters plus (optionally) active TTS flag for correlation.
 
 ## Expected Behavior
+| Scenario | Result |
+|----------|--------|
+| Sustained audio burst | Oldest frames dropped, recent preserved |
+| Rapid successive TTS calls | Only last utterance synthesized/played |
+| Barge‑in disabled, user speaks during TTS | Speech buffered in preroll; recognized after playback |
+| Barge‑in enabled, user speaks | Active TTS cancelled instantly |
 
-### Normal Operation
-- Queues operate well below capacity limits
-- No drops occur during typical usage
-- Processing latency remains low
-
-### Burst Conditions  
-- Queues fill to capacity during audio/TTS bursts
-- Oldest items are evicted when limits are reached
-- Warning messages logged with drop counts
-- System remains responsive and memory usage stays bounded
-
-### Recovery
-- Queues automatically drain as processing catches up
-- Drop rates decrease as burst subsides
-- System returns to normal operation
-
-## Key Benefits
-
-1. **Memory Protection**: Prevents unbounded queue growth
-2. **Responsive UI**: System stays responsive during bursts  
-3. **Clear Observability**: Drop metrics and logging provide visibility
-4. **Graceful Degradation**: Oldest-first eviction preserves recent data
-5. **Proper Cleanup**: BlockingCollection disposal prevents resource leaks
-
-## Validation
-
-The implementation has been tested for:
-- ✅ Bounded queue capacity enforcement
-- ✅ Oldest-first drop policy implementation  
-- ✅ Proper cancellation token support
-- ✅ Clean resource disposal on shutdown
-- ✅ Telemetry integration for monitoring
-- ✅ Thread-safe queue operations
+## Benefits
+- Memory bounded
+- Latency predictable
+- Cancellation prevents wasted synthesis
+- Simple mental model (no deep queue tuning for TTS)

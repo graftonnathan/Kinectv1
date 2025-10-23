@@ -9,6 +9,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
+using Kinectv1; // for TtsPlaybackController
+using NAudio.Wave; // added for streaming playback
 
 namespace Kinectv1.Tts
 {
@@ -56,7 +58,7 @@ namespace Kinectv1.Tts
         private static string _baseDir = Path.Combine("models", "tts", "kokoro");
         private static string _modelPath = Path.Combine("models", "tts", "kokoro", "onnx", "model_q8f16.onnx");
 
-        // Vocab + voices
+        // Vocab + voices 
         private static readonly Dictionary<string, int> _vocab = new Dictionary<string, int>();
         private static readonly Dictionary<string, string> _voiceFiles = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private static readonly Dictionary<string, float[]> _voiceBinCache = new Dictionary<string, float[]>(StringComparer.OrdinalIgnoreCase);
@@ -74,6 +76,186 @@ namespace Kinectv1.Tts
         // --- Public API ---
         public static int GetSampleRate() => SampleRate;
         public static bool IsEnabled() { try { return Kinectv1.App.SettingsProvider?.Current?.Tts?.Enabled ?? false; } catch { return false; } }
+
+        // LEGACY-COMPAT: new helper used by TtsPlaybackController for preemptive (non-streaming) local speak (now streaming)
+        private static async Task<bool> LocalSpeakAsync(string text, string speakerName, CancellationToken ct)
+        {
+            var hash = ShortHash(text);
+            Log("LOCAL", $"(Controller) Speak request len={text?.Length} hash={hash}");
+            if (string.IsNullOrWhiteSpace(text)) return false;
+            if (!IsEnabled()) { OnTtsError?.Invoke("TTS disabled in settings"); return false; }
+            if (!EnsureInitialized()) { OnTtsError?.Invoke("TTS init failed"); return false; }
+
+            // Create linked CTS so external cancel (barge-in) works
+            CancellationTokenSource linked = null;
+            CancellationToken lct;
+            lock (_speakLock)
+            {
+                linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                _currentLocalSpeakCts = linked;
+                lct = linked.Token;
+            }
+
+            try
+            {
+                lct.ThrowIfCancellationRequested();
+                OnTtsSpeakingStarted?.Invoke();
+
+                var snap = Kinectv1.App.SettingsProvider?.Current?.Tts;
+                if (snap == null || !snap.Enabled) return false;
+
+                // Resolve speaker (same logic as GenerateAudioInternal)
+                string voicePath = null;
+                if (!string.IsNullOrWhiteSpace(speakerName) && _voiceFiles.TryGetValue(speakerName, out var vp)) voicePath = vp;
+                else if (!string.IsNullOrWhiteSpace(snap.Speaker) && _voiceFiles.TryGetValue(snap.Speaker, out var vs)) voicePath = vs;
+                else if (_voiceFiles.Count > 0) voicePath = _voiceFiles.Values.First();
+                if (voicePath == null) { OnTtsError?.Invoke("Voice style not found"); return false; }
+
+                var segments = SplitIntoSegments(text);
+                if (segments.Count == 0) return false;
+                double? configuredVol = null; try { configuredVol = snap.LocalVolume; } catch { }
+                float volume = (float)Math.Max(0.0, configuredVol.HasValue ? configuredVol.Value : 1.0);
+
+                // Prepare playback objects
+                var waveFormat = new WaveFormat(SampleRate, 16, 1);
+                var provider = new BufferedWaveProvider(waveFormat)
+                {
+                    DiscardOnBufferOverflow = false,
+                    BufferDuration = TimeSpan.FromSeconds(Math.Min(30, Math.Max(5, segments.Count * 3))) // heuristic
+                };
+                using var waveOut = new WaveOutEvent { DesiredLatency = 100 };
+                try { waveOut.Init(provider); } catch (Exception ex) { OnTtsError?.Invoke("Audio init failed: " + ex.Message); return false; }
+                var playbackStoppedTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                waveOut.PlaybackStopped += (s, e) => playbackStoppedTcs.TrySetResult(true);
+                waveOut.Play();
+
+                bool anyQueued = false;
+
+                // Helper local function to queue float audio (chunked with backpressure)
+                void QueueFloatAudio(float[] arr)
+                {
+                    if (arr == null || arr.Length == 0) return;
+                    const int chunkSamples = 2048; // ~85ms at 24kHz
+                    int pos = 0;
+                    var pcmChunk = new byte[chunkSamples * 2];
+                    while (pos < arr.Length && !lct.IsCancellationRequested)
+                    {
+                        int take = Math.Min(chunkSamples, arr.Length - pos);
+                        int neededBytes = take * 2;
+                        // Backpressure: wait until there is room for this chunk
+                        while (!lct.IsCancellationRequested && provider.BufferedBytes > provider.BufferLength - neededBytes)
+                        {
+                            try { Task.Delay(15, lct).GetAwaiter().GetResult(); } catch (OperationCanceledException) { break; }
+                        }
+                        if (lct.IsCancellationRequested) break;
+                        int bpLocal = 0;
+                        for (int i = 0; i < take; i++)
+                        {
+                            float v = arr[pos + i] * volume;
+                            if (v > 1f) v = 1f; else if (v < -1f) v = -1f;
+                            short s16 = (short)Math.Round(v * 32767f);
+                            pcmChunk[bpLocal++] = (byte)(s16 & 0xFF);
+                            pcmChunk[bpLocal++] = (byte)((s16 >> 8) & 0xFF);
+                        }
+                        provider.AddSamples(pcmChunk, 0, neededBytes);
+                        anyQueued = true;
+                        pos += take;
+                    }
+                }
+
+                for (int i = 0; i < segments.Count; i++)
+                {
+                    lct.ThrowIfCancellationRequested();
+                    var seg = segments[i];
+                    var t = seg.Trim();
+                    if (t == "." || t == "…")
+                    {
+                        int dots = 1;
+                        while (t == "." && i + dots < segments.Count && segments[i + dots].Trim() == ".") dots++;
+                        if (snap.MinClausePaddingMs > 0)
+                        {
+                            int padSamples = (int)Math.Round(SampleRate * (snap.MinClausePaddingMs / 100.0) / 10.0);
+                            padSamples = (int)Math.Round(SampleRate * (snap.MinClausePaddingMs / 1000.0));
+                            if (padSamples > 0) QueueFloatAudio(new float[padSamples]);
+                        }
+                        i += dots - 1;
+                        continue;
+                    }
+                    Log("SEG", $"Stream synth {i + 1}/{segments.Count} chars={seg.Length}");
+                    var segAudio = SynthesizeOne(seg, voicePath, snap);
+                    lct.ThrowIfCancellationRequested();
+                    if (segAudio != null && segAudio.Length > 0)
+                    {
+                        QueueFloatAudio(segAudio);
+                    }
+                    // Inter-segment padding (silence) if not last
+                    if (i < segments.Count - 1 && snap.MinClausePaddingMs > 0)
+                    {
+                        int padSamples = (int)Math.Round(SampleRate * (snap.MinClausePaddingMs / 1000.0));
+                        if (padSamples > 0)
+                        {
+                            var pad = new float[padSamples]; // zeroed
+                            QueueFloatAudio(pad);
+                        }
+                    }
+                }
+
+                lct.ThrowIfCancellationRequested();
+
+                // Wait for provider to drain
+                while (!lct.IsCancellationRequested)
+                {
+                    if (provider.BufferedBytes == 0)
+                        break;
+                    await Task.Delay(40, lct).ConfigureAwait(false);
+                }
+
+                // Stop playback gracefully
+                try { waveOut.Stop(); } catch { }
+                // Ensure playback stopped event processed
+                try { await Task.WhenAny(playbackStoppedTcs.Task, Task.Delay(200)).ConfigureAwait(false); } catch { }
+
+                if (lct.IsCancellationRequested) return false;
+                if (!anyQueued) return false;
+                OnTtsSpeakingFinished?.Invoke();
+                Log("LOCAL", $"Stream speak complete hash={hash}");
+                return true;
+            }
+            catch (OperationCanceledException)
+            {
+                Log("LOCAL", "Cancelled (stream)");
+                return false;
+            }
+            catch (Exception ex)
+            {
+                Log("ERROR", "Streaming local speak error " + ex.Message);
+                OnTtsError?.Invoke(ex.Message);
+                return false;
+            }
+            finally
+            {
+                lock (_speakLock)
+                {
+                    if (_currentLocalSpeakCts == linked)
+                        _currentLocalSpeakCts = null;
+                }
+                try { linked?.Dispose(); } catch { }
+            }
+        }
+
+        /// <summary>
+        /// Convert text to speech locally with automatic preemption using TtsPlaybackController (legacy Coqui-compatible API).
+        /// </summary>
+        public static Task<bool> SpeakWithPreemptionAsync(string text, string speakerName = null)
+        {
+            return TtsPlaybackController.StartUtterance(text, speakerName, LocalSpeakAsync);
+        }
+
+        // Streaming variant routed through playback controller (minimal wrapper for legacy callers)
+        public static Task<bool> SpeakStreamingWithPreemptionControllerAsync(string text, string speakerName = null)
+        {
+            return TtsPlaybackController.StartUtterance(text, speakerName, LocalSpeakAsync);
+        }
 
         public static bool RecreateSessionFromSettings()
         {
@@ -337,6 +519,8 @@ namespace Kinectv1.Tts
             text = text.Replace('\u2018', '\'').Replace('\u2019', '\'');
             text = text.Replace("?", "-").Replace("?", "-");
             text = text.Replace("?", "...");
+            // Strip characters that confuse tokenizer
+            text = text.Replace("\"", string.Empty).Replace("*", string.Empty);
             text = Regex.Replace(text, @"[\x00-\x1F\x7F]", " ");
             text = Regex.Replace(text, @"\s+", " ").Trim();
             return text;
@@ -360,10 +544,9 @@ namespace Kinectv1.Tts
                 if (_vocab.TryGetValue(ch.ToString(), out int id)) idsInner.Add(id);
             }
             if (idsInner.Count == 0) return null;
-            if (idsInner.Count > 510) idsInner.RemoveRange(510, idsInner.Count - 510); // leave space for pads
+            // Removed previous hard trim at 510 to allow full tokenization; chunking handled in SynthesizeOne.
             var ids = new long[idsInner.Count + 2];
             for (int i = 0; i < idsInner.Count; i++) ids[i + 1] = idsInner[i];
-            // pads already zero
             return ids;
         }
 
@@ -459,6 +642,18 @@ namespace Kinectv1.Tts
             for (int i = 0; i < allSegments.Count; i++)
             {
                 var seg = allSegments[i];
+                var t = seg.Trim();
+                if (t == "." || t == "…")
+                {
+                    int dots = 1; while (t == "." && i + dots < allSegments.Count && allSegments[i + dots].Trim() == ".") dots++;
+                    if (snap.MinClausePaddingMs > 0)
+                    {
+                        int padSamples = (int)Math.Round(SampleRate * (snap.MinClausePaddingMs / 1000.0));
+                        if (padSamples > 0) final.AddRange(new float[padSamples]);
+                    }
+                    i += dots - 1; // skip dot run
+                    continue;
+                }
                 Log("SEG", $"Synth {i+1}/{allSegments.Count} chars={seg.Length}");
                 var audio = SynthesizeOne(seg, voicePath, snap);
                 Log("SEG", $"Done {i+1}/{allSegments.Count} samples={audio.Length}");
@@ -486,35 +681,93 @@ namespace Kinectv1.Tts
             if (string.IsNullOrWhiteSpace(text)) return Array.Empty<float>();
             var ipa = GetIpa(text);
             if (string.IsNullOrWhiteSpace(ipa)) { OnTtsError?.Invoke("IPA generation failed"); Log("SEG", $"IPA fail hash={segHash}"); return Array.Empty<float>(); }
-            var ids = MapIpaToIds(ipa);
-            if (ids == null || ids.Length < 2) { OnTtsError?.Invoke("Tokenizer produced zero tokens"); Log("SEG", $"Token fail hash={segHash}"); return Array.Empty<float>(); }
-            int innerCount = Math.Max(0, ids.Length - 2);
-            var style = LoadStyle(voicePath, innerCount);
-            if (style == null) { OnTtsError?.Invoke("Style vector load failed"); Log("SEG", $"Style fail hash={segHash}"); return Array.Empty<float>(); }
 
-            var inputIds = new DenseTensor<long>(new[] { 1, ids.Length });
-            for (int i = 0; i < ids.Length; i++) inputIds[0, i] = ids[i];
-            for (int i = 0; i < 256; i++) _reuseStyleTensor[0, i] = style[i];
-            _reuseSpeedTensor[0] = _speed <= 0 ? 1.0f : _speed;
-
-            float[] audio;
-            lock (_reuseInputs)
+            // Map IPA to full inner token list (no truncation) for potential chunking
+            var innerTokens = new List<int>();
+            foreach (var ch in ipa)
             {
-                _reuseInputs.Clear();
-                _reuseInputs.Add(NamedOnnxValue.CreateFromTensor("input_ids", inputIds));
-                _reuseInputs.Add(NamedOnnxValue.CreateFromTensor("style", _reuseStyleTensor));
-                _reuseInputs.Add(NamedOnnxValue.CreateFromTensor("speed", _reuseSpeedTensor));
-                using var results = _session.Run(_reuseInputs);
-                var first = results.First().Value as Tensor<float>;
-                if (first == null) return Array.Empty<float>();
-                if (first.Rank == 2)
-                {
-                    int n = first.Dimensions[1];
-                    audio = new float[n];
-                    for (int j = 0; j < n; j++) audio[j] = first[0, j];
-                }
-                else audio = first.ToArray();
+                if (char.IsWhiteSpace(ch)) continue;
+                if (_vocab.TryGetValue(ch.ToString(), out int id)) innerTokens.Add(id);
             }
+            if (innerTokens.Count == 0) { OnTtsError?.Invoke("Tokenizer produced zero tokens"); Log("SEG", $"Token fail hash={segHash}"); return Array.Empty<float>(); }
+
+            const int MAX_INNER = 510; // model limit for inner tokens (pads at start/end)
+            bool needsChunking = innerTokens.Count > MAX_INNER;
+            float[] audio;
+            if (!needsChunking)
+            {
+                int innerCount = innerTokens.Count;
+                var style = LoadStyle(voicePath, innerCount);
+                if (style == null) { OnTtsError?.Invoke("Style vector load failed"); Log("SEG", $"Style fail hash={segHash}"); return Array.Empty<float>(); }
+                var ids = new DenseTensor<long>(new[] { 1, innerCount + 2 });
+                ids[0, 0] = 0; ids[0, innerCount + 1] = 0;
+                for (int i = 0; i < innerCount; i++) ids[0, i + 1] = innerTokens[i];
+                for (int i = 0; i < 256; i++) _reuseStyleTensor[0, i] = style[i];
+                _reuseSpeedTensor[0] = _speed <= 0 ? 1.0f : _speed;
+                lock (_reuseInputs)
+                {
+                    _reuseInputs.Clear();
+                    _reuseInputs.Add(NamedOnnxValue.CreateFromTensor("input_ids", ids));
+                    _reuseInputs.Add(NamedOnnxValue.CreateFromTensor("style", _reuseStyleTensor));
+                    _reuseInputs.Add(NamedOnnxValue.CreateFromTensor("speed", _reuseSpeedTensor));
+                    using var results = _session.Run(_reuseInputs);
+                    var first = results.First().Value as Tensor<float>;
+                    if (first == null) return Array.Empty<float>();
+                    if (first.Rank == 2)
+                    {
+                        int n = first.Dimensions[1];
+                        audio = new float[n];
+                        for (int j = 0; j < n; j++) audio[j] = first[0, j];
+                    }
+                    else audio = first.ToArray();
+                }
+            }
+            else
+            {
+                Log("SEG", $"Chunking long segment hash={segHash} totalTokens={innerTokens.Count}");
+                var final = new List<float>(innerTokens.Count * 40); // rough reserve
+                int chunks = 0;
+                for (int offset = 0; offset < innerTokens.Count; offset += MAX_INNER)
+                {
+                    int take = Math.Min(MAX_INNER, innerTokens.Count - offset);
+                    var style = LoadStyle(voicePath, take);
+                    if (style == null) { OnTtsError?.Invoke("Style vector load failed (chunk)"); Log("SEG", $"Style fail (chunk) hash={segHash} off={offset}"); break; }
+                    var ids = new DenseTensor<long>(new[] { 1, take + 2 });
+                    ids[0, 0] = 0; ids[0, take + 1] = 0;
+                    for (int i = 0; i < take; i++) ids[0, i + 1] = innerTokens[offset + i];
+                    for (int i = 0; i < 256; i++) _reuseStyleTensor[0, i] = style[i];
+                    _reuseSpeedTensor[0] = _speed <= 0 ? 1.0f : _speed;
+                    float[] chunkAudio;
+                    lock (_reuseInputs)
+                    {
+                        _reuseInputs.Clear();
+                        _reuseInputs.Add(NamedOnnxValue.CreateFromTensor("input_ids", ids));
+                        _reuseInputs.Add(NamedOnnxValue.CreateFromTensor("style", _reuseStyleTensor));
+                        _reuseInputs.Add(NamedOnnxValue.CreateFromTensor("speed", _reuseSpeedTensor));
+                        using var results = _session.Run(_reuseInputs);
+                        var first = results.First().Value as Tensor<float>;
+                        if (first == null) break;
+                        if (first.Rank == 2)
+                        {
+                            int n = first.Dimensions[1];
+                            chunkAudio = new float[n];
+                            for (int j = 0; j < n; j++) chunkAudio[j] = first[0, j];
+                        }
+                        else chunkAudio = first.ToArray();
+                    }
+                    if (chunkAudio != null && chunkAudio.Length > 0) final.AddRange(chunkAudio);
+                    if (offset + take < innerTokens.Count)
+                    {
+                        // small inter-chunk pad (15ms) to avoid discontinuity
+                        int padSamples = (int)(SampleRate * 0.015);
+                        final.AddRange(new float[padSamples]);
+                    }
+                    chunks++;
+                }
+                audio = final.Count > 0 ? final.ToArray() : Array.Empty<float>();
+                Log("SEG", $"Chunk synthesis complete hash={segHash} chunks={chunks} samples={audio.Length}");
+            }
+
             if (audio == null || audio.Length == 0) return Array.Empty<float>();
 
             bool grace = RecentlyCancelled();
@@ -541,10 +794,10 @@ namespace Kinectv1.Tts
             }
             if (snap.MinClausePaddingMs > 0 && SplitIntoSegments(text).Count <= 1)
             {
-                int padSamples = (int)Math.Round(SampleRate * (snap.MinClausePaddingMs / 1000.0));
-                if (padSamples > 0)
+                int padSamples2 = (int)Math.Round(SampleRate * (snap.MinClausePaddingMs / 1000.0));
+                if (padSamples2 > 0)
                 {
-                    var padded = new float[audio.Length + padSamples];
+                    var padded = new float[audio.Length + padSamples2];
                     Array.Copy(audio, padded, audio.Length);
                     audio = padded;
                 }
@@ -562,7 +815,7 @@ namespace Kinectv1.Tts
             foreach (var ch in text)
             {
                 sb.Append(ch);
-                if (ch == '.' || ch == '!' || ch == '?')
+                if (ch == '.' || ch == '!' || ch == '?' || ch == '…')
                 {
                     var seg = sb.ToString().Trim();
                     if (seg.Length > 0) segments.Add(seg);
@@ -591,77 +844,6 @@ namespace Kinectv1.Tts
                     return Array.Empty<float>();
                 }
             }, ct);
-        }
-
-        public static async Task<bool> SpeakStreamingWithPreemptionAsync(string text, string speakerName = null)
-        {
-            var hash = ShortHash(text);
-            Log("LOCAL", $"Speak request len={text?.Length} hash={hash}");
-            if (string.IsNullOrWhiteSpace(text)) return false;
-            if (!IsEnabled()) { OnTtsError?.Invoke("TTS disabled in settings"); return false; }
-            CancellationTokenSource localCts = null;
-            try
-            {
-                // Replace previous CTS (barge-in)
-                lock (_speakLock)
-                {
-                    var prev = _currentLocalSpeakCts;
-                    _currentLocalSpeakCts = new CancellationTokenSource();
-                    localCts = _currentLocalSpeakCts;
-                    if (prev != null)
-                    {
-                        try { prev.Cancel(); } catch { }
-                        try { prev.Dispose(); } catch { }
-                        Log("LOCAL", "Preempt previous");
-                    }
-                }
-
-                OnTtsSpeakingStarted?.Invoke();
-                try { Console.WriteLine($"[TTS][Local] Generate start chars={text.Length}"); } catch { }
-                var audio = await GenerateAudioDataAsync(text, speakerName, localCts.Token).ConfigureAwait(false);
-                if (localCts.IsCancellationRequested)
-                {
-                    Log("LOCAL", "Cancelled post-generate");
-                    return false;
-                }
-                Log("LOCAL", $"Generated samples={audio?.Length ?? 0} hash={hash}");
-                var vol = Math.Max(0f, (float)(Kinectv1.App.SettingsProvider?.Current?.Tts?.LocalVolume ?? 1.0));
-                if (vol != 1f) for (int i = 0; i < audio.Length; i++) audio[i] *= vol;
-                try { Console.WriteLine($"[TTS][Local] Playback start samples={audio.Length} vol={vol:F2}"); } catch { }
-                await AudioDeviceManager.PlayLocallyAsync(audio, SampleRate, localCts.Token).ConfigureAwait(false);
-                if (localCts.IsCancellationRequested)
-                {
-                    Log("LOCAL", "Cancelled after playback task");
-                    return false;
-                }
-                Log("LOCAL", "Playback complete");
-                OnTtsSpeakingFinished?.Invoke();
-                return true;
-            }
-            catch (OperationCanceledException)
-            {
-                Log("LOCAL", "Playback OCE");
-                return false;
-            }
-            catch (Exception ex)
-            {
-                Log("ERROR", "Local speak error " + ex.Message);
-                OnTtsError?.Invoke(ex.Message);
-                return false;
-            }
-            finally
-            {
-                if (localCts != null)
-                {
-                    bool wasCancelled = localCts.IsCancellationRequested;
-                    lock (_speakLock)
-                    {
-                        if (_currentLocalSpeakCts == localCts) _currentLocalSpeakCts = null;
-                    }
-                    try { localCts.Dispose(); } catch { }
-                    if (wasCancelled) Log("LOCAL", "Finalize: CTS cancelled");
-                }
-            }
         }
     }
 }

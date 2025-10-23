@@ -20,6 +20,9 @@ namespace Kinectv1.UI.Settings
         {
             InitializeComponent();
             Loaded += OllamaSettingsView_Loaded;
+            // Toggle enablement to follow schema-like pattern (label on left, control on right)
+            OllamaSpeakerAutoRadio.Checked += (_, __) => { if (OllamaForcedSpeakerIdTextBox != null) OllamaForcedSpeakerIdTextBox.IsEnabled = false; };
+            OllamaSpeakerForceRadio.Checked += (_, __) => { if (OllamaForcedSpeakerIdTextBox != null) OllamaForcedSpeakerIdTextBox.IsEnabled = true; };
         }
 
         private async void OllamaSettingsView_Loaded(object sender, RoutedEventArgs e)
@@ -41,6 +44,17 @@ namespace Kinectv1.UI.Settings
                 HistoryPathTextBox.Text = cfg.ConversationHistoryPath;
                 SystemPromptPathTextBox.Text = cfg.SystemPromptPath;
                 OllamaOutputThinkCheckBox.IsChecked = cfg.OutputThink;
+
+                // New: speaker override (match existing schema pattern similar to OutputThink)
+                var force = cfg.ForceSpeakerOverrideEnabled;
+                OllamaSpeakerAutoRadio.IsChecked = !force;
+                OllamaSpeakerForceRadio.IsChecked = force;
+                if (OllamaForcedSpeakerIdTextBox != null)
+                {
+                    OllamaForcedSpeakerIdTextBox.IsEnabled = force;
+                    OllamaForcedSpeakerIdTextBox.Text = cfg.ForcedSpeakerId ?? string.Empty;
+                }
+
                 await RefreshModelListAsync();
             }
             catch { }
@@ -191,6 +205,16 @@ namespace Kinectv1.UI.Settings
             try
             {
                 var cur = _svc?.Current ?? throw new InvalidOperationException("Settings unavailable");
+
+                // Validate forced speaker choice
+                bool force = OllamaSpeakerForceRadio.IsChecked == true;
+                string forcedId = OllamaForcedSpeakerIdTextBox.Text?.Trim();
+                if (force && string.IsNullOrWhiteSpace(forcedId))
+                {
+                    StatusText.Text = "Forced Speaker ID cannot be empty";
+                    return;
+                }
+
                 var next = new OllamaSettings(
                     Provider: ProviderComboBox.Text ?? cur.Ollama.Provider,
                     Enabled: OllamaEnabledCheckBox.IsChecked ?? cur.Ollama.Enabled,
@@ -204,7 +228,9 @@ namespace Kinectv1.UI.Settings
                     OutputThink: OllamaOutputThinkCheckBox.IsChecked ?? cur.Ollama.OutputThink,
                     BaseUrl: string.IsNullOrWhiteSpace(BaseUrlTextBox.Text) ? cur.Ollama.BaseUrl : BaseUrlTextBox.Text,
                     LmStudioBaseUrl: string.IsNullOrWhiteSpace(LmStudioBaseUrlTextBox.Text) ? cur.Ollama.LmStudioBaseUrl : LmStudioBaseUrlTextBox.Text,
-                    ApiKey: string.IsNullOrWhiteSpace(ApiKeyTextBox.Text) ? cur.Ollama.ApiKey : ApiKeyTextBox.Text
+                    ApiKey: string.IsNullOrWhiteSpace(ApiKeyTextBox.Text) ? cur.Ollama.ApiKey : ApiKeyTextBox.Text,
+                    ForceSpeakerOverrideEnabled: force,
+                    ForcedSpeakerId: force ? forcedId : (cur.Ollama.ForcedSpeakerId ?? string.Empty)
                 );
                 var updated = cur with { Ollama = next };
                 SettingsService.ValidateOrThrow(updated);

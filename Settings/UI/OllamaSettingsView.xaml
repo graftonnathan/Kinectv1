@@ -277,6 +277,27 @@
                 <CheckBox x:Name="OllamaOutputThinkCheckBox" Grid.Column="1" Style="{StaticResource ThemedCheckBoxStyle}"/>
             </Grid>
 
+            <!-- Conversation Speaker -->
+            <Grid Margin="0,0,0,8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="220"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="Conversation Speaker" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
+                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <RadioButton x:Name="OllamaSpeakerAutoRadio" Content="Auto-resolve" GroupName="ConversationSpeakerOverride" Margin="0,0,12,0"/>
+                    <RadioButton x:Name="OllamaSpeakerForceRadio" Content="Force speaker ID" GroupName="ConversationSpeakerOverride"/>
+                </StackPanel>
+            </Grid>
+            <Grid Margin="0,0,0,8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="220"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="Forced Speaker ID" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
+                <TextBox x:Name="OllamaForcedSpeakerIdTextBox" Grid.Column="1" Style="{StaticResource ThemedTextBoxStyle}" IsEnabled="False"/>
+            </Grid>
+
             <TextBlock x:Name="StatusText" Foreground="{DynamicResource TextSecondary}"/>
         </StackPanel>
 

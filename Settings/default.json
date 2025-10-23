@@ -61,7 +61,12 @@
     "conversationTimeoutMinutes": 30,
     "conversationHistoryPath": "history",
     "systemPromptPath": "",
-    "outputThink": false
+    "outputThink": false,
+    "baseUrl": "http://127.0.0.1:11434",
+    "lmStudioBaseUrl": "http://127.0.0.1:1234",
+    "apiKey": "",
+    "forceSpeakerOverrideEnabled": false,
+    "forcedSpeakerId": ""
   },
   "discord": {
     "enabled": false,

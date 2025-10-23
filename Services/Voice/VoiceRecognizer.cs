@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using NAudio.Wave;
 using Vosk;
 using Newtonsoft.Json.Linq;
+using Kinectv1.Discord; // added for DiscordNetBotManager.CancelCurrentTts
 
 namespace Kinectv1
 {
@@ -52,7 +53,7 @@ namespace Kinectv1
         // VAD parameters
         private static double _voiceThresh = 0.02; // legacy amplitude (unused now)
         private static int _vadDebounceMs = 120;
-        private static int _vadSilenceMs = 800;
+        private static int _vadSilenceMs = 350; // reduced from 800ms to speed up finalization when user stops speaking
         private static DateTime _lastAbove = DateTime.MinValue;
         private static bool _speechActive;
         private static double _vadRmsThreshold = 2000.0; // user-derived RMS threshold (0-10000)
@@ -65,6 +66,9 @@ namespace Kinectv1
         private static readonly int[] _preRollLengths = new int[PREROLL_FRAMES];
         private static int _preRollCount = 0; // number of valid frames
         private static int _preRollIndex = 0; // next write index
+
+        // new: debounce for word-based barge-in
+        private static DateTime _lastBargeInCancel = DateTime.MinValue;
 
         static VoiceRecognizer()
         {
@@ -277,6 +281,12 @@ namespace Kinectv1
                 var text = ExtractText(json);
                 if (!string.IsNullOrWhiteSpace(text))
                 {
+                    var t = text.Trim();
+                    if (t.Equals("the", StringComparison.OrdinalIgnoreCase) && t.IndexOf(' ') < 0)
+                    {
+                        VRLog("SUPPRESS", "single-word final 'the' (flush)");
+                        return; // suppression
+                    }
                     try { OnTranscription?.Invoke(text); } catch { }
                     VRLog("FINAL", $"len={text.Length} text='{(text.Length>60?text.Substring(0,60)+"...":text)}'");
                 }
@@ -299,11 +309,27 @@ namespace Kinectv1
             }
             bool wasActive = _speechActive;
             UpdateVadFromRms(rms);
+
+            // BARGE-IN / SUPPRESSION LOGIC (updated)
             try
             {
-                if (isExternal) OnDiscordRmsLevel?.Invoke(rms); else OnRmsLevel?.Invoke(rms);
+                var bargeInEnabled = Kinectv1.App.SettingsProvider?.Current?.Asr?.BargeInEnabled ?? false;
+                bool ttsSpeaking = TtsPlaybackController.HasActiveUtterance();
+                if (!bargeInEnabled && ttsSpeaking)
+                {
+                    // Suppression mode (barge-in disabled): keep buffering and do not feed recognizer
+                    if (wasActive || _speechActive)
+                    {
+                        _speechActive = false;
+                        try { FlushFinal(); } catch { }
+                    }
+                    StorePreRoll(data, length);
+                    return;
+                }
             }
             catch { }
+
+            try { if (isExternal) OnDiscordRmsLevel?.Invoke(rms); else OnRmsLevel?.Invoke(rms); } catch { }
 
             if (!_speechActive)
             {
@@ -343,10 +369,15 @@ namespace Kinectv1
                     var text = ExtractText(json);
                     if (!string.IsNullOrWhiteSpace(text))
                     {
+                        // Single-word suppression for 'the'
+                        var t = text.Trim();
+                        if (t.Equals("the", StringComparison.OrdinalIgnoreCase) && t.IndexOf(' ') < 0)
+                            return;
                         var sinceActiveMs = (DateTime.UtcNow - _lastAbove).TotalMilliseconds;
                         bool looksShort = text.Length < 4 && text.IndexOf(' ') < 0;
                         if (!_speechActive && sinceActiveMs > 250 && looksShort)
                             return;
+                        MaybeBargeIn(text);
                         try { OnTranscription?.Invoke(text); } catch { }
                         VRLog("FINAL-INCR", $"len={text.Length} src={source} text='{(text.Length>60?text.Substring(0,60)+"...":text)}'");
                     }
@@ -357,6 +388,11 @@ namespace Kinectv1
                     var ptext = ExtractPartialText(pjson);
                     if (!string.IsNullOrWhiteSpace(ptext))
                     {
+                        // Single-word suppression for 'the' (partial)
+                        var pt = ptext.Trim();
+                        if (pt.Equals("the", StringComparison.OrdinalIgnoreCase) && pt.IndexOf(' ') < 0)
+                            return;
+                        MaybeBargeIn(ptext);
                         try { OnPartialTranscription?.Invoke(ptext); } catch { }
                         if ((_frameCounter++ % 25) == 0)
                             VRLog("PART", $"len={ptext.Length} src={source} text='{(ptext.Length>50?ptext.Substring(0,50)+"...":ptext)}'");
@@ -364,6 +400,30 @@ namespace Kinectv1
                 }
             }
             catch (Exception ex) { VRLog("ERROR", "FeedRecognizer " + ex.Message); }
+        }
+
+        private static void MaybeBargeIn(string text)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(text)) return;
+                var asr = Kinectv1.App.SettingsProvider?.Current?.Asr;
+                if (asr?.BargeInEnabled != true) return;
+                if (!TtsPlaybackController.HasActiveUtterance()) return;
+                var lower = text.Trim().ToLowerInvariant();
+                if (lower == "a" || lower == "uh" || lower == "um" || lower == "the") return; // ignore common short fillers
+                if (text.Length < 2) return; // ignore ultra-short
+                bool hasLetter = false; foreach (var c in text) { if (char.IsLetter(c)) { hasLetter = true; break; } }
+                if (!hasLetter) return;
+                var now = DateTime.UtcNow;
+                if ((now - _lastBargeInCancel).TotalMilliseconds < 800) return; // debounce
+                _lastBargeInCancel = now;
+                VRLog("BARGE", $"Cancel on recognized='{(text.Length>20?text.Substring(0,20)+"...":text)}'");
+                TtsPlaybackController.CancelCurrent();
+                try { DiscordNetBotManager.CancelCurrentTts(); } catch { }
+                try { Kinectv1.Tts.TtsService.MarkExternalCancel(); } catch { }
+            }
+            catch { }
         }
 
         private static string ExtractText(string json)

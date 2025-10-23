@@ -1,3 +1,12 @@
+# Speaker Recognition Windowing Fix - Implementation Notes (Updated)
+
+## Addendum: Barge?In & TTS Interaction
+The barge?in system (when enabled) cancels active TTS playback but does NOT interrupt the rolling window accumulation for speaker embeddings. Mic audio continues feeding the RingBuffer regardless of TTS state so identity stability is preserved across interruptions.
+
+(Original content below)
+
+---
+
 # Speaker Recognition Windowing Fix - Implementation Notes
 
 ## Summary

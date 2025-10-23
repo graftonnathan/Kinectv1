@@ -158,3 +158,55 @@ The conditional TTS output routing is now fully implemented and provides users w
 5. **?? User-Friendly**: Simple checkbox interface for immediate control
 
 Users can now customize their AI voice experience based on their current context and needs! ??
+
+---
+
+# Conditional TTS Output Routing
+
+This document describes how TTS chooses an output route (local speakers, Discord, muted) based on current configuration and runtime state.
+
+## Core Decision Factors
+
+1. TTS enabled (`TtsSettings.Enabled`)
+2. Local vs Discord volume > 0
+3. Active Discord voice connection (for Discord path)
+4. Application scenario (Local / Hybrid)
+5. Muting or focus rules
+
+## Updated Playback Pipeline (Controller Integration)
+
+Local playback is now mediated by `TtsPlaybackController`:
+
+- Guarantees a single active utterance.
+- New requests preempt the previous one atomically.
+- External cancels (UI / barge?in) call `CancelCurrent()`.
+- `TtsService.SpeakWithPreemptionAsync` is the canonical entry point.
+
+### Barge?In Interaction
+
+`AsrSettings.BargeInEnabled` determines ASR/TTS interplay:
+
+| Setting | Behavior |
+|---------|----------|
+| true | VAD activation during TTS cancels current utterance (barge?in) |
+| false | ASR suppressed while TTS plays; frames buffered as preroll but not recognized |
+
+A cancellation marks a short grace window used to relax leading trim on the next utterance to avoid clipped starts.
+
+## Routing Outcomes
+
+| Condition | Route |
+|-----------|-------|
+| Local volume > 0, no Discord session | Local speakers only |
+| Local volume == 0, Discord connected, Discord volume > 0 | Discord only |
+| Both volumes > 0 and Discord connected | Dual: local + Discord (if implemented) |
+| All volumes 0 or disabled | No playback (generation may still occur) |
+
+## Error Handling
+
+- Missing voice/style -> raises `OnTtsError` and aborts.
+- Model/session init failure -> disables further synthesis until `RecreateSessionFromSettings()` succeeds.
+
+## Extensibility
+
+Future routing conditions (e.g., Mumble, WebRTC) should plug in after the controller so that preemption rules remain consistent across outputs.

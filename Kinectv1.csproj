@@ -25,6 +25,8 @@
     <Compile Remove="tests\**\*.cs" />
     <Compile Remove="Mumble\MumbleHostedService.cs" />
     <Compile Remove="Mumble\MumbleSharpBridge.cs" />
+    <!-- Exclude legacy Old folder to prevent duplicate symbol ambiguities -->
+    <Compile Remove="Old\**\*.cs" />
     <None Include="tools\**\*" Exclude="tools\obj\**\*" />
     <None Include="tests\**\*" />
   </ItemGroup>
@@ -170,23 +172,25 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Content Remove="C:\Users\Naya-Side\.nuget\packages\mumblesharp\2.0.1\contentFiles\any\netstandard2.0\Audio\Codecs\Opus\Libs\32bit\opus.dll" />
+    <Content Remove="C:\Users\Naya-Side\.nuget\packages\mumblesharp\2.0.1\contentFiles\any\netstandard2.0\Audio\Codecs\Opus\Libs\64bit\opus.dll" />
+    <Content Remove="prompts\Dasiy.txt" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Microsoft.Kinect" Version="2.0.1410.19000" />
     <PackageReference Include="Microsoft.Kinect.Face.x64" Version="2.0.1410.19000" />
-    <PackageReference Include="Google.Protobuf" Version="3.24.4" />
     <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.22.1" />
     <PackageReference Include="MumbleSharp" Version="2.0.1" />
     <PackageReference Include="NAudio" Version="2.2.1" />
     <PackageReference Include="Vosk" Version="0.3.38" />
-    <PackageReference Include="System.Management" Version="6.0.2" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
-    <PackageReference Include="System.Configuration.ConfigurationManager" Version="6.0.1" />
     <PackageReference Include="Discord.Net" Version="3.18.0" />
     <PackageReference Include="Discord.Net.Commands" Version="3.18.0" />
     <PackageReference Include="Discord.Net.WebSocket" Version="3.18.0" />
     <PackageReference Include="System.Threading.Channels" Version="7.0.0" />
     <PackageReference Include="Concentus" Version="1.1.7" />
     <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="8.0.0" />
-    <PackageReference Include="System.Speech" Version="6.0.0" />
   </ItemGroup>
   
   <ItemGroup>
@@ -194,7 +198,6 @@
     <Reference Include="System.Net.Http" />
     <Reference Include="System.Configuration" />
     <Reference Include="System.ComponentModel.DataAnnotations" />
-    <Reference Include="System.Speech" />
   </ItemGroup>
   
   <ItemGroup>
@@ -203,6 +206,7 @@
     <None Remove="models\tts\model.onnx" />
     <None Remove="models\tts\SpeakerList.txt" />
     <None Remove="models\tts\symbols.txt" />
+    <None Remove="prompts\Dasiy.txt" />
   </ItemGroup>
 
   <ItemGroup>
@@ -252,7 +256,10 @@
     </PropertyGroup>
     <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(ProjectDir)download-discord-natives.ps1&quot;" WorkingDirectory="$(ProjectDir)" Condition="!Exists('$(OpusOut)') Or !Exists('$(SodiumOut)')" ContinueOnError="true" />
     <ItemGroup>
-      <DiscordLibs Include="$(ProjectDir)lib\discord\opus.dll;$(ProjectDir)lib\discord\libsodium.dll" />
+      <DiscordLibs Include="$(ProjectDir)lib\audio\opus.dll" Condition="Exists('$(ProjectDir)lib\audio\opus.dll')" />
+      <DiscordLibs Include="$(ProjectDir)lib\audio\libsodium.dll" Condition="Exists('$(ProjectDir)lib\audio\libsodium.dll')" />
+      <DiscordLibs Include="$(ProjectDir)lib\discord\opus.dll" Condition="Exists('$(ProjectDir)lib\discord\opus.dll')" />
+      <DiscordLibs Include="$(ProjectDir)lib\discord\libsodium.dll" Condition="Exists('$(ProjectDir)lib\discord\libsodium.dll')" />
     </ItemGroup>
     <Copy SourceFiles="@(DiscordLibs)" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" Condition=" '@(DiscordLibs)' != '' " />
   </Target>

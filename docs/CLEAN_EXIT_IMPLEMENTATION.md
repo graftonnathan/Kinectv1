@@ -247,3 +247,29 @@ public static async Task ShutdownAsync()
 - **Resource disposal** prevents memory leaks
 
 The implementation successfully addresses the "hang on exit" issue by ensuring all Discord voice and gateway sessions are closed cleanly before application termination! ??
+
+------
+
+# Clean Application Exit Implementation
+
+(Excerpt – updated for TTS controller integration)
+
+## Additional TTS & ASR Shutdown Notes (Updated)
+- Call `TtsPlaybackController.CancelCurrent()` early to stop any active utterance; prevents blocking audio device release.
+- `TtsService.RecreateSessionFromSettings()` already disposes old `InferenceSession`; on full shutdown you may optionally force dispose via an internal helper if added later.
+- VoiceRecognizer external processing loop stops via its CTS; ensure `_procCts.Cancel()` (handled internally) before disposing audio devices.
+
+## Order Augmentation
+Recommended augmented sequence:
+```
+1. Set global closing flags / cancel shared CTS
+2. Cancel active local TTS (TtsPlaybackController.CancelCurrent())
+3. Stop Discord voice (if connected)
+4. Stop Discord client (gateway)
+5. Stop STT capture (WaveIn) + allow preroll flush
+6. Dispose inference session (implicit when process ends; optional eager dispose)
+7. Persist settings
+8. Final resource disposal
+```
+
+The rest of this document retains original shutdown walkthrough (see earlier sections) with the above additions for the new playback controller.

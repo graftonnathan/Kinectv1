@@ -65,6 +65,15 @@ This document describes the streamlined settings pipeline for the Kinectv1 proje
     * **Defaults**: load `GetDefaultsEffective()` into the ViewModel, mark dirty.
     * **Reload**: call `Reload()`, repopulate ViewModel, clear dirty flag.
 
+* **TTS Playback & Barge‑In (New)**
+
+  * Local TTS output now flows through a lightweight `TtsPlaybackController` which guarantees single active utterance + atomic preemption.
+  * `SpeakWithPreemptionAsync` (TtsService) always routes via the controller; legacy per‑call cancellation helpers removed.
+  * `AsrSettings.BargeInEnabled` governs interaction between live speech and TTS:
+    * When `true`: voice activation (VAD rising edge) cancels the current TTS utterance (barge‑in) and a short grace window is applied to trimming on the next synthesis.
+    * When `false`: ongoing TTS suppresses ASR ingestion (frames are buffered as preroll but not recognized) — user speech waits until playback completes.
+  * External cancellation (UI / hotkey) routes through `TtsPlaybackController.CancelCurrent()` and marks a cancel timestamp used to relax leading trim on immediate follow‑up speech.
+
 ---
 
 ## Load Flow
@@ -139,3 +148,4 @@ This document describes the streamlined settings pipeline for the Kinectv1 proje
 * **Cleaner UI:** ViewModel handles field validation, no manual parse logic.
 * **Future‑proof:** schema version + migrations prevent upgrade pain.
 * **Simpler VAD:** single RMS threshold derived from `Audio.VoiceThreshold`, timing via `AsrSettings` (silence/debounce) – removed duplicate legacy threshold.
+* **Deterministic TTS preemption:** controller centralizes cancellation; barge‑in behavior configurable via settings.

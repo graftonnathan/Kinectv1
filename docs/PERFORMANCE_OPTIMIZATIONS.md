@@ -136,3 +136,23 @@ All optimizations maintain existing public APIs and functionality. The changes a
 ✅ **Minimal Changes**: Focused only on performance-critical allocations  
 ✅ **Hot-Path Focus**: Targeted TTS generation, audio processing, and voice recognition loops  
 ✅ **Session Thrash Reduction**: Reduced per-inference tensor allocations
+
+## ONNX Session Reuse
+The TTS system reuses a single `InferenceSession` guarded by a lock to avoid repeated model loading.
+
+## Tensor & Allocation Reuse
+`DenseTensor` instances for style and speed plus a reusable input list minimize per‑utterance allocations.
+
+## Preemption Controller
+Using `TtsPlaybackController` prevents overlapping synthesis/playback chains, reducing wasted work when rapid prompts arrive (old utterance cancelled early before playback).
+
+## IPA Generation Timeouts
+One‑shot IPA subprocess calls are bounded by `IpaOneShotTimeoutMs` to avoid long stalls.
+
+## Grace Window After Cancel
+A short grace window after barge‑in skips aggressive leading trim, preventing re‑synth retries caused by clipped phoneme starts.
+
+## Suggested Future Gains
+- Batch/segment streaming to begin playback sooner (currently whole‑utterance generation).
+- SIMD post‑processing for volume scaling & trimming.
+- Optional faster tokenizer caching if IPA backend replaced.

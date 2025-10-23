@@ -113,7 +113,10 @@ namespace Kinectv1.Settings
         // New: provider endpoints + API key (optional)
         string BaseUrl,
         string LmStudioBaseUrl,
-        string ApiKey
+        string ApiKey,
+        // New: force speaker override for conversation history and prompts
+        bool ForceSpeakerOverrideEnabled,
+        string ForcedSpeakerId
     );
 
     // New: Discord settings for bot configuration

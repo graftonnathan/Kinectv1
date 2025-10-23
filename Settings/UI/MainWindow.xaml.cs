@@ -1012,7 +1012,7 @@ namespace Kinectv1
                 {
                     _ = Task.Run(async () =>
                     {
-                        try { await TtsService.SpeakStreamingWithPreemptionAsync(response, voice); }
+                        try { await TtsService.SpeakWithPreemptionAsync(response, voice); }
                         catch (Exception ex) { Console.WriteLine($"TTS speak error: {ex.Message}"); }
                     });
                 }
@@ -1402,8 +1402,23 @@ namespace Kinectv1
                     speaker = hint.name; score = hint.score;
                 }
 
-                // Reflect resolved speaker in UI
-                try { ShowSpeakerResolvedForOllama(speaker, score, "voice"); } catch { }
+                // Apply forced speaker override if enabled
+                try
+                {
+                    var cfg = App.SettingsProvider?.Current?.Ollama;
+                    if (cfg != null && cfg.ForceSpeakerOverrideEnabled && !string.IsNullOrWhiteSpace(cfg.ForcedSpeakerId))
+                    {
+                        speaker = cfg.ForcedSpeakerId.Trim();
+                        // Indicate override in UI
+                        try { ShowSpeakerResolvedForOllama(speaker, 1.0f, "override"); } catch { }
+                    }
+                    else
+                    {
+                        // Reflect resolved speaker in UI normally
+                        try { ShowSpeakerResolvedForOllama(speaker, score, "voice"); } catch { }
+                    }
+                }
+                catch { }
 
                 await OllamaService.DispatchAsync(speaker, text);
             }
