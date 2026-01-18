@@ -71,7 +71,7 @@ namespace Kinectv1.Mumble
                 _run = true;
                 _pump = new Thread(() =>
                 {
-                    while (_run && _conn.State != ConnectionStates.Disconnected)
+                    while (_run && _conn != null && _conn.State != ConnectionStates.Disconnected)
                     {
                         if (!_conn.Process()) Thread.Sleep(1);
                     }
@@ -98,8 +98,21 @@ namespace Kinectv1.Mumble
                 _cts?.Cancel();
                 _run = false;
                 try { _pump?.Join(500); } catch { }
-                try { _conn?.Close(); } catch { }
-                _protocol = null; _conn = null; _pump = null;
+
+                // Safely close connection: guard state and clear reference before closing to avoid race/NRE
+                var conn = _conn;
+                _conn = null;
+                if (conn != null)
+                {
+                    try
+                    {
+                        if (conn.State != ConnectionStates.Disconnected)
+                            conn.Close();
+                    }
+                    catch { }
+                }
+
+                _protocol = null; _pump = null;
 
                 _isConnected = false;
                 OnStatusChanged?.Invoke("Disconnected");

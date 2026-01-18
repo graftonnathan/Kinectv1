@@ -131,8 +131,8 @@ namespace Kinectv1.Tts
 
                 bool anyQueued = false;
 
-                // Helper local function to queue float audio (chunked with backpressure)
-                void QueueFloatAudio(float[] arr)
+                // Helper local function to queue float audio (chunked with async backpressure)
+                async Task QueueFloatAudioAsync(float[] arr)
                 {
                     if (arr == null || arr.Length == 0) return;
                     const int chunkSamples = 2048; // ~85ms at 24kHz
@@ -142,10 +142,10 @@ namespace Kinectv1.Tts
                     {
                         int take = Math.Min(chunkSamples, arr.Length - pos);
                         int neededBytes = take * 2;
-                        // Backpressure: wait until there is room for this chunk
+                        // Backpressure: wait until there is room for this chunk (async)
                         while (!lct.IsCancellationRequested && provider.BufferedBytes > provider.BufferLength - neededBytes)
                         {
-                            try { Task.Delay(15, lct).GetAwaiter().GetResult(); } catch (OperationCanceledException) { break; }
+                            await Task.Delay(15, lct).ConfigureAwait(false);
                         }
                         if (lct.IsCancellationRequested) break;
                         int bpLocal = 0;
@@ -163,6 +163,10 @@ namespace Kinectv1.Tts
                     }
                 }
 
+                // Capture settings for background thread
+                var localSnap = snap;
+                var localVoicePath = voicePath;
+
                 for (int i = 0; i < segments.Count; i++)
                 {
                     lct.ThrowIfCancellationRequested();
@@ -172,30 +176,32 @@ namespace Kinectv1.Tts
                     {
                         int dots = 1;
                         while (t == "." && i + dots < segments.Count && segments[i + dots].Trim() == ".") dots++;
-                        if (snap.MinClausePaddingMs > 0)
+                        if (localSnap.MinClausePaddingMs > 0)
                         {
-                            int padSamples = (int)Math.Round(SampleRate * (snap.MinClausePaddingMs / 100.0) / 10.0);
-                            padSamples = (int)Math.Round(SampleRate * (snap.MinClausePaddingMs / 1000.0));
-                            if (padSamples > 0) QueueFloatAudio(new float[padSamples]);
+                            int padSamples = (int)Math.Round(SampleRate * (localSnap.MinClausePaddingMs / 1000.0));
+                            if (padSamples > 0) await QueueFloatAudioAsync(new float[padSamples]).ConfigureAwait(false);
                         }
                         i += dots - 1;
                         continue;
                     }
                     Log("SEG", $"Stream synth {i + 1}/{segments.Count} chars={seg.Length}");
-                    var segAudio = SynthesizeOne(seg, voicePath, snap);
+                    
+                    // Run synthesis on thread pool to avoid blocking
+                    var segAudio = await Task.Run(() => SynthesizeOne(seg, localVoicePath, localSnap), lct).ConfigureAwait(false);
+                    
                     lct.ThrowIfCancellationRequested();
                     if (segAudio != null && segAudio.Length > 0)
                     {
-                        QueueFloatAudio(segAudio);
+                        await QueueFloatAudioAsync(segAudio).ConfigureAwait(false);
                     }
                     // Inter-segment padding (silence) if not last
-                    if (i < segments.Count - 1 && snap.MinClausePaddingMs > 0)
+                    if (i < segments.Count - 1 && localSnap.MinClausePaddingMs > 0)
                     {
-                        int padSamples = (int)Math.Round(SampleRate * (snap.MinClausePaddingMs / 1000.0));
+                        int padSamples = (int)Math.Round(SampleRate * (localSnap.MinClausePaddingMs / 1000.0));
                         if (padSamples > 0)
                         {
                             var pad = new float[padSamples]; // zeroed
-                            QueueFloatAudio(pad);
+                            await QueueFloatAudioAsync(pad).ConfigureAwait(false);
                         }
                     }
                 }

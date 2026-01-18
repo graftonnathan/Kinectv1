@@ -66,7 +66,18 @@
     "lmStudioBaseUrl": "http://127.0.0.1:1234",
     "apiKey": "",
     "forceSpeakerOverrideEnabled": false,
-    "forcedSpeakerId": ""
+    "forcedSpeakerId": "",
+    "vectorMemoryEnabled": false,
+    "hotContextTokenLimit": 3000,
+    "warmSummaryTokenLimit": 400,
+    "memoryContextBudget": 600,
+    "vectorDbPath": "memory",
+    "embeddingsModel": "",
+    "chunkSizeTokens": 150,
+    "chunkOverlapTokens": 30,
+    "vectorSearchTopK": 3,
+    "recencyBoostFactor": 0.15,
+    "minRetrievalScore": 0.55
   },
   "discord": {
     "enabled": false,

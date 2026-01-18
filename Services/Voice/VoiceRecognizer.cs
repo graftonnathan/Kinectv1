@@ -408,8 +408,12 @@ namespace Kinectv1
             {
                 if (string.IsNullOrWhiteSpace(text)) return;
                 var asr = Kinectv1.App.SettingsProvider?.Current?.Asr;
-                if (asr?.BargeInEnabled != true) return;
-                if (!TtsPlaybackController.HasActiveUtterance()) return;
+                bool bargeInEnabled = asr?.BargeInEnabled == true;
+                VRLog("BARGE-CHK", $"BargeInEnabled={bargeInEnabled} text='{(text.Length>20?text.Substring(0,20)+"...":text)}'");
+                if (!bargeInEnabled) return;
+                bool hasActive = TtsPlaybackController.HasActiveUtterance();
+                VRLog("BARGE-CHK", $"HasActiveUtterance={hasActive}");
+                if (!hasActive) return;
                 var lower = text.Trim().ToLowerInvariant();
                 if (lower == "a" || lower == "uh" || lower == "um" || lower == "the") return; // ignore common short fillers
                 if (text.Length < 2) return; // ignore ultra-short

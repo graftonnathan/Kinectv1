@@ -104,6 +104,12 @@ namespace Kinectv1.UI.Settings
                 EditorView = new MumbleSettingsView()
             });
 
+            Categories.Add(new SettingsCategoryVM
+            {
+                Name = "Memory",
+                EditorView = new MemorySettingsView()
+            });
+
             if (Categories.Count > 0)
             {
                 SelectedCategory = Categories[0];

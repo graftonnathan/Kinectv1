@@ -51,7 +51,11 @@ namespace Kinectv1
         { var c = _cts; try { c?.Cancel(); } catch { } }
 
         public static bool HasActiveUtterance()
-        { Task t; lock (_sync) t = _task; return t != null && !t.IsCompleted; }
+        {
+            Task t;
+            lock (_sync) t = _task;
+            return t != null && !t.IsCompleted;
+        }
 
         public static string GetCurrentUtteranceId()
         { lock (_sync) return _uttId; }

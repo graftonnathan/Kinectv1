@@ -175,6 +175,7 @@
     <Content Remove="C:\Users\Naya-Side\.nuget\packages\mumblesharp\2.0.1\contentFiles\any\netstandard2.0\Audio\Codecs\Opus\Libs\32bit\opus.dll" />
     <Content Remove="C:\Users\Naya-Side\.nuget\packages\mumblesharp\2.0.1\contentFiles\any\netstandard2.0\Audio\Codecs\Opus\Libs\64bit\opus.dll" />
     <Content Remove="prompts\Dasiy.txt" />
+    <Content Remove="prompts\Mommy.txt" />
   </ItemGroup>
 
   <ItemGroup>
@@ -207,6 +208,7 @@
     <None Remove="models\tts\SpeakerList.txt" />
     <None Remove="models\tts\symbols.txt" />
     <None Remove="prompts\Dasiy.txt" />
+    <None Remove="prompts\Mommy.txt" />
   </ItemGroup>
 
   <ItemGroup>

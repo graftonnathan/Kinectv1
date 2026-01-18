@@ -45,7 +45,7 @@ namespace Kinectv1.UI.Settings
                 SystemPromptPathTextBox.Text = cfg.SystemPromptPath;
                 OllamaOutputThinkCheckBox.IsChecked = cfg.OutputThink;
 
-                // New: speaker override (match existing schema pattern similar to OutputThink)
+                // Speaker override
                 var force = cfg.ForceSpeakerOverrideEnabled;
                 OllamaSpeakerAutoRadio.IsChecked = !force;
                 OllamaSpeakerForceRadio.IsChecked = force;
@@ -230,7 +230,19 @@ namespace Kinectv1.UI.Settings
                     LmStudioBaseUrl: string.IsNullOrWhiteSpace(LmStudioBaseUrlTextBox.Text) ? cur.Ollama.LmStudioBaseUrl : LmStudioBaseUrlTextBox.Text,
                     ApiKey: string.IsNullOrWhiteSpace(ApiKeyTextBox.Text) ? cur.Ollama.ApiKey : ApiKeyTextBox.Text,
                     ForceSpeakerOverrideEnabled: force,
-                    ForcedSpeakerId: force ? forcedId : (cur.Ollama.ForcedSpeakerId ?? string.Empty)
+                    ForcedSpeakerId: force ? forcedId : (cur.Ollama.ForcedSpeakerId ?? string.Empty),
+                    // Preserve vector memory settings (edited in Memory tab)
+                    VectorMemoryEnabled: cur.Ollama.VectorMemoryEnabled,
+                    HotContextTokenLimit: cur.Ollama.HotContextTokenLimit,
+                    WarmSummaryTokenLimit: cur.Ollama.WarmSummaryTokenLimit,
+                    MemoryContextBudget: cur.Ollama.MemoryContextBudget,
+                    VectorDbPath: cur.Ollama.VectorDbPath,
+                    EmbeddingsModel: cur.Ollama.EmbeddingsModel,
+                    ChunkSizeTokens: cur.Ollama.ChunkSizeTokens,
+                    ChunkOverlapTokens: cur.Ollama.ChunkOverlapTokens,
+                    VectorSearchTopK: cur.Ollama.VectorSearchTopK,
+                    RecencyBoostFactor: cur.Ollama.RecencyBoostFactor,
+                    MinRetrievalScore: cur.Ollama.MinRetrievalScore
                 );
                 var updated = cur with { Ollama = next };
                 SettingsService.ValidateOrThrow(updated);

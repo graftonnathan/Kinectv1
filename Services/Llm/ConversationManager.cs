@@ -19,6 +19,11 @@ namespace Kinectv1
         public static event Action<string> OnPromptSent;
         public static event Action<string> OnResponseReceived;
         public static event Action<string> OnError;
+        
+        // New: Events for memory archival status
+        public static event Action OnMemoryArchiveStarted;
+        public static event Action<int, int> OnMemoryArchiveCompleted; // (messagesArchived, chunksCreated)
+        public static event Action<string> OnMemoryArchiveFailed;
 
         private static void LogErr(string msg)
         {
@@ -29,6 +34,10 @@ namespace Kinectv1
         private static LlmRouter _router;
         private static string _systemPromptCache = string.Empty;
         private static DateTime _lastSystemPromptLoadUtc = DateTime.MinValue;
+
+        // Vector memory manager (3-layer: hot/warm/cold)
+        private static MemoryManager _memoryManager;
+        private static readonly object _memoryLock = new();
 
         private static Kinectv1.Settings.AppSettings Snap => App.SettingsProvider?.Current;
 
@@ -41,6 +50,55 @@ namespace Kinectv1
             public string Speaker { get; set; }
         }
         private static readonly object _convLock = new();
+
+        #region Memory Manager
+        private static MemoryManager GetMemoryManager()
+        {
+            if (_memoryManager != null) return _memoryManager;
+            lock (_memoryLock)
+            {
+                if (_memoryManager != null) return _memoryManager;
+                _memoryManager = new MemoryManager(() => Snap?.Ollama, GetCurrentMemoryKey);
+                return _memoryManager;
+            }
+        }
+
+        /// <summary>
+        /// Get the current memory key based on system prompt path.
+        /// Each system prompt gets its own isolated memory store.
+        /// </summary>
+        private static string GetCurrentMemoryKey()
+        {
+            var systemPromptPath = Snap?.Ollama?.SystemPromptPath;
+            if (string.IsNullOrWhiteSpace(systemPromptPath))
+                return "default";
+
+            try
+            {
+                // Use the filename without extension as the memory key
+                var fileName = Path.GetFileNameWithoutExtension(systemPromptPath);
+                if (string.IsNullOrWhiteSpace(fileName))
+                    return "default";
+
+                // Sanitize for use as folder name
+                var invalidChars = Path.GetInvalidFileNameChars();
+                foreach (var c in invalidChars)
+                    fileName = fileName.Replace(c, '_');
+
+                return fileName.ToLowerInvariant();
+            }
+            catch
+            {
+                return "default";
+            }
+        }
+
+        private static async Task EnsureMemoryInitializedAsync(CancellationToken ct = default)
+        {
+            var mm = GetMemoryManager();
+            await mm.InitializeAsync(ct).ConfigureAwait(false);
+        }
+        #endregion
 
         #region Path / Storage Helpers
         // Try to resolve relative path against base directory and its ancestors (up to 5 levels) to allow user placing 'history' beside project file.
@@ -324,6 +382,92 @@ namespace Kinectv1
             }
             catch { return string.Empty; }
         }
+
+        /// <summary>
+        /// Get conversation history messages for a speaker from the JSON files.
+        /// Used by MemoryManager for token counting and overflow processing.
+        /// </summary>
+        public static List<Llm.ConversationMessage> GetConversationMessagesPublic(string speaker, int? maxMessages = null)
+        {
+            var result = new List<Llm.ConversationMessage>();
+            if (!MemoryEnabled()) return result;
+
+            speaker = string.IsNullOrWhiteSpace(speaker) ? "UnknownSpeaker" : speaker.Trim();
+
+            try
+            {
+                lock (_convLock)
+                {
+                    int max = maxMessages ?? MaxMessagesPerSpeaker();
+                    foreach (var file in EnumerateConversationFilesDescending())
+                    {
+                        try
+                        {
+                            if (!File.Exists(file)) continue;
+                            var txt = File.ReadAllText(file, Encoding.UTF8);
+                            if (string.IsNullOrWhiteSpace(txt)) continue;
+                            var jo = JObject.Parse(txt);
+                            var arr = jo[speaker] as JArray;
+                            if (arr == null || arr.Count == 0) continue;
+
+                            for (int i = arr.Count - 1; i >= 0; i--)
+                            {
+                                if (max > 0 && result.Count >= max) break;
+                                var jm = arr[i] as JObject;
+                                if (jm == null) continue;
+
+                                result.Add(new Llm.ConversationMessage
+                                {
+                                    Role = jm["Role"]?.Value<string>() ?? "user",
+                                    Content = jm["Content"]?.Value<string>() ?? string.Empty,
+                                    Speaker = jm["Speaker"]?.Value<string>() ?? speaker,
+                                    Timestamp = jm["Timestamp"]?.Value<DateTime?>() ?? DateTime.MinValue
+                                });
+                            }
+                            if (max > 0 && result.Count >= max) break;
+                        }
+                        catch { }
+                    }
+                }
+            }
+            catch { }
+
+            // Reverse to chronological order (oldest first)
+            result.Reverse();
+            return result;
+        }
+
+        /// <summary>
+        /// Calculate total token count from conversation history JSON for a speaker.
+        /// Uses the same formatting as BuildHistoryBlock for accurate estimation.
+        /// </summary>
+        public static int GetConversationTokenCount(string speaker)
+        {
+            var messages = GetConversationMessagesPublic(speaker);
+            if (messages.Count == 0) return 0;
+
+            int totalTokens = 0;
+            foreach (var msg in messages)
+            {
+                // Estimate tokens for role prefix + content (matches how history is formatted)
+                var formatted = string.Equals(msg.Role, "user", StringComparison.OrdinalIgnoreCase)
+                    ? $"USER ({msg.Speaker}): {msg.Content}"
+                    : $"ASSISTANT: {msg.Content}";
+                totalTokens += TokenEstimator.EstimateTokens(formatted);
+            }
+
+            return totalTokens;
+        }
+
+        /// <summary>
+        /// Get the current hot context token count for display in UI.
+        /// </summary>
+        public static (int tokenCount, int messageCount) GetHotContextStats(string speaker)
+        {
+            var messages = GetConversationMessagesPublic(speaker);
+            int tokens = GetConversationTokenCount(speaker);
+            return (tokens, messages.Count);
+        }
         #endregion
 
         #region LLM Interaction
@@ -337,20 +481,279 @@ namespace Kinectv1
                 if (!IsEnabled()) return;
                 EnsureRouterInitialized();
                 var normalizedSpeaker = string.IsNullOrWhiteSpace(speakerName) ? "UnknownSpeaker" : speakerName.Trim();
+                
+                // Initialize vector memory if enabled
+                await EnsureMemoryInitializedAsync(ct).ConfigureAwait(false);
+                
                 var system = LoadSystemPrompt();
                 var history = BuildHistoryBlock(normalizedSpeaker);
-                var userPrompt = BuildUserPrompt(normalizedSpeaker, transcription, null, history);
+                
+                // Build context from vector memory (warm summary + retrieved chunks)
+                string memoryContext = string.Empty;
+                var mm = GetMemoryManager();
+                if (mm.IsEnabled)
+                {
+                    try
+                    {
+                        var context = await mm.BuildContextAsync(transcription, normalizedSpeaker, ct).ConfigureAwait(false);
+                        memoryContext = mm.FormatContextForPrompt(context);
+                        if (!string.IsNullOrWhiteSpace(memoryContext))
+                        {
+                            Console.WriteLine($"?? Retrieved memory context: {TokenEstimator.EstimateTokens(memoryContext)} tokens");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"?? Memory context retrieval failed: {ex.Message}");
+                    }
+                }
+                
+                var userPrompt = BuildUserPromptWithMemory(normalizedSpeaker, transcription, null, history, memoryContext);
                 try { OnPromptSent?.Invoke(userPrompt); } catch { }
                 AppendConversation(normalizedSpeaker, "user", transcription);
+                
                 string raw;
                 try { raw = await _router.ChatOnceAsync(system, userPrompt).ConfigureAwait(false); }
                 catch (OperationCanceledException) { return; }
                 if (string.IsNullOrWhiteSpace(raw)) raw = "(no response)";
                 var cleaned = SanitizeAssistantText(raw);
                 AppendConversation(normalizedSpeaker, "assistant", cleaned);
+                
+                // Check for memory overflow after appending the response
+                await CheckAndProcessMemoryOverflowAsync(normalizedSpeaker, ct).ConfigureAwait(false);
+                
+                // Save memory manager state periodically
+                if (mm.IsEnabled)
+                {
+                    try { await mm.SaveAsync(ct).ConfigureAwait(false); }
+                    catch { }
+                }
+                
                 try { OnResponseReceived?.Invoke(cleaned); } catch { }
             }
             catch (Exception ex) { LogErr($"LLM dispatch failed: {ex.Message}"); }
+        }
+
+        /// <summary>
+        /// Check if conversation history exceeds token limit and archive to vector DB if needed.
+        /// </summary>
+        private static async Task CheckAndProcessMemoryOverflowAsync(string speaker, CancellationToken ct = default)
+        {
+            try
+            {
+                var settings = Snap?.Ollama;
+                if (settings == null || !settings.VectorMemoryEnabled) return;
+
+                int hotLimit = settings.HotContextTokenLimit;
+                int currentTokens = GetConversationTokenCount(speaker);
+
+                if (currentTokens <= hotLimit) return;
+
+                Console.WriteLine($"?? Memory overflow detected: {currentTokens} tokens > {hotLimit} limit. Archiving...");
+                try { OnMemoryArchiveStarted?.Invoke(); } catch { }
+
+                var messages = GetConversationMessagesPublic(speaker);
+                if (messages.Count == 0) return;
+
+                var mm = GetMemoryManager();
+                if (!mm.IsEnabled)
+                {
+                    try { OnMemoryArchiveFailed?.Invoke("Vector memory not enabled or initialized"); } catch { }
+                    return;
+                }
+
+                // Process overflow - archive old messages to vector DB
+                var remaining = await mm.ProcessOverflowAsync(messages, speaker, ct).ConfigureAwait(false);
+
+                int archivedCount = messages.Count - remaining.Count;
+                if (archivedCount > 0)
+                {
+                    // Clear the old conversation history and keep only remaining messages
+                    await ReplaceConversationHistoryAsync(speaker, remaining, ct).ConfigureAwait(false);
+                    
+                    // Save vector store
+                    await mm.SaveAsync(ct).ConfigureAwait(false);
+
+                    Console.WriteLine($"?? Archived {archivedCount} messages, {remaining.Count} remaining in hot context");
+                    try { OnMemoryArchiveCompleted?.Invoke(archivedCount, archivedCount); } catch { }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"?? Memory overflow processing failed: {ex.Message}");
+                try { OnMemoryArchiveFailed?.Invoke(ex.Message); } catch { }
+            }
+        }
+
+        /// <summary>
+        /// Replace conversation history with the given messages (after archival).
+        /// </summary>
+        private static Task ReplaceConversationHistoryAsync(string speaker, List<Llm.ConversationMessage> remaining, CancellationToken ct)
+        {
+            return Task.Run(() =>
+            {
+                try
+                {
+                    lock (_convLock)
+                    {
+                        var info = GetConversationStorageInfo();
+                        if (string.IsNullOrWhiteSpace(info.explicitFile)) return;
+
+                        // Read existing file
+                        var file = info.explicitFile;
+                        var root = new JObject();
+                        if (File.Exists(file))
+                        {
+                            try { root = JObject.Parse(File.ReadAllText(file, Encoding.UTF8)); }
+                            catch { root = new JObject(); }
+                        }
+
+                        // Replace speaker's messages with remaining ones
+                        var newArr = new JArray();
+                        foreach (var msg in remaining)
+                        {
+                            newArr.Add(new JObject
+                            {
+                                ["Role"] = msg.Role,
+                                ["Content"] = msg.Content ?? string.Empty,
+                                ["Timestamp"] = msg.Timestamp.ToString("o"),
+                                ["Speaker"] = msg.Speaker ?? speaker
+                            });
+                        }
+                        root[speaker] = newArr;
+
+                        Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+                        File.WriteAllText(file, root.ToString(Formatting.Indented), Encoding.UTF8);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    LogErr($"Failed to replace conversation history: {ex.Message}");
+                }
+            }, ct);
+        }
+
+        /// <summary>
+        /// Manually trigger memory archival for a speaker (for testing/UI).
+        /// Returns (messagesArchived, tokensBeforeArchive).
+        /// </summary>
+        public static async Task<(int archived, int tokensBefore)> ForceArchiveToMemoryAsync(string speaker, CancellationToken ct = default)
+        {
+            try
+            {
+                var normalizedSpeaker = string.IsNullOrWhiteSpace(speaker) ? "UnknownSpeaker" : speaker.Trim();
+                
+                await EnsureMemoryInitializedAsync(ct).ConfigureAwait(false);
+                
+                var mm = GetMemoryManager();
+                if (!mm.IsEnabled)
+                {
+                    try { OnMemoryArchiveFailed?.Invoke("Vector memory not enabled"); } catch { }
+                    return (0, 0);
+                }
+
+                var messages = GetConversationMessagesPublic(normalizedSpeaker);
+                if (messages.Count == 0)
+                {
+                    return (0, 0);
+                }
+
+                int tokensBefore = GetConversationTokenCount(normalizedSpeaker);
+                
+                try { OnMemoryArchiveStarted?.Invoke(); } catch { }
+
+                // Archive ALL messages (force mode)
+                var remaining = await mm.ProcessOverflowAsync(messages, normalizedSpeaker, ct, forceArchiveAll: true).ConfigureAwait(false);
+
+                int archivedCount = messages.Count - remaining.Count;
+
+                // Clear conversation history
+                await ClearConversationHistoryAsync(normalizedSpeaker, ct).ConfigureAwait(false);
+
+                // Save
+                await mm.SaveAsync(ct).ConfigureAwait(false);
+
+                Console.WriteLine($"?? Force archived {archivedCount} messages ({tokensBefore} tokens)");
+                try { OnMemoryArchiveCompleted?.Invoke(archivedCount, archivedCount); } catch { }
+
+                return (archivedCount, tokensBefore);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"?? Force archive failed: {ex.Message}");
+                try { OnMemoryArchiveFailed?.Invoke(ex.Message); } catch { }
+                return (0, 0);
+            }
+        }
+
+        /// <summary>
+        /// Archive all messages to vector store (bypasses overflow check).
+        /// </summary>
+        private static async Task<int> ArchiveAllMessagesAsync(MemoryManager mm, List<Llm.ConversationMessage> messages, string speaker, CancellationToken ct)
+        {
+            // Use reflection or make ProcessOverflowAsync accept force parameter
+            // For now, use the existing method but with empty "keep" list
+            var remaining = await mm.ProcessOverflowAsync(messages, speaker, ct).ConfigureAwait(false);
+            return messages.Count - remaining.Count;
+        }
+
+        /// <summary>
+        /// Clear all conversation history for a speaker.
+        /// </summary>
+        public static Task ClearConversationHistoryAsync(string speaker, CancellationToken ct = default)
+        {
+            return Task.Run(() =>
+            {
+                try
+                {
+                    lock (_convLock)
+                    {
+                        var info = GetConversationStorageInfo();
+                        if (string.IsNullOrWhiteSpace(info.explicitFile)) return;
+
+                        var file = info.explicitFile;
+                        if (!File.Exists(file)) return;
+
+                        var root = JObject.Parse(File.ReadAllText(file, Encoding.UTF8));
+                        root[speaker] = new JArray(); // Empty array
+                        File.WriteAllText(file, root.ToString(Formatting.Indented), Encoding.UTF8);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    LogErr($"Failed to clear conversation history: {ex.Message}");
+                }
+            }, ct);
+        }
+
+        /// <summary>
+        /// Clear all vector memory (centroids, summaries, pinned facts).
+        /// </summary>
+        public static async Task ClearVectorMemoryAsync(CancellationToken ct = default)
+        {
+            try
+            {
+                await EnsureMemoryInitializedAsync(ct).ConfigureAwait(false);
+                
+                var mm = GetMemoryManager();
+                if (mm == null)
+                {
+                    throw new InvalidOperationException("Memory manager not available");
+                }
+
+                // Clear the vector store
+                mm.ClearAll();
+                
+                // Save the cleared state
+                await mm.SaveAsync(ct).ConfigureAwait(false);
+                
+                Console.WriteLine("?? Vector memory cleared");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"?? Failed to clear vector memory: {ex.Message}");
+                throw;
+            }
         }
 
         private static void EnsureRouterInitialized()
@@ -393,6 +796,11 @@ namespace Kinectv1
 
         private static string BuildUserPrompt(string speakerName, string transcription, string systemPrompt, string historyBlock)
         {
+            return BuildUserPromptWithMemory(speakerName, transcription, systemPrompt, historyBlock, null);
+        }
+
+        private static string BuildUserPromptWithMemory(string speakerName, string transcription, string systemPrompt, string historyBlock, string memoryContext)
+        {
             var sb = new StringBuilder();
             if (!string.IsNullOrWhiteSpace(systemPrompt))
             {
@@ -401,9 +809,16 @@ namespace Kinectv1
                     sb.AppendLine("SYSTEM: You are a concise assistant for a Kinect-based multimodal app.");
                 sb.AppendLine(sys).AppendLine();
             }
+            
+            // Include memory context (pinned facts, warm summary, retrieved chunks)
+            if (!string.IsNullOrWhiteSpace(memoryContext))
+            {
+                sb.AppendLine("MEMORY CONTEXT:").AppendLine(memoryContext.Trim()).AppendLine();
+            }
+            
             if (!string.IsNullOrWhiteSpace(historyBlock))
             {
-                sb.AppendLine("CONVERSATION:").AppendLine(historyBlock.Trim()).AppendLine();
+                sb.AppendLine("RECENT CONVERSATION:").AppendLine(historyBlock.Trim()).AppendLine();
             }
             sb.Append(speakerName + " says: " + (transcription ?? string.Empty).Trim());
             return sb.ToString();

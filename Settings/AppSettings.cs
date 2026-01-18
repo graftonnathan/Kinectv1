@@ -116,7 +116,19 @@ namespace Kinectv1.Settings
         string ApiKey,
         // New: force speaker override for conversation history and prompts
         bool ForceSpeakerOverrideEnabled,
-        string ForcedSpeakerId
+        string ForcedSpeakerId,
+        // Vector memory (3-layer: hot/warm/cold)
+        bool VectorMemoryEnabled,
+        [property: Range(1000, 128000)] int HotContextTokenLimit,
+        [property: Range(100, 4000)] int WarmSummaryTokenLimit,
+        [property: Range(200, 4000)] int MemoryContextBudget, // Total tokens allowed for all memory injection
+        string VectorDbPath,
+        string EmbeddingsModel,
+        [property: Range(50, 1000)] int ChunkSizeTokens, // Smaller chunks for finer granularity
+        [property: Range(0, 200)] int ChunkOverlapTokens,
+        [property: Range(1, 20)] int VectorSearchTopK, // Reduced max to prevent context bloat
+        [property: Range(0.0, 1.0)] double RecencyBoostFactor,
+        [property: Range(0.0, 1.0)] double MinRetrievalScore // Minimum similarity to include a chunk
     );
 
     // New: Discord settings for bot configuration

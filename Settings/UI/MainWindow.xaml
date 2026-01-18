@@ -610,6 +610,27 @@
                             FontSize="12"/>
                 </Grid>
 
+                <!-- Text Input Section -->
+                <TextBlock Text="Send Text to AI:" FontWeight="Bold" FontSize="14" 
+                           Foreground="{DynamicResource TextPrimary}" Margin="0,0,0,5"/>
+                <Grid Margin="0,0,0,10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="10"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBox Grid.Column="0" Name="TextInputBox" Height="35" 
+                             Style="{StaticResource ThemedTextBoxStyle}"
+                             VerticalContentAlignment="Center"
+                             KeyDown="TextInputBox_KeyDown"
+                             ToolTip="Type a message to send to the AI (Enter to send)"/>
+                    <Button Grid.Column="2" Name="SendTextButton" Content="📤 Send" 
+                            Height="35" Padding="15,5" Click="SendTextButton_Click"
+                            Style="{StaticResource ThemedButtonStyle}"
+                            Background="{DynamicResource AccentBlue}"
+                            ToolTip="Send text to AI"/>
+                </Grid>
+
                 <TextBlock Text="AI Response:" FontWeight="Bold" FontSize="14" 
                            Foreground="{DynamicResource TextPrimary}" Margin="0,0,0,5"/>
                 <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="4"
@@ -622,9 +643,9 @@
                 </Border>
 
                 <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                    <TextBlock Name="OllamaStatusText" Text="?? Ollama: Ready" VerticalAlignment="Center" 
+                    <TextBlock Name="OllamaStatusText" Text="🤖 Ollama: Ready" VerticalAlignment="Center" 
                                Foreground="{DynamicResource AccentBlue}" FontStyle="Italic" FontSize="11" Margin="0,0,15,0"/>
-                    <TextBlock Text="Speak to send your voice to the AI!" VerticalAlignment="Center" 
+                    <TextBlock Text="Speak or type to send to the AI!" VerticalAlignment="Center" 
                                Foreground="{DynamicResource AccentGreen}" FontSize="11"/>
                 </StackPanel>
             </StackPanel>

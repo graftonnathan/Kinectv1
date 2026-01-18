@@ -972,7 +972,7 @@ namespace Kinectv1
                 Console.WriteLine($"Voice enrollment cancel handler failed: {ex.Message}");
             }
         }
-        private void OnVoiceEmbedding(float[] embedding) { _lastVoiceEmbedding = embedding; }
+        private void OnVoiceEmbedding(float[] embedding) { _lastVoiceEmbedding = embedding; try { if (VoiceEnrollmentManager.IsEnrolling) VoiceEnrollmentManager.ProcessVoiceSample(embedding); } catch { } }
         private void OnOllamaPromptSent(string prompt) { }
         private void OnOllamaResponseReceived(string response)
         {
@@ -1336,6 +1336,95 @@ namespace Kinectv1
             catch { }
         }
 
+        // Text input to AI handlers
+        private void TextInputBox_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Enter && !string.IsNullOrWhiteSpace(TextInputBox?.Text))
+            {
+                SendTextToAi();
+                e.Handled = true;
+            }
+        }
+
+        private void SendTextButton_Click(object sender, RoutedEventArgs e)
+        {
+            SendTextToAi();
+        }
+
+        private void SendTextToAi()
+        {
+            try
+            {
+                var text = TextInputBox?.Text?.Trim();
+                if (string.IsNullOrWhiteSpace(text))
+                    return;
+
+                // Clear input box immediately
+                if (TextInputBox != null)
+                    TextInputBox.Text = string.Empty;
+
+                // Barge-in: Cancel any ongoing TTS playback
+                try
+                {
+                    var bargeInEnabled = App.SettingsProvider?.Current?.Asr?.BargeInEnabled ?? true;
+                    if (bargeInEnabled && TtsPlaybackController.HasActiveUtterance())
+                    {
+                        Console.WriteLine("[TextInput] Barge-in: Cancelling current TTS");
+                        TtsPlaybackController.CancelCurrent();
+                        try { Discord.DiscordNetBotManager.CancelCurrentTts(); } catch { }
+                        try { Tts.TtsService.MarkExternalCancel(); } catch { }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[TextInput] Barge-in cancel error: {ex.Message}");
+                }
+
+                // Determine speaker
+                string speaker = "User";
+                try
+                {
+                    var cfg = App.SettingsProvider?.Current?.Ollama;
+                    if (cfg != null && cfg.ForceSpeakerOverrideEnabled && !string.IsNullOrWhiteSpace(cfg.ForcedSpeakerId))
+                    {
+                        speaker = cfg.ForcedSpeakerId.Trim();
+                    }
+                }
+                catch { }
+
+                // Update UI to show we're processing
+                if (OllamaStatusText != null)
+                    OllamaStatusText.Text = "🤖 Ollama: Processing...";
+
+                // Show the dispatched speaker
+                try { ShowSpeakerResolvedForOllama(speaker, 1.0f, "text"); } catch { }
+
+                // Fire-and-forget on background thread to prevent UI freeze
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await OllamaService.DispatchAsync(speaker, text);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"SendTextToAi dispatch error: {ex.Message}");
+                        Dispatcher.BeginInvoke(new Action(() =>
+                        {
+                            if (OllamaStatusText != null)
+                                OllamaStatusText.Text = $"🤖 Ollama: Error - {ex.Message}";
+                        }));
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"SendTextToAi error: {ex.Message}");
+                if (OllamaStatusText != null)
+                    OllamaStatusText.Text = $"🤖 Ollama: Error - {ex.Message}";
+            }
+        }
+
         // Hook to final text only; ignore partials in UI
         private void WireTranscriptionEvents()
         {
@@ -1385,47 +1474,57 @@ namespace Kinectv1
             VoiceRecognizer.OnVoiceEmbedding += OnVoiceEmbedding;
         }
 
-        private async void HandleFinalToLlm(string text)
+        private void HandleFinalToLlm(string text)
         {
-            try
+            // Fire-and-forget on background thread to prevent UI freeze
+            _ = Task.Run(async () =>
             {
-                string speaker = "UnknownSpeaker";
-                float score = 0f;
-                if (_lastVoiceEmbedding != null && _lastVoiceEmbedding.Length > 0)
-                {
-                    var pair = SpeakerIdentifier.IdentifyFromEmbedding(_lastVoiceEmbedding);
-                    speaker = pair.name; score = pair.score;
-                }
-                else
-                {
-                    var hint = SpeakerIdentifier.Identify();
-                    speaker = hint.name; score = hint.score;
-                }
-
-                // Apply forced speaker override if enabled
                 try
                 {
-                    var cfg = App.SettingsProvider?.Current?.Ollama;
-                    if (cfg != null && cfg.ForceSpeakerOverrideEnabled && !string.IsNullOrWhiteSpace(cfg.ForcedSpeakerId))
+                    string speaker = "UnknownSpeaker";
+                    float score = 0f;
+                    if (_lastVoiceEmbedding != null && _lastVoiceEmbedding.Length > 0)
                     {
-                        speaker = cfg.ForcedSpeakerId.Trim();
-                        // Indicate override in UI
-                        try { ShowSpeakerResolvedForOllama(speaker, 1.0f, "override"); } catch { }
+                        var pair = SpeakerIdentifier.IdentifyFromEmbedding(_lastVoiceEmbedding);
+                        speaker = pair.name; score = pair.score;
                     }
                     else
                     {
-                        // Reflect resolved speaker in UI normally
-                        try { ShowSpeakerResolvedForOllama(speaker, score, "voice"); } catch { }
+                        var hint = SpeakerIdentifier.Identify();
+                        speaker = hint.name; score = hint.score;
                     }
-                }
-                catch { }
 
-                await OllamaService.DispatchAsync(speaker, text);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Dispatch pipeline error: {ex.Message}");
-            }
+                    // Apply forced speaker override if enabled
+                    try
+                    {
+                        var cfg = App.SettingsProvider?.Current?.Ollama;
+                        if (cfg != null && cfg.ForceSpeakerOverrideEnabled && !string.IsNullOrWhiteSpace(cfg.ForcedSpeakerId))
+                        {
+                            speaker = cfg.ForcedSpeakerId.Trim();
+                            // Indicate override in UI (dispatch to UI thread)
+                            Dispatcher.BeginInvoke(new Action(() =>
+                            {
+                                try { ShowSpeakerResolvedForOllama(speaker, 1.0f, "override"); } catch { }
+                            }));
+                        }
+                        else
+                        {
+                            // Reflect resolved speaker in UI normally (dispatch to UI thread)
+                            Dispatcher.BeginInvoke(new Action(() =>
+                            {
+                                try { ShowSpeakerResolvedForOllama(speaker, score, "voice"); } catch { }
+                            }));
+                        }
+                    }
+                    catch { }
+
+                    await OllamaService.DispatchAsync(speaker, text);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Dispatch pipeline error: {ex.Message}");
+                }
+            });
         }
     }
 }
