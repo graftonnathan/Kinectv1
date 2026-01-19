@@ -1,7 +1,7 @@
 # Guardrails
 - Make only minimal, local edits unless I say otherwise.
 - No refactors, renames, reformatting, or logging unless requested.
-- If >20 lines change or a new file/dependency is needed: STOP and ask.
+- If >80 lines change or a new file/dependency is needed: STOP and ask.
 - Prefer “plan → wait for approval → apply diff”.
 - When editing, output unified diff only.
 - Every code change requires a comprehensive check of each call, class, helper involved as to maintain function.

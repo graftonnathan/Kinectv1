@@ -100,8 +100,8 @@ namespace Kinectv1.UI.Settings
 
             Categories.Add(new SettingsCategoryVM
             {
-                Name = "Mumble",
-                EditorView = new MumbleSettingsView()
+                Name = "TeamTalk",
+                EditorView = new TeamTalkSettingsView()
             });
 
             Categories.Add(new SettingsCategoryVM

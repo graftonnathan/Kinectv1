@@ -1,4 +1,4 @@
-<UserControl x:Class="Kinectv1.UI.Settings.MumbleSettingsView"
+<UserControl x:Class="Kinectv1.UI.Settings.TeamTalkSettingsView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
@@ -8,11 +8,9 @@
     <UserControl.Resources>
         <SolidColorBrush x:Key="WindowBackground" Color="#FF1E1E1E"/>
         <SolidColorBrush x:Key="SurfaceBackground" Color="#FF2D2D30"/>
-        <SolidColorBrush x:Key="SurfaceBackgroundLight" Color="#FF3F3F46"/>
         <SolidColorBrush x:Key="BorderBrush" Color="#FF464647"/>
         <SolidColorBrush x:Key="TextPrimary" Color="#FFFFFFFF"/>
         <SolidColorBrush x:Key="TextSecondary" Color="#FFE0E0E0"/>
-        <SolidColorBrush x:Key="AccentBlue" Color="#FF0078D4"/>
         <SolidColorBrush x:Key="AccentGreen" Color="#FF107C10"/>
         <Style x:Key="ThemedButtonStyle" TargetType="Button">
             <Setter Property="Background" Value="{DynamicResource SurfaceBackground}"/>
@@ -40,7 +38,7 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <TextBlock Text="Mumble Settings" Foreground="{DynamicResource TextPrimary}" FontSize="16" FontWeight="SemiBold"/>
+        <TextBlock Text="TeamTalk Settings" Foreground="{DynamicResource TextPrimary}" FontSize="16" FontWeight="SemiBold"/>
 
         <StackPanel Grid.Row="1" Margin="0,10,0,0">
             <Grid Margin="0,0,0,8">
@@ -48,7 +46,7 @@
                     <ColumnDefinition Width="220"/>
                     <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
-                <TextBlock Text="Enable Mumble Client" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
+                <TextBlock Text="Enable TeamTalk Client" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
                 <CheckBox x:Name="EnabledCheckBox" Grid.Column="1" Style="{StaticResource ThemedCheckBoxStyle}"/>
             </Grid>
 
@@ -57,7 +55,7 @@
                     <ColumnDefinition Width="220"/>
                     <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
-                <TextBlock Text="Auto-connect on Mumble mode" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
+                <TextBlock Text="Auto-connect on TeamTalk mode" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
                 <CheckBox x:Name="AutoConnectCheckBox" Grid.Column="1" Style="{StaticResource ThemedCheckBoxStyle}"/>
             </Grid>
 
@@ -75,8 +73,8 @@
                     <ColumnDefinition Width="220"/>
                     <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
-                <TextBlock Text="Port" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
-                <TextBox x:Name="PortTextBox" Grid.Column="1" Style="{StaticResource ThemedTextBoxStyle}"/>
+                <TextBlock Text="TCP Port" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
+                <TextBox x:Name="TcpPortTextBox" Grid.Column="1" Style="{StaticResource ThemedTextBoxStyle}"/>
             </Grid>
 
             <Grid Margin="0,0,0,8">
@@ -93,8 +91,8 @@
                     <ColumnDefinition Width="220"/>
                     <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
-                <TextBlock Text="Server Password" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
-                <PasswordBox x:Name="ServerPasswordBox" Grid.Column="1" Background="{DynamicResource SurfaceBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource BorderBrush}"/>
+                <TextBlock Text="Password" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
+                <PasswordBox x:Name="PasswordBox" Grid.Column="1" Background="{DynamicResource SurfaceBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource BorderBrush}"/>
             </Grid>
 
             <Grid Margin="0,0,0,8">
@@ -102,7 +100,7 @@
                     <ColumnDefinition Width="220"/>
                     <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
-                <TextBlock Text="Channel Path" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
+                <TextBlock Text="Channel" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
                 <TextBox x:Name="ChannelTextBox" Grid.Column="1" Style="{StaticResource ThemedTextBoxStyle}"/>
             </Grid>
 
@@ -120,8 +118,8 @@
                     <ColumnDefinition Width="220"/>
                     <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
-                <TextBlock Text="Validate TLS Certificate" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
-                <CheckBox x:Name="ValidateTlsCheckBox" Grid.Column="1" Style="{StaticResource ThemedCheckBoxStyle}"/>
+                <TextBlock Text="Encrypted connection (TLS)" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
+                <CheckBox x:Name="EncryptedCheckBox" Grid.Column="1" Style="{StaticResource ThemedCheckBoxStyle}"/>
             </Grid>
 
             <Grid Margin="0,0,0,8">
@@ -129,47 +127,12 @@
                     <ColumnDefinition Width="220"/>
                     <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
-                <TextBlock Text="Self Mute/Deafen by default" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
-                <StackPanel Grid.Column="1" Orientation="Horizontal">
-                    <CheckBox x:Name="SelfMuteCheckBox" Content="Mute" Style="{StaticResource ThemedCheckBoxStyle}" Margin="0,0,12,0"/>
-                    <CheckBox x:Name="SelfDeafCheckBox" Content="Deafen" Style="{StaticResource ThemedCheckBoxStyle}"/>
-                </StackPanel>
-            </Grid>
-
-            <Grid Margin="0,0,0,8">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="220"/>
-                    <ColumnDefinition Width="*"/>
-                </Grid.ColumnDefinitions>
-                <TextBlock Text="Opus Bitrate (bps)" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
-                <TextBox x:Name="OpusBitrateTextBox" Grid.Column="1" Style="{StaticResource ThemedTextBoxStyle}"/>
-            </Grid>
-
-            <Grid Margin="0,0,0,8">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="220"/>
-                    <ColumnDefinition Width="*"/>
-                </Grid.ColumnDefinitions>
-                <TextBlock Text="VAD Threshold (RMS)" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
-                <TextBox x:Name="VadThresholdTextBox" Grid.Column="1" Style="{StaticResource ThemedTextBoxStyle}"/>
-            </Grid>
-
-            <Grid Margin="0,0,0,8">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="220"/>
-                    <ColumnDefinition Width="*"/>
-                </Grid.ColumnDefinitions>
-                <TextBlock Text="Reconnect Backoff (ms)" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
-                <TextBox x:Name="ReconnectBackoffTextBox" Grid.Column="1" Style="{StaticResource ThemedTextBoxStyle}"/>
-            </Grid>
-
-            <Grid Margin="0,0,0,8">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="220"/>
-                    <ColumnDefinition Width="*"/>
-                </Grid.ColumnDefinitions>
-                <TextBlock Text="Enable Text Commands" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
-                <CheckBox x:Name="TextCommandsCheckBox" Grid.Column="1" Style="{StaticResource ThemedCheckBoxStyle}"/>
+                <TextBlock Text="TLS validation" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
+                <ComboBox x:Name="TlsValidateComboBox" Grid.Column="1" Background="{DynamicResource SurfaceBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource BorderBrush}">
+                    <ComboBoxItem Content="Strict"/>
+                    <ComboBoxItem Content="AcceptSelfSigned"/>
+                    <ComboBoxItem Content="Off"/>
+                </ComboBox>
             </Grid>
 
             <TextBlock x:Name="StatusText" Foreground="{DynamicResource TextSecondary}"/>

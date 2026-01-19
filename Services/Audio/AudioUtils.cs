@@ -2,6 +2,7 @@
 // AudioUtils.cs
 using System;
 using System.Buffers;
+using System.Collections.Concurrent;
 using NAudio.Wave;
 using NAudio.Dsp;
 
@@ -77,13 +78,39 @@ public static class AudioUtils
         finally { ArrayPool<float>.Shared.Return(pooled); }
     }
 
-    public static float[] ResampleMono48kTo16k(float[] input, int inputLength)
+    // Per-source filter state to maintain continuity across frames
+    private static readonly ConcurrentDictionary<string, BiQuadFilter> _resamplerFilters = new ConcurrentDictionary<string, BiQuadFilter>();
+    
+    /// <summary>
+    /// Get or create a persistent low-pass filter for the given source.
+    /// This maintains filter state across frames for smooth audio.
+    /// </summary>
+    private static BiQuadFilter GetOrCreateFilter(string sourceId)
+    {
+        return _resamplerFilters.GetOrAdd(sourceId ?? "default", _ => BiQuadFilter.LowPassFilter(48000, 7000, 0.707f));
+    }
+    
+    /// <summary>
+    /// Reset the filter state for a source (call when audio stream restarts)
+    /// </summary>
+    public static void ResetResamplerFilter(string sourceId)
+    {
+        _resamplerFilters.TryRemove(sourceId ?? "default", out _);
+    }
+
+    /// <summary>
+    /// Resample MONO 48kHz float audio to 16kHz.
+    /// Uses BiQuad low-pass filter at 7kHz (Nyquist for 16kHz) and linear interpolation.
+    /// IMPORTANT: Uses per-source persistent filter state for continuity across frames.
+    /// </summary>
+    public static float[] ResampleMono48kTo16k(float[] input, int inputLength, string sourceId = null)
     {
         if (input == null || inputLength <= 0) return Array.Empty<float>();
         var lpfBuffer = ArrayPool<float>.Shared.Rent(inputLength);
         try
         {
-            var lp = BiQuadFilter.LowPassFilter(48000, 7000, 0.707f);
+            // Use persistent filter to maintain state across frames
+            var lp = GetOrCreateFilter(sourceId);
             for (int i = 0; i < inputLength; i++) lpfBuffer[i] = lp.Transform(input[i]);
             int outputLength = inputLength / 3; if (outputLength <= 0) return Array.Empty<float>();
             var output = new float[outputLength];
@@ -96,8 +123,21 @@ public static class AudioUtils
         }
         finally { ArrayPool<float>.Shared.Return(lpfBuffer); }
     }
+    
+    /// <summary>
+    /// Legacy overload without sourceId - creates new filter each time (may cause discontinuities)
+    /// </summary>
+    public static float[] ResampleMono48kTo16k(float[] input, int inputLength)
+    {
+        // For backward compatibility, use a shared "legacy" filter
+        return ResampleMono48kTo16k(input, inputLength, "legacy");
+    }
 
-    public static float[] Resample48kTo16kMono(float[] input, int inputLength)
+    /// <summary>
+    /// Resample STEREO 48kHz float audio to MONO 16kHz.
+    /// First converts stereo to mono by averaging channels, then resamples.
+    /// </summary>
+    public static float[] ResampleStereo48kTo16kMono(float[] input, int inputLength, string sourceId = null)
     {
         if (input == null || inputLength <= 0) return Array.Empty<float>();
         var monoBuf = ArrayPool<float>.Shared.Rent(inputLength / 2);
@@ -105,16 +145,40 @@ public static class AudioUtils
         {
             int monoLen = inputLength / 2;
             for (int i = 0; i < monoLen; i++) monoBuf[i] = (input[i * 2] + input[i * 2 + 1]) * 0.5f;
-            return ResampleMono48kTo16k(monoBuf, monoLen);
+            return ResampleMono48kTo16k(monoBuf, monoLen, sourceId);
         }
         finally { ArrayPool<float>.Shared.Return(monoBuf); }
     }
+    
+    /// <summary>
+    /// Legacy overload without sourceId
+    /// </summary>
+    public static float[] ResampleStereo48kTo16kMono(float[] input, int inputLength)
+    {
+        return ResampleStereo48kTo16kMono(input, inputLength, null);
+    }
 
-    public static float[] Resample48kTo16kMono(byte[] input, int inputLength)
+    /// <summary>
+    /// Resample STEREO 48kHz PCM16 byte audio to MONO 16kHz float.
+    /// For Discord audio which is 48kHz stereo.
+    /// </summary>
+    public static float[] Resample48kTo16kMono(float[] input, int inputLength)
+    {
+        // This is the stereo version - kept for backward compatibility with Discord
+        return ResampleStereo48kTo16kMono(input, inputLength);
+    }
+
+    /// <summary>
+    /// Resample STEREO 48kHz PCM16 byte audio to MONO 16kHz float.
+    /// IMPORTANT: This expects STEREO input (Discord format: 48kHz stereo 16-bit).
+    /// For MONO input (Mumble format), use ResampleMono48kTo16kFromBytes instead.
+    /// </summary>
+    public static float[] Resample48kTo16kMono(byte[] input, int inputLength, string sourceId = null)
     {
         if (input == null || inputLength <= 0) return Array.Empty<float>();
         if (inputLength % 2 != 0) inputLength--;
-        int sampleCount = inputLength / 2; var floatInput = ArrayPool<float>.Shared.Rent(sampleCount);
+        int sampleCount = inputLength / 2; // Total samples (for stereo: L,R,L,R... so sampleCount/2 stereo pairs)
+        var floatInput = ArrayPool<float>.Shared.Rent(sampleCount);
         try
         {
             for (int i = 0; i < sampleCount; i++)
@@ -123,9 +187,51 @@ public static class AudioUtils
                 short sample = (short)((input[bi + 1] << 8) | input[bi]);
                 floatInput[i] = sample / 32768.0f;
             }
-            return Resample48kTo16kMono(floatInput, sampleCount);
+            // This treats the input as stereo and converts to mono
+            return ResampleStereo48kTo16kMono(floatInput, sampleCount, sourceId);
         }
         finally { ArrayPool<float>.Shared.Return(floatInput); }
+    }
+    
+    /// <summary>
+    /// Legacy overload without sourceId
+    /// </summary>
+    public static float[] Resample48kTo16kMono(byte[] input, int inputLength)
+    {
+        return Resample48kTo16kMono(input, inputLength, null);
+    }
+
+    /// <summary>
+    /// Resample MONO 48kHz PCM16 byte audio to MONO 16kHz float.
+    /// For Mumble audio which is 48kHz mono 16-bit.
+    /// Uses persistent filter state for the given source to maintain continuity.
+    /// </summary>
+    public static float[] ResampleMono48kTo16kFromBytes(byte[] input, int inputLength, string sourceId = null)
+    {
+        if (input == null || inputLength <= 0) return Array.Empty<float>();
+        if (inputLength % 2 != 0) inputLength--;
+        int sampleCount = inputLength / 2; // Mono samples
+        var floatInput = ArrayPool<float>.Shared.Rent(sampleCount);
+        try
+        {
+            for (int i = 0; i < sampleCount; i++)
+            {
+                int bi = i * 2; if (bi + 1 >= inputLength) break;
+                short sample = (short)((input[bi + 1] << 8) | input[bi]);
+                floatInput[i] = sample / 32768.0f;
+            }
+            // Input is already mono, just resample with persistent filter
+            return ResampleMono48kTo16k(floatInput, sampleCount, sourceId);
+        }
+        finally { ArrayPool<float>.Shared.Return(floatInput); }
+    }
+    
+    /// <summary>
+    /// Legacy overload without sourceId
+    /// </summary>
+    public static float[] ResampleMono48kTo16kFromBytes(byte[] input, int inputLength)
+    {
+        return ResampleMono48kTo16kFromBytes(input, inputLength, null);
     }
 
     public static class FrameBuilder

@@ -40,6 +40,23 @@ namespace Kinectv1
             // Don't initialize here - move to OnStartup to ensure proper console allocation
         }
 
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool SetDllDirectory(string lpPathName);
+
+        private static void EnsureNativeDllSearchPaths()
+        {
+            try
+            {
+                var baseDir = AppDomain.CurrentDomain.BaseDirectory;
+                var teamtalkDir = System.IO.Path.Combine(baseDir, "lib", "teamtalk");
+                if (System.IO.Directory.Exists(teamtalkDir))
+                {
+                    SetDllDirectory(teamtalkDir);
+                }
+            }
+            catch { }
+        }
+
         protected override void OnStartup(StartupEventArgs e)
         {
             // Initialize console for essential output first
@@ -53,6 +70,9 @@ namespace Kinectv1
             {
                 System.Diagnostics.Debug.WriteLine($"Console initialization failed: {ex.Message}");
             }
+
+            // Ensure native DLL search paths are configured before any P/Invoke loads
+            EnsureNativeDllSearchPaths();
 
             // Reduce native OpenMP duplicate runtime crashes when mixing libraries
             try { Environment.SetEnvironmentVariable("KMP_DUPLICATE_LIB_OK", "TRUE", EnvironmentVariableTarget.Process); } catch { }

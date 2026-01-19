@@ -80,16 +80,6 @@
           "Microsoft.ML.OnnxRuntime.Managed": "1.22.1"
         }
       },
-      "MumbleSharp": {
-        "type": "Direct",
-        "requested": "[2.0.1, )",
-        "resolved": "2.0.1",
-        "contentHash": "Oy/+zMkTSBj5AhZ8awV2/e0bdCd2wVma6urg36dvj/7nzrX2ZOap7yfbU7MjFskaABqsHZCLmfHDZigI9VmTxg==",
-        "dependencies": {
-          "NAudio.WinMM": "2.1.0",
-          "protobuf-net": "2.4.7"
-        }
-      },
       "NAudio": {
         "type": "Direct",
         "requested": "[2.2.1, )",
@@ -314,11 +304,6 @@
           "System.Xml.ReaderWriter": "4.0.11",
           "System.Xml.XDocument": "4.0.11"
         }
-      },
-      "protobuf-net": {
-        "type": "Transitive",
-        "resolved": "2.4.7",
-        "contentHash": "0+zS9IjL7DIcnJ1tz0KQ3luhS4BlmvGzX04dju7ejhX3P91AZ33AMF3nL6z3Hh2bB5+JW6U/Fmo8PrmheKnm4g=="
       },
       "System.AppContext": {
         "type": "Transitive",

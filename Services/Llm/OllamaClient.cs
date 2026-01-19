@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net.Http;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -12,20 +13,18 @@ namespace Kinectv1.Llm
 {
     public sealed class OllamaClient : ILlmClient
     {
-        private readonly HttpClient _http;
         private readonly string _base;
+        private readonly string _apiKey;
         private readonly Func<string> _getModel;
 
         public OllamaClient(string baseUrl, string apiKey, Func<string> getModel)
         {
             _base = (baseUrl ?? "http://127.0.0.1:11434").TrimEnd('/');
-            _http = new HttpClient();
-            if (!string.IsNullOrWhiteSpace(apiKey))
-                _http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+            _apiKey = apiKey;
             _getModel = getModel ?? (() => "llama3.1:8b");
         }
 
-        public async IAsyncEnumerable<string> ChatStreamAsync(string system, string user, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+        public async IAsyncEnumerable<string> ChatStreamAsync(string system, string user, [EnumeratorCancellation] CancellationToken ct = default)
         {
             var reqObj = new
             {
@@ -41,45 +40,89 @@ namespace Kinectv1.Llm
             };
 
             var json = JsonConvert.SerializeObject(reqObj);
+            
+            // New HttpClient per request for clean cancellation
+            using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
+            if (!string.IsNullOrWhiteSpace(_apiKey))
+                http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _apiKey);
+            
             using var msg = new HttpRequestMessage(HttpMethod.Post, $"{_base}/v1/chat/completions")
             { Content = new StringContent(json, Encoding.UTF8, "application/json") };
 
-            using var resp = await _http.SendAsync(msg, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
-            resp.EnsureSuccessStatusCode();
-
-            using (var s = await resp.Content.ReadAsStreamAsync().ConfigureAwait(false))
-            using (var r = new StreamReader(s, Encoding.UTF8, true))
+            HttpResponseMessage resp = null;
+            Stream stream = null;
+            StreamReader reader = null;
+            CancellationTokenRegistration registration = default;
+            
+            try
             {
-                while (!r.EndOfStream && !ct.IsCancellationRequested)
+                // Forcefully abort connection when cancelled
+                registration = ct.Register(() =>
                 {
-                    var line = await r.ReadLineAsync().ConfigureAwait(false);
-                    if (string.IsNullOrWhiteSpace(line)) continue;
-                    if (!line.StartsWith("data:")) continue;
-                    var payload = line.Substring("data:".Length).Trim();
-                    if (payload == "[DONE]") yield break;
+                    try { reader?.Dispose(); } catch { }
+                    try { stream?.Dispose(); } catch { }
+                    try { resp?.Dispose(); } catch { }
+                    try { http.CancelPendingRequests(); } catch { }
+                });
+                
+                resp = await http.SendAsync(msg, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+                resp.EnsureSuccessStatusCode();
 
-                    string piece = null;
-                    try
-                    {
-                        var obj = JObject.Parse(payload);
-                        var delta = obj["choices"][0]["delta"] as JObject;
-                        if (delta != null && delta.TryGetValue("content", out var t))
-                        {
-                            piece = t?.ToString();
-                        }
-                    }
-                    catch { /* ignore keepalives/chunks */ }
+                stream = await resp.Content.ReadAsStreamAsync().ConfigureAwait(false);
+                reader = new StreamReader(stream, Encoding.UTF8, true);
+                
+                while (!ct.IsCancellationRequested)
+                {
+                    string line;
+                    try { line = await reader.ReadLineAsync().ConfigureAwait(false); }
+                    catch (ObjectDisposedException) { yield break; }
+                    catch (IOException) { yield break; }
+                    
+                    if (line == null || ct.IsCancellationRequested)
+                        yield break;
+                    
+                    if (string.IsNullOrWhiteSpace(line) || !line.StartsWith("data:")) 
+                        continue;
+                    
+                    var payload = line.Substring(5).Trim();
+                    if (payload == "[DONE]") 
+                        yield break;
 
-                    if (!string.IsNullOrEmpty(piece)) yield return piece;
+                    var piece = ExtractContent(payload);
+                    if (!string.IsNullOrEmpty(piece)) 
+                        yield return piece;
                 }
             }
+            finally
+            {
+                registration.Dispose();
+                reader?.Dispose();
+                stream?.Dispose();
+                resp?.Dispose();
+            }
+        }
+
+        private static string ExtractContent(string payload)
+        {
+            try
+            {
+                var obj = JObject.Parse(payload);
+                var delta = obj["choices"]?[0]?["delta"] as JObject;
+                if (delta != null && delta.TryGetValue("content", out var t))
+                    return t?.ToString();
+                return null;
+            }
+            catch { return null; }
         }
 
         public async Task<string> ChatOnceAsync(string system, string user, CancellationToken ct = default)
         {
             var sb = new StringBuilder();
             await foreach (var tok in ChatStreamAsync(system, user, ct))
+            {
+                if (ct.IsCancellationRequested) break;
                 sb.Append(tok);
+            }
             return sb.ToString();
         }
     }

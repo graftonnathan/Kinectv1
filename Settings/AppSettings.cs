@@ -10,7 +10,7 @@ namespace Kinectv1.Settings
         [property: Required] TtsSettings Tts,
         [property: Required] OllamaSettings Ollama,
         [property: Required] DiscordSettings Discord,
-        [property: Required] MumbleSettings Mumble,
+        [property: Required] TeamTalkSettings TeamTalk,
         [property: Required] UiSettings Ui,
         [property: Required] AsrSettings Asr,
         [property: Required] SttSettings Stt,
@@ -87,8 +87,8 @@ namespace Kinectv1.Settings
         DiscordVoice,
         [EnumMember(Value = "loopback")]
         SystemLoopback,
-        [EnumMember(Value = "mumble")]
-        MumbleVoice
+        [EnumMember(Value = "teamtalk")]
+        TeamTalkVoice
     }
 
     // App-level behavior
@@ -139,26 +139,23 @@ namespace Kinectv1.Settings
         string Token
     );
 
-    public enum MumbleTlsValidate { Strict, AcceptSelfSigned, Off }
+    public enum TeamTalkTlsValidate { Strict, AcceptSelfSigned, Off }
 
-    // New: Mumble settings for client configuration
-    public sealed record MumbleSettings(
+    // New: TeamTalk settings for client configuration
+    public sealed record TeamTalkSettings(
         bool Enabled,
         bool AutoConnect,
         [property: Required] string Host,
-        [property: Range(1, 65535)] int Port,
+        [property: Range(1, 65535)] int TcpPort,
+        [property: Range(1, 65535)] int UdpPort,
+        bool Encrypted,
+        TeamTalkTlsValidate TlsValidate,
+        string Nickname,
         [property: Required] string Username,
-        string ServerPassword,
+        string Password,
         string Channel,
         string ChannelPassword,
-        bool ValidateTls,
-        bool SelfMute,
-        bool SelfDeaf,
-        [property: Range(6000, 96000)] int OpusBitrate,
-        [property: Range(1, 10000)] int VadThreshold,
-        [property: Range(0, 60000)] int ReconnectBackoffMs,
-        bool TextCommandsEnabled,
-        MumbleTlsValidate TlsValidate = MumbleTlsValidate.Strict
+        string ChannelPath
     );
 
     // New: UI settings

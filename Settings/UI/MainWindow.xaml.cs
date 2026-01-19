@@ -12,8 +12,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 using Kinectv1.Discord;
-using Kinectv1.Mumble; // added
-using Kinectv1.Settings; // added for AudioInMode and other settings types
+using Kinectv1.Settings;
 using Kinectv1.Tts;
 
 namespace Kinectv1
@@ -30,7 +29,7 @@ namespace Kinectv1
         // Latest RMS values (pull-model)
         private volatile float _latestRmsValue = 0f;
         private volatile float _latestDiscordRmsValue = 0f;
-        private volatile float _latestMumbleRmsValue = 0f; // NEW: Latest Mumble RMS value
+        private volatile float _latestTeamTalkRmsValue = 0f; // NEW: Latest TeamTalk RMS value
 
         // ENHANCED DOUBLE REGISTRATION PREVENTION - Discord initialization protection
         private static int _discordInitInProgress = 0; // 0 = not in progress, 1 = in progress
@@ -38,7 +37,7 @@ namespace Kinectv1
         // Audio input settings
         private bool _isMicrophoneInputEnabled = true;
         private bool _isDiscordInputEnabled = false;
-        private bool _isMumbleInputEnabled = false; // new: UI state mirror (future input)
+        private bool _isTeamTalkInputEnabled = false; // TeamTalk input toggle (UI state mirror)
         private AudioInMode _currentAudioMode = AudioInMode.LocalMic;
         private bool _updatingAudioMode = false;
 
@@ -53,18 +52,27 @@ namespace Kinectv1
         private DispatcherTimer _rmsUiTimer; // single timer drives all RMS UI updates
         private SolidColorBrush _rmsGreenBrush, _rmsOrangeBrush, _rmsRedBrush;
         private SolidColorBrush _discordLowBrush, _discordMidBrush, _discordHighBrush;
-        private double _lastMicPct = -1, _lastDiscordPct = -1, _lastMumblePct = -1;
-        private int _lastMicBucket = -1, _lastDiscordBucket = -1, _lastMumbleBucket = -1;
+        private double _lastMicPct = -1, _lastDiscordPct = -1, _lastTeamTalkPct = -1;
+        private int _lastMicBucket = -1, _lastDiscordBucket = -1, _lastTeamTalkBucket = -1;
         private float _smoothedRms = 0f; // baseline RMS (mic)
         private float _smoothedDiscordRms = 0f; // baseline discord
-        private float _smoothedMumbleRms = 0f; // baseline mumble
+        private float _smoothedTeamTalkRms = 0f; // baseline team talk
         // NEW: track last RMS update times to allow decay when capture pauses
         private DateTime _lastMicRmsTime = DateTime.MinValue;
         private DateTime _lastDiscordRmsTime = DateTime.MinValue;
-        private DateTime _lastMumbleRmsTime = DateTime.MinValue;
+        private DateTime _lastTeamTalkRmsTime = DateTime.MinValue;
 
         private double _localTtsVolume = 1.0; // 100%
         private double _discordTtsVolume = 1.0; // 100%
+
+        // Track when streaming TTS was recently active to prevent fallback double-play after barge-in
+        private DateTime _lastStreamingTtsActive = DateTime.MinValue;
+
+        // NEW: TeamTalk service and audio queue for STT
+        private TeamTalkVoiceService _teamTalkSvc;
+        private BoundedAudioFrameQueue _teamTalkSttQueue;
+        private CancellationTokenSource _teamTalkCts;
+        private Task _teamTalkSttTask;
 
         public MainWindow()
         {
@@ -133,6 +141,7 @@ namespace Kinectv1
                     VoiceRecognizer.OnTranscription += UpdateTranscription;
                     VoiceRecognizer.OnRmsLevel += UpdateRmsLevel;
                     VoiceRecognizer.OnDiscordRmsLevel += UpdateDiscordRmsLevel; // NEW: Discord RMS event
+                    // Mumble RMS is driven directly from MumbleClientManager.OnRmsLevel
                     VoiceRecognizer.OnSpeakerMatch += ShowSpeakerMatch; // Will no-op (live view disabled)
                     // Show only resolved-at-dispatch events
                     VoiceRecognizer.OnSpeakerResolvedForOllama += ShowSpeakerResolvedForOllama;
@@ -146,59 +155,6 @@ namespace Kinectv1
                 catch (Exception ex)
                 {
                     Console.WriteLine($"Could not hook VoiceRecognizer events: {ex.Message}");
-                }
-
-                // Hook Mumble events (Phase 1 placeholders)
-                try
-                {
-                    MumbleClientManager.OnRmsLevel += UpdateMumbleRmsLevel;
-                    MumbleClientManager.OnStatusChanged += status => { try { Console.WriteLine($"[Mumble] {status}"); } catch { } };
-                    MumbleClientManager.OnError += err => { try { Console.WriteLine($"[Mumble][Error] {err}"); } catch { } };
-                }
-                catch { }
-
-                try
-                {
-                    VoiceEnrollmentManager.OnEnrollmentProgress += UpdateVoiceEnrollmentProgress;
-                    VoiceEnrollmentManager.OnEnrollmentComplete += OnVoiceEnrollmentComplete;
-                    VoiceEnrollmentManager.OnEnrollmentCancelled += OnVoiceEnrollmentCancelled;
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Could not hook voice enrollment events: {ex.Message}");
-                }
-
-                try
-                {
-                    EnhancedKinectFaceTracker.OnAllFacesDetected += OnAllFacesDetected;
-                    Console.WriteLine("Enhanced face detection events hooked");
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Could not hook enhanced face detection events: {ex.Message}");
-                }
-
-                try
-                {
-                    IdentityFusionTracker.OnIdentityFused += OnIdentityFused;
-                    Console.WriteLine("Identity fusion events hooked");
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Could not hook identity fusion events: {ex.Message}");
-                }
-
-                // Hook Ollama events
-                try
-                {
-                    OllamaService.OnPromptSent += OnOllamaPromptSent;
-                    OllamaService.OnResponseReceived += OnOllamaResponseReceived;
-                    OllamaService.OnError += OnOllamaError;
-                    Console.WriteLine("Ollama service events hooked");
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Could not hook Ollama events: {ex.Message}");
                 }
 
                 // Hook TTS events
@@ -400,45 +356,46 @@ namespace Kinectv1
                 }
             }
 
-            // MUMBLE
+            // TEAMTALK - Show RMS when connected (for monitoring), regardless of input mode
             try
             {
-                var bar = this.FindName("MumbleRmsBar") as ProgressBar;
-                var text = this.FindName("MumbleRmsText") as TextBlock;
-                if (_isMumbleInputEnabled && bar != null && text != null)
+                var bar = this.FindName("TeamTalkRmsBar") as ProgressBar;
+                var text = this.FindName("TeamTalkRmsText") as TextBlock;
+                // Show when TeamTalk is connected OR when TeamTalk input mode is selected
+                bool showTeamTalk = _isTeamTalkInputEnabled;
+                if (showTeamTalk && bar != null && text != null)
                 {
-                    bool staleM = (now - _lastMumbleRmsTime).TotalMilliseconds > 250;
-                    var input = staleM ? 0f : _latestMumbleRmsValue; // expected 0..1
-                    input = Math.Max(0f, Math.Min(1f, input));
+                    bool staleM = (now - _lastTeamTalkRmsTime).TotalMilliseconds > 250;
+                    var input = staleM ? 0f : _latestTeamTalkRmsValue; // raw scale 0..10000 (same as mic)
 
-                    if (input > _smoothedMumbleRms)
-                        _smoothedMumbleRms = _smoothedMumbleRms * 0.4f + input * 0.6f;
+                    if (input > _smoothedTeamTalkRms)
+                        _smoothedTeamTalkRms = _smoothedTeamTalkRms * 0.4f + input * 0.6f;
                     else
-                        _smoothedMumbleRms = _smoothedMumbleRms * 0.85f + input * 0.15f;
+                        _smoothedTeamTalkRms = _smoothedTeamTalkRms * 0.85f + input * 0.15f;
 
                     if (staleM && input == 0f)
                     {
-                        _smoothedMumbleRms *= 0.80f;
-                        if (_smoothedMumbleRms < 0.01f) _smoothedMumbleRms = 0f;
+                        _smoothedTeamTalkRms *= 0.80f;
+                        if (_smoothedTeamTalkRms < 5f) _smoothedTeamTalkRms = 0f;
                     }
 
-                    var pct = _smoothedMumbleRms * 100.0;
-                    bool forceUpdate = staleM && pct < _lastMumblePct;
-                    if (forceUpdate || Math.Abs(pct - _lastMumblePct) >= 0.5)
+                    var pct = Math.Max(0.0, Math.Min(100.0, (_smoothedTeamTalkRms / 10000.0) * 100.0));
+                    bool forceUpdate = staleM && pct < _lastTeamTalkPct;
+                    if (forceUpdate || Math.Abs(pct - _lastTeamTalkPct) >= 0.5)
                     {
                         bar.Value = pct;
-                        _lastMumblePct = pct;
-                        text.Text = $"RMS: {_smoothedMumbleRms:F2} ({(int)pct}%)";
+                        _lastTeamTalkPct = pct;
+                        text.Text = $"RMS: {_smoothedTeamTalkRms:F1} ({(int)pct}%)";
                     }
                     else if (text.Text.Length == 0)
                     {
-                        text.Text = $"RMS: {_smoothedMumbleRms:F2} ({(int)pct}%)";
+                        text.Text = $"RMS: {_smoothedTeamTalkRms:F1} ({(int)pct}%)";
                     }
 
                     int bucket = (pct <= 33) ? 0 : (pct <= 66 ? 1 : 2);
-                    if (bucket != _lastMumbleBucket)
+                    if (bucket != _lastTeamTalkBucket)
                     {
-                        _lastMumbleBucket = bucket;
+                        _lastTeamTalkBucket = bucket;
                         bar.Foreground = bucket == 0 ? _rmsGreenBrush : bucket == 1 ? _rmsOrangeBrush : _rmsRedBrush;
                     }
                 }
@@ -684,12 +641,6 @@ namespace Kinectv1
             _lastDiscordRmsTime = DateTime.UtcNow; // NEW
         }
 
-        private void UpdateMumbleRmsLevel(float rawRms)
-        {
-            if (_isClosing) return;
-            _latestMumbleRmsValue = rawRms;
-            _lastMumbleRmsTime = DateTime.UtcNow; // NEW
-        }
         // Button Event Handlers and settings tab handler
         private void OpenSettingsButton_Click(object sender, RoutedEventArgs e)
         {
@@ -710,6 +661,7 @@ namespace Kinectv1
         private void MainWindow_Closing(object sender, System.ComponentModel.CancelEventArgs e)
         {
             _isClosing = true;
+            try { _ = StopTeamTalkAsync(); } catch { }
             try { _rmsUiTimer?.Stop(); _rmsUiTimer = null; } catch { }
             try { Application.Current.Shutdown(); } catch { }
         }
@@ -742,14 +694,14 @@ namespace Kinectv1
             ApplyAudioMode(_currentAudioMode);
         }
 
-        private void MumbleInputEnabledCheckBox_Checked(object sender, RoutedEventArgs e)
+        private void TeamTalkInputEnabledCheckBox_Checked(object sender, RoutedEventArgs e)
         {
             if (_updatingAudioMode) return;
-            PersistAudioMode(AudioInMode.MumbleVoice);
-            ApplyAudioMode(AudioInMode.MumbleVoice);
+            PersistAudioMode(AudioInMode.TeamTalkVoice);
+            ApplyAudioMode(AudioInMode.TeamTalkVoice);
         }
 
-        private void MumbleInputEnabledCheckBox_Unchecked(object sender, RoutedEventArgs e)
+        private void TeamTalkInputEnabledCheckBox_Unchecked(object sender, RoutedEventArgs e)
         {
             if (_updatingAudioMode) return;
             // Prevent none-selected; revert to persisted/current mode
@@ -818,7 +770,22 @@ namespace Kinectv1
         private void LoadApplicationSettings() { }
         private void InitializeAudioDevicesUI() { }
         private void InitializeOllamaModels() { }
-        private void InitializeTtsSystem() { }
+        private void InitializeTtsSystem()
+        {
+            // Pre-warm TTS session in background to avoid cold-start latency
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await Task.Delay(500); // Brief delay to let other init complete first
+                    TtsService.Prewarm();
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"TTS prewarm error: {ex.Message}");
+                }
+            });
+        }
         private void InitializeDiscordBot()
         {
             try
@@ -974,6 +941,80 @@ namespace Kinectv1
         }
         private void OnVoiceEmbedding(float[] embedding) { _lastVoiceEmbedding = embedding; try { if (VoiceEnrollmentManager.IsEnrolling) VoiceEnrollmentManager.ProcessVoiceSample(embedding); } catch { } }
         private void OnOllamaPromptSent(string prompt) { }
+        
+        /// <summary>
+        /// Handle streaming chunks from LLM for real-time UI updates.
+        /// </summary>
+        private void OnOllamaResponseChunk(string chunk)
+        {
+            if (_isClosing || string.IsNullOrEmpty(chunk)) return;
+            
+            try
+            {
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    if (_isClosing) return;
+                    if (OllamaResponseBox != null)
+                    {
+                        OllamaResponseBox.Text += chunk;
+                        OllamaResponseBox.ScrollToEnd();
+                    }
+                }), DispatcherPriority.Background);
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// Handle complete sentences from LLM stream for immediate TTS.
+        /// This is the key to reducing latency - TTS starts while LLM is still generating.
+        /// </summary>
+        private void OnOllamaResponseSentenceReady(string sentence)
+        {
+            if (_isClosing || string.IsNullOrWhiteSpace(sentence)) return;
+
+            // Mark that we're actively streaming TTS
+            _lastStreamingTtsActive = DateTime.UtcNow;
+
+            try
+            {
+                var ttsEnabled = false;
+                try { ttsEnabled = Kinectv1.App.SettingsProvider?.Current?.Tts?.Enabled ?? false; } catch { }
+                if (!ttsEnabled) return;
+
+                var voice = App.SettingsProvider?.Current?.Tts?.Speaker;
+                
+                // Determine routing based on active input mode
+                var speakLocal = _isMicrophoneInputEnabled; // Local mic mode = local speakers
+                var speakDiscord = _isDiscordInputEnabled && Kinectv1.Discord.DiscordNetBotManager.IsInVoiceChannel;
+                var speakTeamTalk = _isTeamTalkInputEnabled; // Remove direct connection check
+
+                Console.WriteLine($"[TTS Stream] Sentence ready ({sentence.Length} chars), local={speakLocal}, discord={speakDiscord}, teamTalk={speakTeamTalk}");
+
+                if (speakLocal)
+                {
+                    TtsService.QueueSentenceForStreaming(sentence, voice);
+                }
+
+                if (speakDiscord)
+                {
+                    _ = Task.Run(async () =>
+                    {
+                        try { await Kinectv1.Discord.DiscordNetBotManager.SendTtsToDiscordAsync(sentence, voice); }
+                        catch (Exception ex) { Console.WriteLine($"Discord streaming TTS error: {ex.Message}"); }
+                    });
+                }
+                
+                if (speakTeamTalk)
+                {
+                    // Remove TeamTalk send call for now; direct connection not available
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"OnOllamaResponseSentenceReady error: {ex.Message}");
+            }
+        }
+
         private void OnOllamaResponseReceived(string response)
         {
             try
@@ -991,39 +1032,65 @@ namespace Kinectv1
                         }
                         if (OllamaStatusText != null)
                         {
-                            OllamaStatusText.Text = "✅ Ollama: Response received";
+                            OllamaStatusText.Text = "✅ Ollama: Response complete";
                         }
                     }), DispatcherPriority.Background);
                 }
                 catch { }
 
-                var ttsEnabled = false;
-                try { ttsEnabled = Kinectv1.App.SettingsProvider?.Current?.Tts?.Enabled ?? false; } catch { }
-                if (!ttsEnabled) return;
-
-                var voice = App.SettingsProvider?.Current?.Tts?.Speaker;
-                // FIX: Only play locally if microphone input (LocalMic mode) is enabled.
-                // Previously always true, causing dual output in Discord mode.
-                var speakLocal = _isMicrophoneInputEnabled; 
-                // Only send to Discord if Discord input mode enabled and we are in a voice channel
-                var speakDiscord = _isDiscordInputEnabled && Kinectv1.Discord.DiscordNetBotManager.IsInVoiceChannel;
-
-                if (speakLocal)
+                // TTS is handled via OnOllamaResponseSentenceReady for streaming.
+                // DO NOT fall back to full-response TTS - this causes the "repeat" bug.
+                // If streaming was used, sentences were already queued.
+                // If streaming was cancelled (barge-in), we don't want to play the old response.
+                
+                // Only use fallback if streaming was NEVER active for this response
+                // (e.g., non-streaming mode or immediate error)
+                var timeSinceStreaming = (DateTime.UtcNow - _lastStreamingTtsActive).TotalMilliseconds;
+                bool streamingWasUsed = timeSinceStreaming < 30000; // 30 second window - if any streaming happened recently
+                
+                if (streamingWasUsed)
                 {
-                    _ = Task.Run(async () =>
-                    {
-                        try { await TtsService.SpeakWithPreemptionAsync(response, voice); }
-                        catch (Exception ex) { Console.WriteLine($"TTS speak error: {ex.Message}"); }
-                    });
+                    // Streaming was used - don't play full response again
+                    Console.WriteLine($"[TTS] Skipping full response fallback - streaming was used ({timeSinceStreaming:F0}ms ago)");
+                    return;
                 }
-
-                if (speakDiscord)
+                
+                // Streaming was never used (non-streaming path or very old response)
+                if (!TtsService.IsStreamingPlaybackActive)
                 {
-                    _ = Task.Run(async () =>
+                    var ttsEnabled = false;
+                    try { ttsEnabled = Kinectv1.App.SettingsProvider?.Current?.Tts?.Enabled ?? false; } catch { }
+                    if (!ttsEnabled) return;
+
+                    var voice = App.SettingsProvider?.Current?.Tts?.Speaker;
+                    
+                    // Determine routing based on active input mode
+                    var speakLocal = _isMicrophoneInputEnabled; // Local mic mode = local speakers
+                    var speakDiscord = _isDiscordInputEnabled && Kinectv1.Discord.DiscordNetBotManager.IsInVoiceChannel;
+                    var speakTeamTalk = _isTeamTalkInputEnabled; // Remove direct connection check
+
+                    Console.WriteLine($"[TTS] Using full response (streaming not used), local={speakLocal}, discord={speakDiscord}, teamTalk={speakTeamTalk}");
+
+                    if (speakLocal)
                     {
-                        try { await Kinectv1.Discord.DiscordNetBotManager.SendTtsToDiscordAsync(response, voice); }
-                        catch (Exception ex) { Console.WriteLine($"Discord TTS error: {ex.Message}"); }
-                    });
+                        _ = Task.Run(async () =>
+                        {
+                            try { await TtsService.SpeakWithPreemptionAsync(response, voice); } catch (Exception ex) { Console.WriteLine($"TTS speak error: {ex.Message}"); }
+                        });
+                    }
+
+                    if (speakDiscord)
+                    {
+                        _ = Task.Run(async () =>
+                        {
+                            try { await Kinectv1.Discord.DiscordNetBotManager.SendTtsToDiscordAsync(response, voice); } catch (Exception ex) { Console.WriteLine($"Discord TTS error: {ex.Message}"); }
+                        });
+                    }
+                    
+                    if (speakTeamTalk)
+                    {
+                        // Remove TeamTalk send call for now; direct connection not available
+                    }
                 }
             }
             catch (Exception ex)
@@ -1052,11 +1119,11 @@ namespace Kinectv1
                 var modeJson = App.SettingsProvider?.Current?.App?.InputMode;
                 var mode = modeJson.HasValue ? (AudioInMode)modeJson.Value : AudioInMode.LocalMic;
 
-                // Ensure microphone capture starts so RMS updates flow
                 var sttModelPath = App.SettingsProvider?.Current?.Stt?.ModelPath ?? string.Empty;
                 VoiceRecognizer.Start(sttModelPath);
 
-                // Apply current mode to wire UI and recognizer input toggles
+                EnsureTeamTalkWiring();
+
                 ApplyAudioMode(mode);
             }
             catch (Exception ex)
@@ -1065,7 +1132,220 @@ namespace Kinectv1
             }
         }
 
-        // ENHANCED: Centralized audio mode application with disconnect logic
+        private void EnsureTeamTalkWiring()
+        {
+            if (_teamTalkSvc != null) return;
+
+            _teamTalkSvc = new TeamTalkVoiceService();
+            _teamTalkSttQueue = new BoundedAudioFrameQueue(capacity: 100); // ~2s @ 20ms frames
+
+            _teamTalkSvc.OnLog += s => { try { Console.WriteLine(s); } catch { } };
+            _teamTalkSvc.OnPcmFrame += OnTeamTalkPcmFrame;
+        }
+
+        private void OnTeamTalkPcmFrame(int userId, short[] pcm16, int sampleRate, int channels)
+        {
+            if (_isClosing) return;
+
+            // Update UI meter from newest frame (no backlog)
+            try
+            {
+                float rms = ComputeRmsFromPcm16(pcm16);
+                _latestTeamTalkRmsValue = rms;
+                _lastTeamTalkRmsTime = DateTime.UtcNow;
+            }
+            catch { }
+
+            // Only feed STT when TeamTalk mode is active
+            if (!_isTeamTalkInputEnabled) return;
+
+            _teamTalkSttQueue?.Enqueue(pcm16, sampleRate, channels);
+        }
+
+        private static float ComputeRmsFromPcm16(short[] pcm)
+        {
+            if (pcm == null || pcm.Length == 0) return 0f;
+            double sumSq = 0;
+            for (int i = 0; i < pcm.Length; i++)
+            {
+                double n = pcm[i] / 32768.0;
+                sumSq += n * n;
+            }
+            return (float)(Math.Sqrt(sumSq / pcm.Length) * 10000.0);
+        }
+
+        private void EnsureTeamTalkStartedFromSettings()
+        {
+            try
+            {
+                var cfg = App.SettingsProvider?.Current?.TeamTalk;
+                if (cfg == null || !cfg.Enabled) return;
+
+                if (_teamTalkCts != null && !_teamTalkCts.IsCancellationRequested) return;
+
+                EnsureTeamTalkWiring();
+
+                _teamTalkCts = new CancellationTokenSource();
+
+                var ttCfg = new TeamTalkConfig
+                {
+                    Host = cfg.Host,
+                    TcpPort = cfg.TcpPort,
+                    UdpPort = cfg.UdpPort,
+                    Encrypted = cfg.Encrypted,
+                    TlsValidate = cfg.TlsValidate,
+                    Nickname = string.IsNullOrWhiteSpace(cfg.Nickname) ? cfg.Username : cfg.Nickname,
+                    Username = cfg.Username,
+                    Password = cfg.Password,
+                    ChannelPath = string.IsNullOrWhiteSpace(cfg.ChannelPath) ? cfg.Channel : cfg.ChannelPath
+                };
+
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await _teamTalkSvc.StartAsync(ttCfg, _teamTalkCts.Token);
+                    }
+                    catch (DllNotFoundException dex)
+                    {
+                        Console.WriteLine("[TeamTalk] StartAsync failed: " + dex.Message);
+                        try { await StopTeamTalkAsync(); } catch { }
+                    }
+                    catch (BadImageFormatException bex)
+                    {
+                        Console.WriteLine("[TeamTalk] StartAsync failed: " + bex.Message);
+                        try { await StopTeamTalkAsync(); } catch { }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine("[TeamTalk] StartAsync failed: " + ex.Message);
+                    }
+                });
+
+                _teamTalkSttTask = Task.Run(() => TeamTalkSttWorker(_teamTalkCts.Token));
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("[TeamTalk] start failed: " + ex.Message);
+            }
+        }
+
+        private async Task StopTeamTalkAsync()
+        {
+            try
+            {
+                var cts = _teamTalkCts;
+                _teamTalkCts = null;
+                if (cts != null)
+                {
+                    try { cts.Cancel(); } catch { }
+                    try { cts.Dispose(); } catch { }
+                }
+
+                var t = _teamTalkSttTask;
+                _teamTalkSttTask = null;
+                if (t != null) { try { await Task.WhenAny(t, Task.Delay(1000)); } catch { } }
+
+                if (_teamTalkSvc != null)
+                {
+                    await _teamTalkSvc.StopAsync();
+                }
+            }
+            catch { }
+        }
+
+        private void TeamTalkSttWorker(CancellationToken ct)
+        {
+            // Diagnostics
+            int frames = 0;
+            DateTime lastLog = DateTime.UtcNow;
+
+            while (!ct.IsCancellationRequested)
+            {
+                if (_teamTalkSttQueue == null || !_teamTalkSttQueue.TryDequeue(out var pcm, out var sr, out var ch))
+                {
+                    Thread.Sleep(2);
+                    continue;
+                }
+
+                try
+                {
+                    frames++;
+
+                    // Downmix if needed + resample to 16k
+                    byte[] pcm16k;
+                    if (sr == 16000 && ch == 1)
+                    {
+                        pcm16k = ShortsToBytes(pcm);
+                    }
+                    else
+                    {
+                        // convert short->float
+                        var floats = new float[pcm.Length];
+                        for (int i = 0; i < pcm.Length; i++) floats[i] = pcm[i] / 32768.0f;
+
+                        float[] res;
+                        if (sr == 48000)
+                        {
+                            if (ch == 1) res = AudioUtils.ResampleMono48kTo16k(floats, floats.Length, "teamtalk");
+                            else res = AudioUtils.ResampleStereo48kTo16kMono(floats, floats.Length, "teamtalk");
+                        }
+                        else
+                        {
+                            // Unsupported rate for now; drop to keep realtime
+                            res = Array.Empty<float>();
+                        }
+
+                        pcm16k = FloatsToPcm16Bytes(res);
+                    }
+
+                    if (pcm16k != null && pcm16k.Length > 0)
+                    {
+                        VoiceRecognizer.ProcessExternalAudio(pcm16k, pcm16k.Length, "teamtalk:teamtalk");
+                    }
+                }
+                catch { }
+
+                var now = DateTime.UtcNow;
+                if ((now - lastLog).TotalSeconds >= 1)
+                {
+                    try
+                    {
+                        var q = _teamTalkSttQueue?.Count ?? 0;
+                        var dropped = _teamTalkSttQueue?.DroppedFrames ?? 0;
+                        Console.WriteLine($"[TeamTalk][stt] fps={frames} q={q} dropped={dropped}");
+                    }
+                    catch { }
+                    frames = 0;
+                    lastLog = now;
+                }
+            }
+        }
+
+        private static byte[] ShortsToBytes(short[] pcm)
+        {
+            if (pcm == null || pcm.Length == 0) return Array.Empty<byte>();
+            var bytes = new byte[pcm.Length * 2];
+            Buffer.BlockCopy(pcm, 0, bytes, 0, bytes.Length);
+            return bytes;
+        }
+
+        private static byte[] FloatsToPcm16Bytes(float[] floats)
+        {
+            if (floats == null || floats.Length == 0) return Array.Empty<byte>();
+            var bytes = new byte[floats.Length * 2];
+            for (int i = 0; i < floats.Length; i++)
+            {
+                float f = floats[i];
+                if (f > 1f) f = 1f;
+                if (f < -1f) f = -1f;
+                short s = (short)(f * 32767.0f);
+                bytes[i * 2] = (byte)(s & 0xFF);
+                bytes[i * 2 + 1] = (byte)((s >> 8) & 0xFF);
+            }
+            return bytes;
+        }
+
         private void ApplyAudioMode(AudioInMode mode)
         {
             _updatingAudioMode = true;
@@ -1074,7 +1354,7 @@ namespace Kinectv1
                 _currentAudioMode = mode;
                 _isMicrophoneInputEnabled = (mode == AudioInMode.LocalMic);
                 _isDiscordInputEnabled = (mode == AudioInMode.DiscordVoice);
-                _isMumbleInputEnabled = (mode == AudioInMode.MumbleVoice);
+                _isTeamTalkInputEnabled = (mode == AudioInMode.TeamTalkVoice);
 
                 // Reflect in UI (single-selection behavior)
                 if (MicInputEnabledCheckBox != null)
@@ -1083,8 +1363,8 @@ namespace Kinectv1
                     DiscordInputEnabledCheckBox.IsChecked = _isDiscordInputEnabled;
                 try
                 {
-                    var mumbleCb = this.FindName("MumbleInputEnabledCheckBox") as CheckBox;
-                    if (mumbleCb != null) mumbleCb.IsChecked = _isMumbleInputEnabled;
+                    var teamTalkCb = this.FindName("TeamTalkInputEnabledCheckBox") as CheckBox;
+                    if (teamTalkCb != null) teamTalkCb.IsChecked = _isTeamTalkInputEnabled;
                 }
                 catch { }
 
@@ -1093,247 +1373,80 @@ namespace Kinectv1
                 {
                     // HARD DISABLE mic capture in Discord mode to prevent local barge-in triggers
                     try { VoiceRecognizer.SetMicrophoneInputEnabled(false); } catch { }
+                    try { VoiceRecognizer.SetMumbleInputEnabled(false); } catch { }
                     try { TtsService.CancelCurrentLocalTts(); } catch { }
                     try { Console.WriteLine("[AudioMode] Mic forcibly disabled (Discord mode)"); } catch { }
-
-                    // Ensure Mumble is disconnected
-                    _ = Task.Run(async () => { try { await MumbleClientManager.DisconnectAsync(); } catch { } });
-
-                    // Ensure Discord bot is running so commands and gateway are available
-                    _ = Task.Run(async () => { try { await DiscordNetBotManager.StartAsync(); } catch { } });
                 }
-                else if (_isMumbleInputEnabled)
+                else if (_isTeamTalkInputEnabled)
                 {
                     // Ensure Discord is disconnected
                     _ = Task.Run(async () => { try { await DiscordNetBotManager.LeaveAllVoiceAsync(); } catch { } });
 
-                    // Persist selection intent: mark Mumble enabled in settings (persistent)
+                    // Disable mic and discord input
+                    try { VoiceRecognizer.SetMicrophoneInputEnabled(false); } catch { }
+                    try { VoiceRecognizer.SetDiscordInputEnabled(false); } catch { }
+                    try { VoiceRecognizer.SetMumbleInputEnabled(true); } catch { }
+
+                    // Persist selection intent: ensure TeamTalk enabled in settings (persistent)
                     try
                     {
                         var svc = App.SettingsProvider; var curr = svc?.Current; if (svc != null && curr != null)
                         {
-                            var mb = curr.Mumble;
-                            var nextMb = new Kinectv1.Settings.MumbleSettings(
+                            var tt = curr.TeamTalk;
+                            var nextTt = new Kinectv1.Settings.TeamTalkSettings(
                                 Enabled: true,
-                                AutoConnect: mb.AutoConnect,
-                                Host: mb.Host,
-                                Port: mb.Port,
-                                Username: mb.Username,
-                                ServerPassword: mb.ServerPassword,
-                                Channel: mb.Channel,
-                                ChannelPassword: mb.ChannelPassword,
-                                ValidateTls: mb.ValidateTls,
-                                SelfMute: mb.SelfMute,
-                                SelfDeaf: mb.SelfDeaf,
-                                OpusBitrate: mb.OpusBitrate,
-                                VadThreshold: mb.VadThreshold,
-                                ReconnectBackoffMs: mb.ReconnectBackoffMs,
-                                TextCommandsEnabled: mb.TextCommandsEnabled
+                                AutoConnect: tt.AutoConnect,
+                                Host: tt.Host,
+                                TcpPort: tt.TcpPort,
+                                UdpPort: tt.UdpPort,
+                                Encrypted: tt.Encrypted,
+                                TlsValidate: tt.TlsValidate,
+                                Nickname: tt.Nickname,
+                                Username: tt.Username,
+                                Password: tt.Password,
+                                Channel: tt.Channel,
+                                ChannelPassword: tt.ChannelPassword,
+                                ChannelPath: tt.ChannelPath
                             );
-                            var next = new Kinectv1.Settings.AppSettings(curr.Audio, curr.Tts, curr.Ollama, curr.Discord, nextMb, curr.Ui, curr.Asr, curr.Stt, curr.Face, curr.App);
+                            var next = curr with { TeamTalk = nextTt };
                             svc.Save(next);
                         }
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine($"Persist Mumble enable failed: {ex.Message}");
+                        Console.WriteLine($"Persist TeamTalk enable failed: {ex.Message}");
                     }
 
-                    // Connect to Mumble using settings
+                    // Connect to TeamTalk using settings
                     var snap = App.SettingsProvider?.Current;
-                    var mb2 = snap?.Mumble;
-                    if (mb2 != null)
+                    var tt2 = snap?.TeamTalk;
+                    if (tt2 != null)
                     {
-                        Console.WriteLine($"[Mumble] Auto-connect on mode select -> {mb2.Host}:{mb2.Port} as {mb2.Username}");
-                        _ = Task.Run(async () =>
-                        {
-                            try
-                            {
-                                await MumbleClientManager.StartAsync();
-                                await MumbleClientManager.ConnectAsync(
-                                    mb2.Host, mb2.Port, mb2.Username, mb2.ServerPassword,
-                                    mb2.Channel, mb2.ChannelPassword, mb2.ValidateTls,
-                                    mb2.SelfMute, mb2.SelfDeaf);
-                            }
-                            catch (Exception ex) { Console.WriteLine($"Mumble connect failed: {ex.Message}"); }
-                        });
+                        Console.WriteLine($"[TeamTalk] Auto-connect on mode select -> {tt2.Host}:{tt2.TcpPort} as {tt2.Username}");
+                        EnsureTeamTalkStartedFromSettings();
                     }
                 }
                 else
                 {
                     // Mic mode: disconnect both remote sources
-                    _ = Task.Run(async () => { try { await DiscordNetBotManager.LeaveAllVoiceAsync(); } catch { } try { await MumbleClientManager.DisconnectAsync(); } catch { } });
+                    _ = Task.Run(async () => { try { await DiscordNetBotManager.LeaveAllVoiceAsync(); } catch { } });
+                    
+                    // Stop TeamTalk when leaving TeamTalk mode
+                    _ = StopTeamTalkAsync();
                 }
 
-                // Apply to recognizer (mumble not implemented yet)
+                // Apply to recognizer
                 // Only apply mic enable for non-Discord modes; already forced off above in Discord branch
-                if (!_isDiscordInputEnabled)
+                if (!_isDiscordInputEnabled && !_isTeamTalkInputEnabled)
                 {
                     try { VoiceRecognizer.SetMicrophoneInputEnabled(_isMicrophoneInputEnabled); } catch { }
                 }
                 try { VoiceRecognizer.SetDiscordInputEnabled(_isDiscordInputEnabled); } catch { }
-                // Mumble gating to be added in Phase 2 when ingest lands
             }
             finally
             {
                 _updatingAudioMode = false;
             }
-        }
-
-        // Replace PersistAudioMode to use SettingsService
-        private void PersistAudioMode(AudioInMode mode)
-        {
-            try
-            {
-                var svc = App.SettingsProvider; var curr = svc?.Current; if (svc == null || curr == null) return;
-                var next = curr with { App = curr.App with { InputMode = (Kinectv1.Settings.AudioInMode)mode } };
-                svc.Save(next);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Persist AudioInMode failed: {ex.Message}");
-            }
-        }
-
-        // Implemented enrollment and utility buttons
-        private void EnrollButton_Click(object sender, RoutedEventArgs e)
-        {
-            try
-            {
-                var name = EnrollNameBox?.Text?.Trim();
-                if (string.IsNullOrWhiteSpace(name))
-                {
-                    Console.WriteLine("Enroll Face: name is empty");
-                    return;
-                }
-
-                EnhancedKinectFaceTracker.QueueLabel(name);
-                Console.WriteLine($"👤 Queued face enrollment for '{name}' (look at camera)");
-
-                // Auto-show video window to help operator align face
-                try
-                {
-                    if (!EnhancedKinectFaceTracker.IsVideoWindowOpen())
-                    {
-                        EnhancedKinectFaceTracker.ShowVideoWindow();
-                        if (ShowVideoButton != null) ShowVideoButton.Content = "📺 Hide Video";
-                    }
-                }
-                catch { }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"EnrollButton_Click failed: {ex.Message}");
-            }
-        }
-
-        private void EnrollVoiceButton_Click(object sender, RoutedEventArgs e)
-        {
-            try
-            {
-                var name = EnrollNameBox?.Text?.Trim();
-                if (string.IsNullOrWhiteSpace(name))
-                {
-                    Console.WriteLine("Enroll Voice: name is empty");
-                    return;
-                }
-
-                VoiceEnrollmentManager.StartEnrollment(name);
-                if (VoiceEnrollmentPanel != null)
-                    VoiceEnrollmentPanel.Visibility = Visibility.Visible;
-
-                // Initialize UI to 0 progress
-                UpdateVoiceEnrollmentProgress(name, 0, VoiceEnrollmentManager.GetRequiredSamples());
-                Console.WriteLine($"🎙 Started voice enrollment for '{name}'");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"EnrollVoiceButton_Click failed: {ex.Message}");
-            }
-        }
-
-        private void CancelVoiceButton_Click(object sender, RoutedEventArgs e)
-        {
-            try
-            {
-                VoiceEnrollmentManager.CancelEnrollment();
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"CancelVoiceButton_Click failed: {ex.Message}");
-            }
-        }
-
-        private void ShowVideoButton_Click(object sender, RoutedEventArgs e)
-        {
-            try
-            {
-                if (EnhancedKinectFaceTracker.IsVideoWindowOpen())
-                {
-                    EnhancedKinectFaceTracker.HideVideoWindow();
-                    if (ShowVideoButton != null) ShowVideoButton.Content = "📺 Show Video";
-                }
-                else
-                {
-                    EnhancedKinectFaceTracker.ShowVideoWindow();
-                    if (ShowVideoButton != null) ShowVideoButton.Content = "📺 Hide Video";
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"ShowVideoButton_Click failed: {ex.Message}");
-            }
-        }
-
-        private void ListSpeakersButton_Click(object sender, RoutedEventArgs e)
-        {
-            try
-            {
-                SpeakerIdentifier.ListEnrolledSpeakers();
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"ListSpeakersButton_Click failed: {ex.Message}");
-            }
-        }
-
-        private void SetAsDefaultButton_Click(object sender, RoutedEventArgs e) { /* no-op stub */ }
-        private void FlushVoiceButton_Click(object sender, RoutedEventArgs e)
-        {
-            try
-            {
-                int removed = MemoryStore.FlushAllVoiceEmbeddings();
-                Console.WriteLine($"🗑 Cleared {removed} voice embeddings from memory store");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"FlushVoiceButton_Click failed: {ex.Message}");
-            }
-        }
-        private void ToggleOllamaButton_Click(object sender, RoutedEventArgs e) { /* no-op stub */ }
-        private void ToggleTtsButton_Click(object sender, RoutedEventArgs e) { /* no-op stub */ }
-        private void TestTtsButton_Click(object sender, RoutedEventArgs e) { /* no-op stub */ }
-        private void OllamaModelComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e) { /* already above; duplicate stub ignored by compiler if we keep one */ }
-        private void RefreshModelsButton_Click(object sender, RoutedEventArgs e)
-        {
-            // Minimal stub: actual model refresh handled inside settings views; keep no-op here
-            try { Console.WriteLine("RefreshModelsButton_Click invoked"); } catch { }
-        }
-        private void ScenarioComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e) { /* no-op stub */ }
-        private void ApplyScenarioButton_Click(object sender, RoutedEventArgs e) { /* no-op stub */ }
-        private void RefreshValidationButton_Click(object sender, RoutedEventArgs e) { }
-        private void RefreshDiagnosticsButton_Click(object sender, RoutedEventArgs e) { }
-        private void LoadDiagnosticsTab() { }
-        private void RefreshTtsModelsButton_Click(object sender, RoutedEventArgs e)
-        {
-            try
-            {
-                if (TtsModelStatusText != null)
-                {
-                    TtsModelStatusText.Text = "TTS models refreshed";
-                }
-            }
-            catch { }
         }
 
         // Text input to AI handlers
@@ -1526,5 +1639,34 @@ namespace Kinectv1
                 }
             });
         }
+
+        private void PersistAudioMode(AudioInMode mode)
+        {
+            try
+            {
+                var svc = App.SettingsProvider;
+                var cur = svc?.Current;
+                if (svc == null || cur == null) return;
+
+                var updated = cur with { App = cur.App with { InputMode = mode } };
+                SettingsService.ValidateOrThrow(updated);
+                svc.Save(updated);
+            }
+            catch { }
+        }
+
+        // XAML click handlers that are referenced in MainWindow.xaml
+        private void EnrollButton_Click(object sender, RoutedEventArgs e) { }
+        private void EnrollVoiceButton_Click(object sender, RoutedEventArgs e) { }
+        private void CancelVoiceButton_Click(object sender, RoutedEventArgs e) { }
+        private void ShowVideoButton_Click(object sender, RoutedEventArgs e) { }
+        private void ListSpeakersButton_Click(object sender, RoutedEventArgs e) { }
+        private void FlushVoiceButton_Click(object sender, RoutedEventArgs e) { }
+        private void ToggleOllamaButton_Click(object sender, RoutedEventArgs e) { }
+        private void OllamaModelComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e) { }
+        private void RefreshModelsButton_Click(object sender, RoutedEventArgs e) { }
+        private void ToggleTtsButton_Click(object sender, RoutedEventArgs e) { }
+        private void TestTtsButton_Click(object sender, RoutedEventArgs e) { }
+        private void RefreshTtsModelsButton_Click(object sender, RoutedEventArgs e) { }
     }
 }

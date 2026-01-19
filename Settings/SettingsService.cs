@@ -18,7 +18,11 @@ namespace Kinectv1.Settings
             Formatting = Formatting.Indented,
             NullValueHandling = NullValueHandling.Ignore,
             MissingMemberHandling = MissingMemberHandling.Ignore,
-            Converters = { new StringEnumConverter() }
+            Converters = { new StringEnumConverter() },
+            ContractResolver = new Newtonsoft.Json.Serialization.DefaultContractResolver
+            {
+                NamingStrategy = new Newtonsoft.Json.Serialization.DefaultNamingStrategy()
+            }
         };
 
         // Schema hygiene: bump when migrations are added
@@ -221,6 +225,20 @@ namespace Kinectv1.Settings
                 root.Remove("vad");
                 var audio = root["audio"] as JObject;
                 audio?.Remove("vadThreshold");
+
+                // Normalize legacy input mode value 'mumble' -> 'teamtalk'
+                var app = root["app"] as JObject ?? root["App"] as JObject;
+                if (app != null)
+                {
+                    var imTok = app["inputMode"] ?? app["InputMode"];
+                    var im = imTok?.Value<string>();
+                    if (!string.IsNullOrWhiteSpace(im) && string.Equals(im.Trim(), "mumble", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (app["inputMode"] != null) app["inputMode"] = "teamtalk";
+                        else if (app["InputMode"] != null) app["InputMode"] = "teamtalk";
+                        else app["inputMode"] = "teamtalk";
+                    }
+                }
             }
             catch { }
         }
@@ -235,8 +253,26 @@ namespace Kinectv1.Settings
         {
             if (user == null) return false;
             bool changed = false;
-            // Example: future migrations mutate only 'user' object
-            // if (fromVersion < 2) { /* transform keys/values */ changed = true; fromVersion = 2; }
+
+            // Accept legacy input mode value "mumble" and migrate to "teamtalk"
+            try
+            {
+                var app = user["app"] as JObject ?? user["App"] as JObject;
+                if (app != null)
+                {
+                    var imTok = app["inputMode"] ?? app["InputMode"];
+                    var im = imTok?.Value<string>();
+                    if (!string.IsNullOrWhiteSpace(im) && string.Equals(im.Trim(), "mumble", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (app["inputMode"] != null) app["inputMode"] = "teamtalk";
+                        else if (app["InputMode"] != null) app["InputMode"] = "teamtalk";
+                        else app["inputMode"] = "teamtalk";
+                        changed = true;
+                    }
+                }
+            }
+            catch { }
+
             return changed;
         }
 
@@ -247,28 +283,28 @@ namespace Kinectv1.Settings
             if (effectiveDefaults == null) return (JObject)candidate.DeepClone();
 
             JObject Prune(JObject defObj, JObject candObj)
-            {
-                var pruned = new JObject();
-                foreach (var prop in candObj.Properties())
-                {
-                    var name = prop.Name;
-                    var candVal = prop.Value;
-                    var defVal = defObj[name];
+    {
+        var pruned = new JObject();
+        foreach (var prop in candObj.Properties())
+        {
+            var name = prop.Name;
+            var candVal = prop.Value;
+            var defVal = defObj[name];
 
-                    if (candVal is JObject candChild && defVal is JObject defChild)
-                    {
-                        var inner = Prune(defChild as JObject, candChild);
-                        if (inner.HasValues)
-                            pruned[name] = inner;
-                    }
-                    else
-                    {
-                        if (defVal == null || !JToken.DeepEquals(defVal, candVal))
-                            pruned[name] = candVal.DeepClone();
-                    }
-                }
-                return pruned;
+            if (candVal is JObject candChild && defVal is JObject defChild)
+            {
+                var inner = Prune(defChild as JObject, candChild);
+                if (inner.HasValues)
+                    pruned[name] = inner;
             }
+            else
+            {
+                if (defVal == null || !JToken.DeepEquals(defVal, candVal))
+                    pruned[name] = candVal.DeepClone();
+            }
+        }
+        return pruned;
+    }
 
             return Prune(effectiveDefaults, candidate);
         }
@@ -382,20 +418,18 @@ namespace Kinectv1.Settings
                     throw new InvalidDataException("discord.token appears invalid or missing when discord.enabled");
             }
 
-            if (s.Mumble == null)
-                throw new InvalidDataException("mumble section missing");
-            if (s.Mumble.Enabled)
+            if (s.TeamTalk == null)
+                throw new InvalidDataException("teamTalk section missing");
+            if (s.TeamTalk.Enabled)
             {
-                if (string.IsNullOrWhiteSpace(s.Mumble.Host))
-                    throw new InvalidDataException("mumble.host required when mumble.enabled");
-                if (s.Mumble.Port <= 0 || s.Mumble.Port > 65535)
-                    throw new InvalidDataException("mumble.port must be 1..65535");
-                if (string.IsNullOrWhiteSpace(s.Mumble.Username))
-                    throw new InvalidDataException("mumble.username required when mumble.enabled");
-                if (s.Mumble.OpusBitrate < 6000 || s.Mumble.OpusBitrate > 96000)
-                    throw new InvalidDataException("mumble.opusBitrate must be 6000..96000");
-                if (s.Mumble.ReconnectBackoffMs < 0 || s.Mumble.ReconnectBackoffMs > 60000)
-                    throw new InvalidDataException("mumble.reconnectBackOffMs must be 0..60000");
+                if (string.IsNullOrWhiteSpace(s.TeamTalk.Host))
+                    throw new InvalidDataException("teamTalk.host required when teamTalk.enabled");
+                if (s.TeamTalk.TcpPort <= 0 || s.TeamTalk.TcpPort > 65535)
+                    throw new InvalidDataException("teamTalk.tcpPort must be 1..65535");
+                if (s.TeamTalk.UdpPort <= 0 || s.TeamTalk.UdpPort > 65535)
+                    throw new InvalidDataException("teamTalk.udpPort must be 1..65535");
+                if (string.IsNullOrWhiteSpace(s.TeamTalk.Username))
+                    throw new InvalidDataException("teamTalk.username required when teamTalk.enabled");
             }
         }
     }

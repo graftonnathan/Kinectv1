@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "audio": {
-    "voiceThreshold": 0.2,
+    "voiceThreshold": 0.1,
     "bufferSize": 7,
     "speakerMatchMinScore": 0.6
   },
@@ -28,8 +28,8 @@
     "voiceHighConfidenceThreshold": 0.8,
     "voiceConfidenceBufferSize": 3,
     "voiceConfidenceLoggingEnabled": false,
-    "vadSilenceTimeoutMs": 300,
-    "vadDebounceTimeoutMs": 150,
+    "vadSilenceTimeoutMs": 1500,
+    "vadDebounceTimeoutMs": 50,
     "discordVadThreshold": 25.0,
     "bargeInEnabled": true
   },
@@ -85,23 +85,20 @@
     "autoJoinVoice": false,
     "token": ""
   },
-  "mumble": {
+  "teamTalk": {
     "enabled": false,
     "autoConnect": false,
     "host": "localhost",
-    "port": 64738,
+    "tcpPort": 10333,
+    "udpPort": 10333,
+    "encrypted": false,
+    "tlsValidate": "Strict",
+    "nickname": "Kinectv1",
     "username": "Kinectv1",
-    "serverPassword": "",
+    "password": "",
     "channel": "/",
     "channelPassword": "",
-    "validateTls": true,
-    "selfMute": true,
-    "selfDeaf": true,
-    "opusBitrate": 32000,
-    "vadThreshold": 25,
-    "reconnectBackoffMs": 2000,
-    "textCommandsEnabled": true,
-    "tlsValidate": "Strict"
+    "channelPath": "/Naya-Heavy"
   },
   "ui": {
     "darkMode": true

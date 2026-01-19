@@ -274,10 +274,10 @@ namespace Kinectv1.UI.Settings
                 IpaServiceTimeoutMs: ipaServiceTimeoutMs,
                 IpaOneShotTimeoutMs: ipaOneShotTimeoutMs
             );
-            // Preserve existing Ollama, Discord, Mumble snapshots while updating this editor's sections
+            // Preserve existing Ollama, Discord, TeamTalk snapshots while updating this editor's sections
             var ollama = current.Ollama;
             var discord = current.Discord;
-            var mumble = current.Mumble;
+            var teamTalk = current.TeamTalk;
             var app = new global::Kinectv1.Settings.AppConfig(
                 RequireWakeWord: requireWake,
                 Scenario: current.App.Scenario,
@@ -310,7 +310,7 @@ namespace Kinectv1.UI.Settings
                 SpeakerEmbeddingModelPath: spkPath
             );
 
-            return new global::Kinectv1.Settings.AppSettings(audio, tts, ollama, discord, mumble, current.Ui, asr, stt, face, app);
+            return new global::Kinectv1.Settings.AppSettings(audio, tts, ollama, discord, teamTalk, current.Ui, asr, stt, face, app);
         }
 
         private void Verify_Click(object sender, RoutedEventArgs e)

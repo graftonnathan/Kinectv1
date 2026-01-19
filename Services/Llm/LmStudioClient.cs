@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net.Http;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -12,19 +13,18 @@ namespace Kinectv1.Llm
 {
     public sealed class LmStudioClient : ILlmClient
     {
-        private readonly HttpClient _http;
         private readonly string _base;
-        private readonly Func<string> _getModel; // delegate to read latest model lazily
+        private readonly string _apiKey;
+        private readonly Func<string> _getModel;
 
         public LmStudioClient(string baseUrl, string apiKey, Func<string> getModel)
         {
             _base = (baseUrl ?? "http://127.0.0.1:1234").TrimEnd('/');
-            _http = new HttpClient();
-            _http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", string.IsNullOrWhiteSpace(apiKey) ? "lm-studio" : apiKey);
+            _apiKey = string.IsNullOrWhiteSpace(apiKey) ? "lm-studio" : apiKey;
             _getModel = getModel ?? (() => "Meta-Llama-3.1-8B-Instruct-Q4_K_M");
         }
 
-        public async IAsyncEnumerable<string> ChatStreamAsync(string system, string user, CancellationToken ct = default)
+        public async IAsyncEnumerable<string> ChatStreamAsync(string system, string user, [EnumeratorCancellation] CancellationToken ct = default)
         {
             var reqObj = new
             {
@@ -40,55 +40,90 @@ namespace Kinectv1.Llm
             };
 
             var json = JsonConvert.SerializeObject(reqObj);
+            
+            // New HttpClient per request for clean cancellation
+            using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
+            http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _apiKey);
+            
             using var msg = new HttpRequestMessage(HttpMethod.Post, $"{_base}/v1/chat/completions")
             { Content = new StringContent(json, Encoding.UTF8, "application/json") };
 
-            using var resp = await _http.SendAsync(msg, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
-            resp.EnsureSuccessStatusCode();
-
-            using (var s = await resp.Content.ReadAsStreamAsync().ConfigureAwait(false))
-            using (var r = new StreamReader(s, Encoding.UTF8, true))
+            HttpResponseMessage resp = null;
+            Stream stream = null;
+            StreamReader reader = null;
+            CancellationTokenRegistration registration = default;
+            
+            try
             {
-                while (!r.EndOfStream && !ct.IsCancellationRequested)
+                // Forcefully abort connection when cancelled
+                registration = ct.Register(() =>
                 {
-                    var line = await r.ReadLineAsync().ConfigureAwait(false);
-                    if (ct.IsCancellationRequested) yield break;
-                    if (string.IsNullOrWhiteSpace(line)) continue;
-                    if (!line.StartsWith("data:")) continue;
-                    var payload = line.Substring("data:".Length).Trim();
-                    if (payload == "[DONE]") yield break;
+                    try { reader?.Dispose(); } catch { }
+                    try { stream?.Dispose(); } catch { }
+                    try { resp?.Dispose(); } catch { }
+                    try { http.CancelPendingRequests(); } catch { }
+                });
+                
+                resp = await http.SendAsync(msg, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+                resp.EnsureSuccessStatusCode();
 
-                    string piece = null;
-                    try
-                    {
-                        if (payload.StartsWith("{"))
-                        {
-                            var obj = JObject.Parse(payload);
-                            if (obj.TryGetValue("choices", out var choicesTok) && choicesTok is JArray arr && arr.Count > 0)
-                            {
-                                var first = arr[0];
-                                // Try delta.content first (streaming), fallback to message.content (final style)
-                                piece = first?["delta"]?["content"]?.ToString();
-                                if (string.IsNullOrEmpty(piece))
-                                    piece = first?["message"]?["content"]?.ToString();
-                            }
-                        }
-                    }
-                    catch
-                    {
-                        // swallow malformed keepalive / partial JSON chunks
-                    }
+                stream = await resp.Content.ReadAsStreamAsync().ConfigureAwait(false);
+                reader = new StreamReader(stream, Encoding.UTF8, true);
+                
+                while (!ct.IsCancellationRequested)
+                {
+                    string line;
+                    try { line = await reader.ReadLineAsync().ConfigureAwait(false); }
+                    catch (ObjectDisposedException) { yield break; }
+                    catch (IOException) { yield break; }
+                    
+                    if (line == null || ct.IsCancellationRequested)
+                        yield break;
+                    
+                    if (string.IsNullOrWhiteSpace(line) || !line.StartsWith("data:")) 
+                        continue;
+                    
+                    var payload = line.Substring(5).Trim();
+                    if (payload == "[DONE]") 
+                        yield break;
 
-                    if (!string.IsNullOrEmpty(piece)) yield return piece;
+                    var piece = ExtractContent(payload);
+                    if (!string.IsNullOrEmpty(piece)) 
+                        yield return piece;
                 }
             }
+            finally
+            {
+                registration.Dispose();
+                reader?.Dispose();
+                stream?.Dispose();
+                resp?.Dispose();
+            }
+        }
+
+        private static string ExtractContent(string payload)
+        {
+            try
+            {
+                if (!payload.StartsWith("{")) return null;
+                var obj = JObject.Parse(payload);
+                var choices = obj["choices"] as JArray;
+                if (choices == null || choices.Count == 0) return null;
+                var first = choices[0];
+                return first?["delta"]?["content"]?.ToString() 
+                    ?? first?["message"]?["content"]?.ToString();
+            }
+            catch { return null; }
         }
 
         public async Task<string> ChatOnceAsync(string system, string user, CancellationToken ct = default)
         {
             var sb = new StringBuilder();
             await foreach (var tok in ChatStreamAsync(system, user, ct))
+            {
+                if (ct.IsCancellationRequested) break;
                 sb.Append(tok);
+            }
             return sb.ToString();
         }
     }

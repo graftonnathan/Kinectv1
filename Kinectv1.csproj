@@ -182,7 +182,6 @@
     <PackageReference Include="Microsoft.Kinect" Version="2.0.1410.19000" />
     <PackageReference Include="Microsoft.Kinect.Face.x64" Version="2.0.1410.19000" />
     <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.22.1" />
-    <PackageReference Include="MumbleSharp" Version="2.0.1" />
     <PackageReference Include="NAudio" Version="2.2.1" />
     <PackageReference Include="Vosk" Version="0.3.38" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
@@ -226,6 +225,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Folder Include="Mumble\" />
     <Folder Include="Settings\UI\Discord\" />
     <Folder Include="Settings\UI\Models\" />
     <Folder Include="Settings\UI\Mumble\" />
@@ -265,4 +265,11 @@
     </ItemGroup>
     <Copy SourceFiles="@(DiscordLibs)" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" Condition=" '@(DiscordLibs)' != '' " />
   </Target>
+
+  <ItemGroup>
+    <Reference Include="BearWare.TeamTalk">
+      <HintPath>lib\teamtalk\BearWare.TeamTalk.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
 </Project>

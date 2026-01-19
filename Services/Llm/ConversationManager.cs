@@ -20,10 +20,62 @@ namespace Kinectv1
         public static event Action<string> OnResponseReceived;
         public static event Action<string> OnError;
         
+        // New: Streaming events for real-time TTS
+        /// <summary>
+        /// Fired for each complete sentence as it streams from the LLM.
+        /// Enables TTS to start speaking while the LLM is still generating.
+        /// </summary>
+        public static event Action<string> OnResponseSentenceReady;
+        
+        /// <summary>
+        /// Fired for each raw chunk from the LLM stream (for UI updates).
+        /// </summary>
+        public static event Action<string> OnResponseChunk;
+        
         // New: Events for memory archival status
         public static event Action OnMemoryArchiveStarted;
         public static event Action<int, int> OnMemoryArchiveCompleted; // (messagesArchived, chunksCreated)
         public static event Action<string> OnMemoryArchiveFailed;
+
+        // Streaming cancellation support
+        private static CancellationTokenSource _currentStreamingCts;
+        private static readonly object _streamingCtsLock = new object();
+        
+        // Track if LLM is currently streaming (used by TTS to know when to stop waiting)
+        private static volatile bool _isLlmStreaming = false;
+        
+        /// <summary>
+        /// Returns true if the LLM is currently streaming a response.
+        /// Used by TTS streaming to know whether to wait longer for more sentences.
+        /// </summary>
+        public static bool IsLlmStreaming => _isLlmStreaming;
+
+        /// <summary>
+        /// Cancel any ongoing LLM streaming response.
+        /// Called during barge-in to stop the current response generation.
+        /// </summary>
+        public static void CancelCurrentStreaming()
+        {
+            Console.WriteLine("[OllamaService] CancelCurrentStreaming");
+            
+            // Cancel the router's HTTP request - this aborts the connection to LM Studio/Ollama
+            lock (_lock)
+            {
+                try { _router?.CancelCurrentRequest(); }
+                catch (Exception ex) { Console.WriteLine($"[OllamaService] Router cancel error: {ex.Message}"); }
+            }
+            
+            // Cancel the local streaming CTS (signals the await foreach loop to exit)
+            lock (_streamingCtsLock)
+            {
+                try
+                {
+                    if (_currentStreamingCts != null && !_currentStreamingCts.IsCancellationRequested)
+                        _currentStreamingCts.Cancel();
+                }
+                catch { }
+            }
+        }
 
         private static void LogErr(string msg)
         {
@@ -472,8 +524,184 @@ namespace Kinectv1
 
         #region LLM Interaction
         public static bool IsEnabled() => Snap?.Ollama?.Enabled == true;
-        public static Task DispatchAsync(string speaker, string text) => SendPromptAsync(speaker, text);
+        public static Task DispatchAsync(string speaker, string text) => SendPromptStreamingAsync(speaker, text);
 
+        /// <summary>
+        /// Streaming version of SendPromptAsync that fires OnResponseSentenceReady 
+        /// for each complete sentence as it arrives from the LLM.
+        /// This allows TTS to start speaking before the full response is complete.
+        /// </summary>
+        public static async Task SendPromptStreamingAsync(string speakerName, string transcription, CancellationToken ct = default)
+        {
+            // Create a new CTS for this streaming session that can be cancelled by barge-in
+            CancellationTokenSource linkedCts;
+            lock (_streamingCtsLock)
+            {
+                // Cancel any previous streaming
+                try { _currentStreamingCts?.Cancel(); } catch { }
+                try { _currentStreamingCts?.Dispose(); } catch { }
+                
+                // Create new CTS linked with the passed token
+                _currentStreamingCts = ct == default 
+                    ? new CancellationTokenSource() 
+                    : CancellationTokenSource.CreateLinkedTokenSource(ct);
+                linkedCts = _currentStreamingCts;
+            }
+            
+            var streamingCt = linkedCts.Token;
+            
+            // Mark that we're starting to stream
+            _isLlmStreaming = true;
+            
+            try
+            {
+                if (!IsEnabled()) return;
+                EnsureRouterInitialized();
+                var normalizedSpeaker = string.IsNullOrWhiteSpace(speakerName) ? "UnknownSpeaker" : speakerName.Trim();
+                
+                // Initialize vector memory if enabled
+                await EnsureMemoryInitializedAsync(streamingCt).ConfigureAwait(false);
+                
+                var system = LoadSystemPrompt();
+                var history = BuildHistoryBlock(normalizedSpeaker);
+                
+                // Build context from vector memory (warm summary + retrieved chunks)
+                string memoryContext = string.Empty;
+                var mm = GetMemoryManager();
+                if (mm.IsEnabled)
+                {
+                    try
+                    {
+                        var context = await mm.BuildContextAsync(transcription, normalizedSpeaker, streamingCt).ConfigureAwait(false);
+                        memoryContext = mm.FormatContextForPrompt(context);
+                        if (!string.IsNullOrWhiteSpace(memoryContext))
+                        {
+                            Console.WriteLine($"?? Retrieved memory context: {TokenEstimator.EstimateTokens(memoryContext)} tokens");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"?? Memory context retrieval failed: {ex.Message}");
+                    }
+                }
+                
+                var userPrompt = BuildUserPromptWithMemory(normalizedSpeaker, transcription, null, history, memoryContext);
+                try { OnPromptSent?.Invoke(userPrompt); } catch { }
+                AppendConversation(normalizedSpeaker, "user", transcription);
+                
+                // Stream the response and process sentences as they arrive
+                var fullResponse = new StringBuilder();
+                var sentenceBuffer = new StringBuilder();
+                
+                try
+                {
+                    // Pass the streaming token to the router so it can be cancelled by barge-in
+                    await foreach (var chunk in _router.ChatStreamAsync(system, userPrompt, streamingCt))
+                    {
+                        // Check cancellation at each chunk
+                        if (streamingCt.IsCancellationRequested)
+                        {
+                            Console.WriteLine("[OllamaService] Streaming cancelled (barge-in detected)");
+                            break;
+                        }
+                        
+                        if (string.IsNullOrEmpty(chunk)) continue;
+                        
+                        fullResponse.Append(chunk);
+                        sentenceBuffer.Append(chunk);
+                        
+                        // Fire chunk event for UI updates
+                        try { OnResponseChunk?.Invoke(chunk); } catch { }
+                        
+                        // Check for complete sentences and fire them for TTS
+                        var bufferedText = sentenceBuffer.ToString();
+                        var sentences = ExtractCompleteSentences(ref bufferedText);
+                        sentenceBuffer.Clear();
+                        sentenceBuffer.Append(bufferedText); // Keep the incomplete part
+                        
+                        foreach (var sentence in sentences)
+                        {
+                            // Check cancellation before firing each sentence
+                            if (streamingCt.IsCancellationRequested) break;
+                            
+                            var cleaned = SanitizeAssistantText(sentence);
+                            if (!string.IsNullOrWhiteSpace(cleaned))
+                            {
+                                try { OnResponseSentenceReady?.Invoke(cleaned); } catch { }
+                            }
+                        }
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    Console.WriteLine("[OllamaService] Streaming cancelled (OperationCanceledException)");
+                    return;
+                }
+                
+                // Don't process remaining buffer or fire completion events if cancelled
+                if (streamingCt.IsCancellationRequested)
+                {
+                    Console.WriteLine("[OllamaService] Streaming aborted - not saving partial response");
+                    return;
+                }
+                
+                // Process any remaining text in the buffer (last sentence without trailing punctuation)
+                var remaining = sentenceBuffer.ToString().Trim();
+                if (!string.IsNullOrWhiteSpace(remaining) && remaining.Length > 1)
+                {
+                    // Even if it doesn't end with punctuation, it's the final part of the response
+                    var cleaned = SanitizeAssistantText(remaining);
+                    if (!string.IsNullOrWhiteSpace(cleaned) && cleaned.Length > 1)
+                    {
+                        Console.WriteLine($"[OllamaService] Flushing final buffer: {cleaned.Length} chars");
+                        try { OnResponseSentenceReady?.Invoke(cleaned); } catch { }
+                    }
+                }
+                
+                var raw = fullResponse.ToString();
+                if (string.IsNullOrWhiteSpace(raw)) raw = "(no response)";
+                var cleanedFull = SanitizeAssistantText(raw);
+                AppendConversation(normalizedSpeaker, "assistant", cleanedFull);
+                
+                // Check for memory overflow after appending the response
+                await CheckAndProcessMemoryOverflowAsync(normalizedSpeaker, streamingCt).ConfigureAwait(false);
+                
+                // Save memory manager state periodically
+                if (mm.IsEnabled)
+                {
+                    try { await mm.SaveAsync(streamingCt).ConfigureAwait(false); }
+                    catch { }
+                }
+                
+                try { OnResponseReceived?.Invoke(cleanedFull); } catch { }
+            }
+            catch (OperationCanceledException)
+            {
+                Console.WriteLine("[OllamaService] Streaming task cancelled");
+            }
+            catch (Exception ex)
+            {
+                LogErr($"LLM streaming dispatch failed: {ex.Message}");
+            }
+            finally
+            {
+                // Mark that streaming is complete
+                _isLlmStreaming = false;
+                
+                // Clean up CTS if it's still the current one
+                lock (_streamingCtsLock)
+                {
+                    if (_currentStreamingCts == linkedCts)
+                    {
+                        _currentStreamingCts = null;
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Original non-streaming version for backward compatibility.
+        /// </summary>
         public static async Task SendPromptAsync(string speakerName, string transcription, CancellationToken ct = default)
         {
             try
@@ -856,6 +1084,85 @@ namespace Kinectv1
             if (!show)
                 text = Regex.Replace(text, @"(?is)<\s*think\s*>.*?<\s*/\s*think\s*>", string.Empty);
             return text;
+        }
+
+        /// <summary>
+        /// Extract complete sentences from the buffer, leaving incomplete text.
+        /// Returns list of complete sentences and updates bufferText to contain only incomplete text.
+        /// </summary>
+        private static List<string> ExtractCompleteSentences(ref string bufferText)
+        {
+            var sentences = new List<string>();
+            if (string.IsNullOrEmpty(bufferText)) return sentences;
+            
+            // Look for sentence-ending punctuation followed by space, newline, or end of string
+            // Handle: . ! ? ... (ellipsis) followed by whitespace or at end
+            int lastSentenceEnd = -1;
+            int i = 0;
+            
+            while (i < bufferText.Length)
+            {
+                char c = bufferText[i];
+                
+                // Check for sentence-ending punctuation
+                if (c == '.' || c == '!' || c == '?' || c == '…')
+                {
+                    // Handle ellipsis (...) as single unit
+                    int punctEnd = i;
+                    while (punctEnd + 1 < bufferText.Length && bufferText[punctEnd + 1] == '.')
+                    {
+                        punctEnd++;
+                    }
+                    
+                    // Check if followed by whitespace (indicates sentence boundary)
+                    int afterPunct = punctEnd + 1;
+                    if (afterPunct < bufferText.Length)
+                    {
+                        char nextChar = bufferText[afterPunct];
+                        if (char.IsWhiteSpace(nextChar) || nextChar == '\n' || nextChar == '\r')
+                        {
+                            // Found a sentence boundary
+                            var sentence = bufferText.Substring(lastSentenceEnd + 1, punctEnd - lastSentenceEnd).Trim();
+                            if (!string.IsNullOrWhiteSpace(sentence))
+                            {
+                                sentences.Add(sentence);
+                            }
+                            lastSentenceEnd = punctEnd;
+                            i = afterPunct;
+                            continue;
+                        }
+                    }
+                    // Punctuation at end of buffer without trailing space - might be incomplete
+                    i = punctEnd + 1;
+                    continue;
+                }
+                
+                // Check for newline as sentence boundary
+                if (c == '\n')
+                {
+                    var sentence = bufferText.Substring(lastSentenceEnd + 1, i - lastSentenceEnd - 1).Trim();
+                    if (!string.IsNullOrWhiteSpace(sentence) && sentence.Length > 1)
+                    {
+                        sentences.Add(sentence);
+                        lastSentenceEnd = i;
+                    }
+                }
+                
+                i++;
+            }
+            
+            // Keep the remaining incomplete part
+            if (lastSentenceEnd >= 0 && lastSentenceEnd < bufferText.Length - 1)
+            {
+                bufferText = bufferText.Substring(lastSentenceEnd + 1).TrimStart();
+            }
+            else if (sentences.Count > 0)
+            {
+                bufferText = string.Empty;
+            }
+            // If no sentences extracted, keep the entire buffer
+            
+            return sentences;
         }
         #endregion
     }
