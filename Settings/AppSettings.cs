@@ -10,7 +10,7 @@ namespace Kinectv1.Settings
         [property: Required] TtsSettings Tts,
         [property: Required] OllamaSettings Ollama,
         [property: Required] DiscordSettings Discord,
-        [property: Required] TeamTalkSettings TeamTalk,
+        [property: Required] WebRtcSettings WebRtc,
         [property: Required] UiSettings Ui,
         [property: Required] AsrSettings Asr,
         [property: Required] SttSettings Stt,
@@ -87,8 +87,8 @@ namespace Kinectv1.Settings
         DiscordVoice,
         [EnumMember(Value = "loopback")]
         SystemLoopback,
-        [EnumMember(Value = "teamtalk")]
-        TeamTalkVoice
+        [EnumMember(Value = "webrtc")]
+        WebRtcVoice
     }
 
     // App-level behavior
@@ -139,23 +139,10 @@ namespace Kinectv1.Settings
         string Token
     );
 
-    public enum TeamTalkTlsValidate { Strict, AcceptSelfSigned, Off }
-
-    // New: TeamTalk settings for client configuration
-    public sealed record TeamTalkSettings(
+    // WebRTC settings for LAN voice transport (replaces TeamTalk)
+    public sealed record WebRtcSettings(
         bool Enabled,
-        bool AutoConnect,
-        [property: Required] string Host,
-        [property: Range(1, 65535)] int TcpPort,
-        [property: Range(1, 65535)] int UdpPort,
-        bool Encrypted,
-        TeamTalkTlsValidate TlsValidate,
-        string Nickname,
-        [property: Required] string Username,
-        string Password,
-        string Channel,
-        string ChannelPassword,
-        string ChannelPath
+        [property: Range(1, 65535)] int Port
     );
 
     // New: UI settings

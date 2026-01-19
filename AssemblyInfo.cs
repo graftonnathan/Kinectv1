@@ -3,6 +3,8 @@ using System.Windows;
 
 [assembly: AssemblyCompany("Grafton Labs")]
 [assembly: AssemblyProduct("Kinectv1")]
+[assembly: AssemblyVersion("1.0.0.0")]
+[assembly: AssemblyFileVersion("1.0.0.0")]
 
 [assembly: ThemeInfo(
     ResourceDictionaryLocation.None,            //where theme specific resource dictionaries are located

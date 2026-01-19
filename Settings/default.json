@@ -85,20 +85,9 @@
     "autoJoinVoice": false,
     "token": ""
   },
-  "teamTalk": {
+  "webrtc": {
     "enabled": false,
-    "autoConnect": false,
-    "host": "localhost",
-    "tcpPort": 10333,
-    "udpPort": 10333,
-    "encrypted": false,
-    "tlsValidate": "Strict",
-    "nickname": "Kinectv1",
-    "username": "Kinectv1",
-    "password": "",
-    "channel": "/",
-    "channelPassword": "",
-    "channelPath": "/Naya-Heavy"
+    "port": 8787
   },
   "ui": {
     "darkMode": true

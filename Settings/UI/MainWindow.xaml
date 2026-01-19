@@ -403,7 +403,7 @@
                               ToolTip="Enable/disable microphone audio input processing"/>
 
                     <CheckBox Name="DiscordInputEnabledCheckBox" Content="🤖 Discord" 
-                              IsChecked="True" FontSize="11" FontWeight="Medium"
+                              IsChecked="False" FontSize="11" FontWeight="Medium"
                               Foreground="{DynamicResource TextPrimary}" 
                               Style="{StaticResource ThemedCheckBoxStyle}"
                               Margin="0,0,15,0" VerticalAlignment="Center"
@@ -411,14 +411,14 @@
                               Unchecked="DiscordInputEnabledCheckBox_Unchecked"
                               ToolTip="Enable/disable Discord audio input processing"/>
 
-                    <CheckBox Name="TeamTalkInputEnabledCheckBox" Content="TeamTalk" 
+                    <CheckBox Name="WebRtcInputEnabledCheckBox" Content="📱 WebRTC" 
                               IsChecked="False" FontSize="11" FontWeight="Medium"
                               Foreground="{DynamicResource TextPrimary}" 
                               Style="{StaticResource ThemedCheckBoxStyle}"
                               VerticalAlignment="Center"
-                              Checked="TeamTalkInputEnabledCheckBox_Checked" 
-                              Unchecked="TeamTalkInputEnabledCheckBox_Unchecked"
-                              ToolTip="Select TeamTalk as the audio source (single choice with Mic/Discord)"/>
+                              Checked="WebRtcInputEnabledCheckBox_Checked" 
+                              Unchecked="WebRtcInputEnabledCheckBox_Unchecked"
+                              ToolTip="Enable WebRTC for iPhone/Safari voice input"/>
                 </StackPanel>
             </Grid>
 
@@ -459,20 +459,20 @@
                 </Grid>
             </Grid>
 
-            <!-- TeamTalk RMS -->
+            <!-- WebRTC RMS -->
             <Grid Margin="0,0,0,10">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="24"/>
                     <ColumnDefinition Width="56"/>
                     <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
-                <TextBlock Grid.Column="0" Text="🗣️ TeamTalk:" VerticalAlignment="Center" 
+                <TextBlock Grid.Column="0" Text="📱 WebRTC:" VerticalAlignment="Center" 
                            FontWeight="SemiBold" FontSize="12" Foreground="{DynamicResource TextPrimary}" Grid.ColumnSpan="2"/>
                 <Grid Grid.Column="2">
-                    <ProgressBar Name="TeamTalkRmsBar" Height="25" Minimum="0" Maximum="100" Value="0" 
+                    <ProgressBar Name="WebRtcRmsBar" Height="25" Minimum="0" Maximum="100" Value="0" 
                                  Style="{StaticResource ThemedProgressBarStyle}"
                                  Foreground="{DynamicResource AccentPurple}"/>
-                    <TextBlock Name="TeamTalkRmsText" Text="RMS: 0.0" HorizontalAlignment="Center" 
+                    <TextBlock Name="WebRtcRmsText" Text="RMS: 0.0" HorizontalAlignment="Center" 
                                VerticalAlignment="Center" FontSize="11" FontWeight="Bold"
                                Foreground="{DynamicResource TextPrimary}"/>
                 </Grid>

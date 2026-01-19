@@ -333,7 +333,10 @@ namespace Kinectv1
                     VRLog("FINAL", "(empty)");
                 }
             }
-            catch (Exception ex) { VRLog("ERROR", $"FlushFinal: {ex.Message}"); }
+            catch (Exception ex)
+            {
+                VRLog("ERROR", $"FlushFinal: {ex.Message}");
+            }
             finally { ClearPreRoll(); }
         }
 
@@ -430,7 +433,7 @@ namespace Kinectv1
             try
             {
                 var rec = _recognizer; if (rec == null) return;
-                bool isExternal = source != null && (source.StartsWith("teamtalk:", StringComparison.OrdinalIgnoreCase) || source.StartsWith("mumble:", StringComparison.OrdinalIgnoreCase) || source.StartsWith("Discord:", StringComparison.OrdinalIgnoreCase));
+                bool isExternal = source != null && (source.StartsWith("webrtc:", StringComparison.OrdinalIgnoreCase) || source.StartsWith("teamtalk:", StringComparison.OrdinalIgnoreCase) || source.StartsWith("mumble:", StringComparison.OrdinalIgnoreCase) || source.StartsWith("Discord:", StringComparison.OrdinalIgnoreCase));
                 
                 bool accepted = rec.AcceptWaveform(pcm16leMono, bytes);
                 if (accepted)
@@ -587,12 +590,13 @@ namespace Kinectv1
                             try
                             {
                                 bool isMumble = item.source != null && item.source.StartsWith("mumble:", StringComparison.OrdinalIgnoreCase);
-                                bool isTeamTalk = item.source != null && (item.source.StartsWith("teamtalk:", StringComparison.OrdinalIgnoreCase) || item.source.StartsWith("mumble:", StringComparison.OrdinalIgnoreCase));
+                                bool isWebRtc = item.source != null && item.source.StartsWith("webrtc:", StringComparison.OrdinalIgnoreCase);
+                                bool isTeamTalk = item.source != null && (item.source.StartsWith("teamtalk:", StringComparison.OrdinalIgnoreCase) || item.source.StartsWith("mumble:", StringComparison.OrdinalIgnoreCase) || item.source.StartsWith("webrtc:", StringComparison.OrdinalIgnoreCase));
                                 bool shouldProcess = isTeamTalk ? _mumbleEnabled : _discordEnabled;
                                 if (!shouldProcess)
                                 {
                                     float rmsOnly = ComputeRms16(item.data, item.length);
-                                    try { if (!isMumble) OnDiscordRmsLevel?.Invoke(rmsOnly); } catch { }
+                                    try { if (!isMumble && !isWebRtc) OnDiscordRmsLevel?.Invoke(rmsOnly); } catch { }
                                     continue;
                                 }
 

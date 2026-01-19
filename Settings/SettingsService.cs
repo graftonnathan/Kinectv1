@@ -26,7 +26,7 @@ namespace Kinectv1.Settings
         };
 
         // Schema hygiene: bump when migrations are added
-        private const int CurrentSchemaVersion = 1;
+        private const int CurrentSchemaVersion = 2; // Bumped for teamtalk->webrtc migration
 
         private AppSettings _current;
         private readonly SemaphoreSlim _mutex = new SemaphoreSlim(1, 1);
@@ -226,19 +226,27 @@ namespace Kinectv1.Settings
                 var audio = root["audio"] as JObject;
                 audio?.Remove("vadThreshold");
 
-                // Normalize legacy input mode value 'mumble' -> 'teamtalk'
+                // Normalize legacy input mode values 'mumble' and 'teamtalk' -> 'webrtc'
                 var app = root["app"] as JObject ?? root["App"] as JObject;
                 if (app != null)
                 {
                     var imTok = app["inputMode"] ?? app["InputMode"];
                     var im = imTok?.Value<string>();
-                    if (!string.IsNullOrWhiteSpace(im) && string.Equals(im.Trim(), "mumble", StringComparison.OrdinalIgnoreCase))
+                    if (!string.IsNullOrWhiteSpace(im))
                     {
-                        if (app["inputMode"] != null) app["inputMode"] = "teamtalk";
-                        else if (app["InputMode"] != null) app["InputMode"] = "teamtalk";
-                        else app["inputMode"] = "teamtalk";
+                        var trimmed = im.Trim().ToLowerInvariant();
+                        if (trimmed == "mumble" || trimmed == "teamtalk")
+                        {
+                            if (app["inputMode"] != null) app["inputMode"] = "webrtc";
+                            else if (app["InputMode"] != null) app["InputMode"] = "webrtc";
+                            else app["inputMode"] = "webrtc";
+                        }
                     }
                 }
+
+                // Remove obsolete teamTalk section if present
+                root.Remove("teamTalk");
+                root.Remove("TeamTalk");
             }
             catch { }
         }
@@ -246,7 +254,7 @@ namespace Kinectv1.Settings
         // Helpers for overlays + schema
         private static int GetSchemaVersion(JObject root)
         {
-            try { return root?[(string)"schemaVersion"]?.Value<int?>() ?? 0; } catch { return 0; }
+            try { return root?["schemaVersion"]?.Value<int?>() ?? 0; } catch { return 0; }
         }
 
         private static bool MigrateUserOverrides(JObject user, int fromVersion)
@@ -254,7 +262,7 @@ namespace Kinectv1.Settings
             if (user == null) return false;
             bool changed = false;
 
-            // Accept legacy input mode value "mumble" and migrate to "teamtalk"
+            // Accept legacy input mode values "mumble" and "teamtalk" and migrate to "webrtc"
             try
             {
                 var app = user["app"] as JObject ?? user["App"] as JObject;
@@ -262,13 +270,29 @@ namespace Kinectv1.Settings
                 {
                     var imTok = app["inputMode"] ?? app["InputMode"];
                     var im = imTok?.Value<string>();
-                    if (!string.IsNullOrWhiteSpace(im) && string.Equals(im.Trim(), "mumble", StringComparison.OrdinalIgnoreCase))
+                    if (!string.IsNullOrWhiteSpace(im))
                     {
-                        if (app["inputMode"] != null) app["inputMode"] = "teamtalk";
-                        else if (app["InputMode"] != null) app["InputMode"] = "teamtalk";
-                        else app["inputMode"] = "teamtalk";
-                        changed = true;
+                        var trimmed = im.Trim().ToLowerInvariant();
+                        if (trimmed == "mumble" || trimmed == "teamtalk")
+                        {
+                            if (app["inputMode"] != null) app["inputMode"] = "webrtc";
+                            else if (app["InputMode"] != null) app["InputMode"] = "webrtc";
+                            else app["inputMode"] = "webrtc";
+                            changed = true;
+                        }
                     }
+                }
+            }
+            catch { }
+
+            // Remove obsolete teamTalk section
+            try
+            {
+                if (user.ContainsKey("teamTalk") || user.ContainsKey("TeamTalk"))
+                {
+                    user.Remove("teamTalk");
+                    user.Remove("TeamTalk");
+                    changed = true;
                 }
             }
             catch { }
@@ -283,28 +307,28 @@ namespace Kinectv1.Settings
             if (effectiveDefaults == null) return (JObject)candidate.DeepClone();
 
             JObject Prune(JObject defObj, JObject candObj)
-    {
-        var pruned = new JObject();
-        foreach (var prop in candObj.Properties())
-        {
-            var name = prop.Name;
-            var candVal = prop.Value;
-            var defVal = defObj[name];
+            {
+                var pruned = new JObject();
+                foreach (var prop in candObj.Properties())
+                {
+                    var name = prop.Name;
+                    var candVal = prop.Value;
+                    var defVal = defObj[name];
 
-            if (candVal is JObject candChild && defVal is JObject defChild)
-            {
-                var inner = Prune(defChild as JObject, candChild);
-                if (inner.HasValues)
-                    pruned[name] = inner;
+                    if (candVal is JObject candChild && defVal is JObject defChild)
+                    {
+                        var inner = Prune(defChild, candChild);
+                        if (inner.HasValues)
+                            pruned[name] = inner;
+                    }
+                    else
+                    {
+                        if (defVal == null || !JToken.DeepEquals(defVal, candVal))
+                            pruned[name] = candVal.DeepClone();
+                    }
+                }
+                return pruned;
             }
-            else
-            {
-                if (defVal == null || !JToken.DeepEquals(defVal, candVal))
-                    pruned[name] = candVal.DeepClone();
-            }
-        }
-        return pruned;
-    }
 
             return Prune(effectiveDefaults, candidate);
         }
@@ -418,18 +442,12 @@ namespace Kinectv1.Settings
                     throw new InvalidDataException("discord.token appears invalid or missing when discord.enabled");
             }
 
-            if (s.TeamTalk == null)
-                throw new InvalidDataException("teamTalk section missing");
-            if (s.TeamTalk.Enabled)
+            if (s.WebRtc == null)
+                throw new InvalidDataException("webrtc section missing");
+            if (s.WebRtc.Enabled)
             {
-                if (string.IsNullOrWhiteSpace(s.TeamTalk.Host))
-                    throw new InvalidDataException("teamTalk.host required when teamTalk.enabled");
-                if (s.TeamTalk.TcpPort <= 0 || s.TeamTalk.TcpPort > 65535)
-                    throw new InvalidDataException("teamTalk.tcpPort must be 1..65535");
-                if (s.TeamTalk.UdpPort <= 0 || s.TeamTalk.UdpPort > 65535)
-                    throw new InvalidDataException("teamTalk.udpPort must be 1..65535");
-                if (string.IsNullOrWhiteSpace(s.TeamTalk.Username))
-                    throw new InvalidDataException("teamTalk.username required when teamTalk.enabled");
+                if (s.WebRtc.Port <= 0 || s.WebRtc.Port > 65535)
+                    throw new InvalidDataException("webrtc.port must be 1..65535");
             }
         }
     }

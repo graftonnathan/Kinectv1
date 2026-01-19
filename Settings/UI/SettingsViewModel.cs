@@ -100,8 +100,8 @@ namespace Kinectv1.UI.Settings
 
             Categories.Add(new SettingsCategoryVM
             {
-                Name = "TeamTalk",
-                EditorView = new TeamTalkSettingsView()
+                Name = "WebRTC",
+                EditorView = new WebRtcSettingsView()
             });
 
             Categories.Add(new SettingsCategoryVM

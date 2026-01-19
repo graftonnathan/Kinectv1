@@ -14,6 +14,7 @@ using System.Windows.Threading;
 using Kinectv1.Discord;
 using Kinectv1.Settings;
 using Kinectv1.Tts;
+using Kinectv1.Voice;
 
 namespace Kinectv1
 {
@@ -29,7 +30,7 @@ namespace Kinectv1
         // Latest RMS values (pull-model)
         private volatile float _latestRmsValue = 0f;
         private volatile float _latestDiscordRmsValue = 0f;
-        private volatile float _latestTeamTalkRmsValue = 0f; // NEW: Latest TeamTalk RMS value
+        private volatile float _latestWebRtcRmsValue = 0f;
 
         // ENHANCED DOUBLE REGISTRATION PREVENTION - Discord initialization protection
         private static int _discordInitInProgress = 0; // 0 = not in progress, 1 = in progress
@@ -37,7 +38,7 @@ namespace Kinectv1
         // Audio input settings
         private bool _isMicrophoneInputEnabled = true;
         private bool _isDiscordInputEnabled = false;
-        private bool _isTeamTalkInputEnabled = false; // TeamTalk input toggle (UI state mirror)
+        private bool _isWebRtcInputEnabled = false;
         private AudioInMode _currentAudioMode = AudioInMode.LocalMic;
         private bool _updatingAudioMode = false;
 
@@ -52,15 +53,15 @@ namespace Kinectv1
         private DispatcherTimer _rmsUiTimer; // single timer drives all RMS UI updates
         private SolidColorBrush _rmsGreenBrush, _rmsOrangeBrush, _rmsRedBrush;
         private SolidColorBrush _discordLowBrush, _discordMidBrush, _discordHighBrush;
-        private double _lastMicPct = -1, _lastDiscordPct = -1, _lastTeamTalkPct = -1;
-        private int _lastMicBucket = -1, _lastDiscordBucket = -1, _lastTeamTalkBucket = -1;
+        private double _lastMicPct = -1, _lastDiscordPct = -1, _lastWebRtcPct = -1;
+        private int _lastMicBucket = -1, _lastDiscordBucket = -1, _lastWebRtcBucket = -1;
         private float _smoothedRms = 0f; // baseline RMS (mic)
         private float _smoothedDiscordRms = 0f; // baseline discord
-        private float _smoothedTeamTalkRms = 0f; // baseline team talk
+        private float _smoothedWebRtcRms = 0f; // baseline WebRTC
         // NEW: track last RMS update times to allow decay when capture pauses
         private DateTime _lastMicRmsTime = DateTime.MinValue;
         private DateTime _lastDiscordRmsTime = DateTime.MinValue;
-        private DateTime _lastTeamTalkRmsTime = DateTime.MinValue;
+        private DateTime _lastWebRtcRmsTime = DateTime.MinValue;
 
         private double _localTtsVolume = 1.0; // 100%
         private double _discordTtsVolume = 1.0; // 100%
@@ -68,11 +69,11 @@ namespace Kinectv1
         // Track when streaming TTS was recently active to prevent fallback double-play after barge-in
         private DateTime _lastStreamingTtsActive = DateTime.MinValue;
 
-        // NEW: TeamTalk service and audio queue for STT
-        private TeamTalkVoiceService _teamTalkSvc;
-        private BoundedAudioFrameQueue _teamTalkSttQueue;
-        private CancellationTokenSource _teamTalkCts;
-        private Task _teamTalkSttTask;
+        // WebRTC service and audio queue for STT
+        private WebRtcAudioTransport _webRtcTransport;
+        private DroppingAudioQueue<AudioFrame> _webRtcSttQueue;
+        private CancellationTokenSource _webRtcCts;
+        private Task _webRtcSttTask;
 
         public MainWindow()
         {
@@ -356,46 +357,46 @@ namespace Kinectv1
                 }
             }
 
-            // TEAMTALK - Show RMS when connected (for monitoring), regardless of input mode
+            // WEBRTC
             try
             {
-                var bar = this.FindName("TeamTalkRmsBar") as ProgressBar;
-                var text = this.FindName("TeamTalkRmsText") as TextBlock;
-                // Show when TeamTalk is connected OR when TeamTalk input mode is selected
-                bool showTeamTalk = _isTeamTalkInputEnabled;
-                if (showTeamTalk && bar != null && text != null)
+                var bar = this.FindName("WebRtcRmsBar") as ProgressBar;
+                var text = this.FindName("WebRtcRmsText") as TextBlock;
+                // Show when WebRTC input mode is selected
+                bool showWebRtc = _isWebRtcInputEnabled;
+                if (showWebRtc && bar != null && text != null)
                 {
-                    bool staleM = (now - _lastTeamTalkRmsTime).TotalMilliseconds > 250;
-                    var input = staleM ? 0f : _latestTeamTalkRmsValue; // raw scale 0..10000 (same as mic)
+                    bool staleW = (now - _lastWebRtcRmsTime).TotalMilliseconds > 250;
+                    var input = staleW ? 0f : _latestWebRtcRmsValue; // raw scale 0..10000 (same as mic)
 
-                    if (input > _smoothedTeamTalkRms)
-                        _smoothedTeamTalkRms = _smoothedTeamTalkRms * 0.4f + input * 0.6f;
+                    if (input > _smoothedWebRtcRms)
+                        _smoothedWebRtcRms = _smoothedWebRtcRms * 0.4f + input * 0.6f;
                     else
-                        _smoothedTeamTalkRms = _smoothedTeamTalkRms * 0.85f + input * 0.15f;
+                        _smoothedWebRtcRms = _smoothedWebRtcRms * 0.85f + input * 0.15f;
 
-                    if (staleM && input == 0f)
+                    if (staleW && input == 0f)
                     {
-                        _smoothedTeamTalkRms *= 0.80f;
-                        if (_smoothedTeamTalkRms < 5f) _smoothedTeamTalkRms = 0f;
+                        _smoothedWebRtcRms *= 0.80f;
+                        if (_smoothedWebRtcRms < 5f) _smoothedWebRtcRms = 0f;
                     }
 
-                    var pct = Math.Max(0.0, Math.Min(100.0, (_smoothedTeamTalkRms / 10000.0) * 100.0));
-                    bool forceUpdate = staleM && pct < _lastTeamTalkPct;
-                    if (forceUpdate || Math.Abs(pct - _lastTeamTalkPct) >= 0.5)
+                    var pct = Math.Max(0.0, Math.Min(100.0, (_smoothedWebRtcRms / 10000.0) * 100.0));
+                    bool forceUpdate = staleW && pct < _lastWebRtcPct;
+                    if (forceUpdate || Math.Abs(pct - _lastWebRtcPct) >= 0.5)
                     {
                         bar.Value = pct;
-                        _lastTeamTalkPct = pct;
-                        text.Text = $"RMS: {_smoothedTeamTalkRms:F1} ({(int)pct}%)";
+                        _lastWebRtcPct = pct;
+                        text.Text = $"RMS: {_smoothedWebRtcRms:F1} ({(int)pct}%)";
                     }
                     else if (text.Text.Length == 0)
                     {
-                        text.Text = $"RMS: {_smoothedTeamTalkRms:F1} ({(int)pct}%)";
+                        text.Text = $"RMS: {_smoothedWebRtcRms:F1} ({(int)pct}%)";
                     }
 
                     int bucket = (pct <= 33) ? 0 : (pct <= 66 ? 1 : 2);
-                    if (bucket != _lastTeamTalkBucket)
+                    if (bucket != _lastWebRtcBucket)
                     {
-                        _lastTeamTalkBucket = bucket;
+                        _lastWebRtcBucket = bucket;
                         bar.Foreground = bucket == 0 ? _rmsGreenBrush : bucket == 1 ? _rmsOrangeBrush : _rmsRedBrush;
                     }
                 }
@@ -661,7 +662,7 @@ namespace Kinectv1
         private void MainWindow_Closing(object sender, System.ComponentModel.CancelEventArgs e)
         {
             _isClosing = true;
-            try { _ = StopTeamTalkAsync(); } catch { }
+            try { _ = StopWebRtcAsync(); } catch { }
             try { _rmsUiTimer?.Stop(); _rmsUiTimer = null; } catch { }
             try { Application.Current.Shutdown(); } catch { }
         }
@@ -694,14 +695,14 @@ namespace Kinectv1
             ApplyAudioMode(_currentAudioMode);
         }
 
-        private void TeamTalkInputEnabledCheckBox_Checked(object sender, RoutedEventArgs e)
+        private void WebRtcInputEnabledCheckBox_Checked(object sender, RoutedEventArgs e)
         {
             if (_updatingAudioMode) return;
-            PersistAudioMode(AudioInMode.TeamTalkVoice);
-            ApplyAudioMode(AudioInMode.TeamTalkVoice);
+            PersistAudioMode(AudioInMode.WebRtcVoice);
+            ApplyAudioMode(AudioInMode.WebRtcVoice);
         }
 
-        private void TeamTalkInputEnabledCheckBox_Unchecked(object sender, RoutedEventArgs e)
+        private void WebRtcInputEnabledCheckBox_Unchecked(object sender, RoutedEventArgs e)
         {
             if (_updatingAudioMode) return;
             // Prevent none-selected; revert to persisted/current mode
@@ -986,9 +987,9 @@ namespace Kinectv1
                 // Determine routing based on active input mode
                 var speakLocal = _isMicrophoneInputEnabled; // Local mic mode = local speakers
                 var speakDiscord = _isDiscordInputEnabled && Kinectv1.Discord.DiscordNetBotManager.IsInVoiceChannel;
-                var speakTeamTalk = _isTeamTalkInputEnabled; // Remove direct connection check
+                var speakWebRtc = _isWebRtcInputEnabled; // Remove direct connection check
 
-                Console.WriteLine($"[TTS Stream] Sentence ready ({sentence.Length} chars), local={speakLocal}, discord={speakDiscord}, teamTalk={speakTeamTalk}");
+                Console.WriteLine($"[TTS Stream] Sentence ready ({sentence.Length} chars), local={speakLocal}, discord={speakDiscord}, webRtc={speakWebRtc}");
 
                 if (speakLocal)
                 {
@@ -1004,9 +1005,9 @@ namespace Kinectv1
                     });
                 }
                 
-                if (speakTeamTalk)
+                if (speakWebRtc)
                 {
-                    // Remove TeamTalk send call for now; direct connection not available
+                    // Remove WebRTC send call for now; direct connection not available
                 }
             }
             catch (Exception ex)
@@ -1067,9 +1068,9 @@ namespace Kinectv1
                     // Determine routing based on active input mode
                     var speakLocal = _isMicrophoneInputEnabled; // Local mic mode = local speakers
                     var speakDiscord = _isDiscordInputEnabled && Kinectv1.Discord.DiscordNetBotManager.IsInVoiceChannel;
-                    var speakTeamTalk = _isTeamTalkInputEnabled; // Remove direct connection check
+                    var speakWebRtc = _isWebRtcInputEnabled; // Remove direct connection check
 
-                    Console.WriteLine($"[TTS] Using full response (streaming not used), local={speakLocal}, discord={speakDiscord}, teamTalk={speakTeamTalk}");
+                    Console.WriteLine($"[TTS] Using full response (streaming not used), local={speakLocal}, discord={speakDiscord}, webRtc={speakWebRtc}");
 
                     if (speakLocal)
                     {
@@ -1087,9 +1088,9 @@ namespace Kinectv1
                         });
                     }
                     
-                    if (speakTeamTalk)
+                    if (speakWebRtc)
                     {
-                        // Remove TeamTalk send call for now; direct connection not available
+                        // Remove WebRTC send call for now; direct connection not available
                     }
                 }
             }
@@ -1122,7 +1123,7 @@ namespace Kinectv1
                 var sttModelPath = App.SettingsProvider?.Current?.Stt?.ModelPath ?? string.Empty;
                 VoiceRecognizer.Start(sttModelPath);
 
-                EnsureTeamTalkWiring();
+                EnsureWebRtcWiring();
 
                 ApplyAudioMode(mode);
             }
@@ -1132,34 +1133,51 @@ namespace Kinectv1
             }
         }
 
-        private void EnsureTeamTalkWiring()
+        private void EnsureWebRtcWiring()
         {
-            if (_teamTalkSvc != null) return;
+            if (_webRtcTransport != null) return;
 
-            _teamTalkSvc = new TeamTalkVoiceService();
-            _teamTalkSttQueue = new BoundedAudioFrameQueue(capacity: 100); // ~2s @ 20ms frames
+            var port = App.SettingsProvider?.Current?.WebRtc?.Port ?? 8787;
+            _webRtcTransport = new WebRtcAudioTransport(port);
+            _webRtcSttQueue = new DroppingAudioQueue<AudioFrame>(capacity: 100);
 
-            _teamTalkSvc.OnLog += s => { try { Console.WriteLine(s); } catch { } };
-            _teamTalkSvc.OnPcmFrame += OnTeamTalkPcmFrame;
+            _webRtcTransport.OnLog += s => { try { Console.WriteLine(s); } catch { } };
+            _webRtcTransport.OnInboundAudio += OnWebRtcInboundAudio;
+            _webRtcTransport.OnStateChanged += state =>
+            {
+                Console.WriteLine($"[WebRTC] State changed: {state}");
+                if (state == VoiceTransportState.Connected)
+                {
+                    Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        try
+                        {
+                            var text = this.FindName("WebRtcRmsText") as TextBlock;
+                            if (text != null) text.Text = "Connected";
+                        }
+                        catch { }
+                    }));
+                }
+            };
         }
 
-        private void OnTeamTalkPcmFrame(int userId, short[] pcm16, int sampleRate, int channels)
+        private void OnWebRtcInboundAudio(AudioFrame frame)
         {
             if (_isClosing) return;
 
-            // Update UI meter from newest frame (no backlog)
+            // Update UI meter
             try
             {
-                float rms = ComputeRmsFromPcm16(pcm16);
-                _latestTeamTalkRmsValue = rms;
-                _lastTeamTalkRmsTime = DateTime.UtcNow;
+                float rms = ComputeRmsFromPcm16(frame.Pcm16);
+                _latestWebRtcRmsValue = rms;
+                _lastWebRtcRmsTime = DateTime.UtcNow;
             }
             catch { }
 
-            // Only feed STT when TeamTalk mode is active
-            if (!_isTeamTalkInputEnabled) return;
+            // Only feed STT when WebRTC mode is active
+            if (!_isWebRtcInputEnabled) return;
 
-            _teamTalkSttQueue?.Enqueue(pcm16, sampleRate, channels);
+            _webRtcSttQueue?.Enqueue(frame);
         }
 
         private static float ComputeRmsFromPcm16(short[] pcm)
@@ -1174,95 +1192,73 @@ namespace Kinectv1
             return (float)(Math.Sqrt(sumSq / pcm.Length) * 10000.0);
         }
 
-        private void EnsureTeamTalkStartedFromSettings()
+        private void EnsureWebRtcStartedFromSettings()
         {
             try
             {
-                var cfg = App.SettingsProvider?.Current?.TeamTalk;
+                var cfg = App.SettingsProvider?.Current?.WebRtc;
                 if (cfg == null || !cfg.Enabled) return;
 
-                if (_teamTalkCts != null && !_teamTalkCts.IsCancellationRequested) return;
+                if (_webRtcCts != null && !_webRtcCts.IsCancellationRequested) return;
 
-                EnsureTeamTalkWiring();
+                EnsureWebRtcWiring();
 
-                _teamTalkCts = new CancellationTokenSource();
-
-                var ttCfg = new TeamTalkConfig
-                {
-                    Host = cfg.Host,
-                    TcpPort = cfg.TcpPort,
-                    UdpPort = cfg.UdpPort,
-                    Encrypted = cfg.Encrypted,
-                    TlsValidate = cfg.TlsValidate,
-                    Nickname = string.IsNullOrWhiteSpace(cfg.Nickname) ? cfg.Username : cfg.Nickname,
-                    Username = cfg.Username,
-                    Password = cfg.Password,
-                    ChannelPath = string.IsNullOrWhiteSpace(cfg.ChannelPath) ? cfg.Channel : cfg.ChannelPath
-                };
+                _webRtcCts = new CancellationTokenSource();
 
                 _ = Task.Run(async () =>
                 {
                     try
                     {
-                        await _teamTalkSvc.StartAsync(ttCfg, _teamTalkCts.Token);
-                    }
-                    catch (DllNotFoundException dex)
-                    {
-                        Console.WriteLine("[TeamTalk] StartAsync failed: " + dex.Message);
-                        try { await StopTeamTalkAsync(); } catch { }
-                    }
-                    catch (BadImageFormatException bex)
-                    {
-                        Console.WriteLine("[TeamTalk] StartAsync failed: " + bex.Message);
-                        try { await StopTeamTalkAsync(); } catch { }
+                        await _webRtcTransport.StartAsync(_webRtcCts.Token);
+                        Console.WriteLine($"[WebRTC] Started. Join URL: {_webRtcTransport.GetJoinUrl()}");
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine("[TeamTalk] StartAsync failed: " + ex.Message);
+                        Console.WriteLine($"[WebRTC] StartAsync failed: {ex.Message}");
+                        try { await StopWebRtcAsync(); } catch { }
                     }
                 });
 
-                _teamTalkSttTask = Task.Run(() => TeamTalkSttWorker(_teamTalkCts.Token));
+                _webRtcSttTask = Task.Run(() => WebRtcSttWorker(_webRtcCts.Token));
             }
             catch (Exception ex)
             {
-                Console.WriteLine("[TeamTalk] start failed: " + ex.Message);
+                Console.WriteLine("[WebRTC] start failed: " + ex.Message);
             }
         }
 
-        private async Task StopTeamTalkAsync()
+        private async Task StopWebRtcAsync()
         {
             try
             {
-                var cts = _teamTalkCts;
-                _teamTalkCts = null;
+                var cts = _webRtcCts;
+                _webRtcCts = null;
                 if (cts != null)
                 {
                     try { cts.Cancel(); } catch { }
                     try { cts.Dispose(); } catch { }
                 }
 
-                var t = _teamTalkSttTask;
-                _teamTalkSttTask = null;
+                var t = _webRtcSttTask;
+                _webRtcSttTask = null;
                 if (t != null) { try { await Task.WhenAny(t, Task.Delay(1000)); } catch { } }
 
-                if (_teamTalkSvc != null)
+                if (_webRtcTransport != null)
                 {
-                    await _teamTalkSvc.StopAsync();
+                    await _webRtcTransport.StopAsync();
                 }
             }
             catch { }
         }
 
-        private void TeamTalkSttWorker(CancellationToken ct)
+        private void WebRtcSttWorker(CancellationToken ct)
         {
-            // Diagnostics
             int frames = 0;
             DateTime lastLog = DateTime.UtcNow;
 
             while (!ct.IsCancellationRequested)
             {
-                if (_teamTalkSttQueue == null || !_teamTalkSttQueue.TryDequeue(out var pcm, out var sr, out var ch))
+                if (_webRtcSttQueue == null || !_webRtcSttQueue.TryDequeue(out var frame))
                 {
                     Thread.Sleep(2);
                     continue;
@@ -1272,27 +1268,36 @@ namespace Kinectv1
                 {
                     frames++;
 
-                    // Downmix if needed + resample to 16k
+                    var pcm = frame.Pcm16;
+                    var sr = frame.SampleRate;
+                    var ch = frame.Channels;
+
+                    // Resample to 16k mono for Vosk
                     byte[] pcm16k;
                     if (sr == 16000 && ch == 1)
                     {
                         pcm16k = ShortsToBytes(pcm);
                     }
+                    else if (sr == 8000 && ch == 1)
+                    {
+                        // Upsample 8k to 16k (simple interpolation)
+                        var upsampled = Upsample8kTo16k(pcm);
+                        pcm16k = ShortsToBytes(upsampled);
+                    }
                     else
                     {
-                        // convert short->float
+                        // Convert to float and resample
                         var floats = new float[pcm.Length];
                         for (int i = 0; i < pcm.Length; i++) floats[i] = pcm[i] / 32768.0f;
 
                         float[] res;
                         if (sr == 48000)
                         {
-                            if (ch == 1) res = AudioUtils.ResampleMono48kTo16k(floats, floats.Length, "teamtalk");
-                            else res = AudioUtils.ResampleStereo48kTo16kMono(floats, floats.Length, "teamtalk");
+                            if (ch == 1) res = AudioUtils.ResampleMono48kTo16k(floats, floats.Length, "webrtc");
+                            else res = AudioUtils.ResampleStereo48kTo16kMono(floats, floats.Length, "webrtc");
                         }
                         else
                         {
-                            // Unsupported rate for now; drop to keep realtime
                             res = Array.Empty<float>();
                         }
 
@@ -1301,7 +1306,7 @@ namespace Kinectv1
 
                     if (pcm16k != null && pcm16k.Length > 0)
                     {
-                        VoiceRecognizer.ProcessExternalAudio(pcm16k, pcm16k.Length, "teamtalk:teamtalk");
+                        VoiceRecognizer.ProcessExternalAudio(pcm16k, pcm16k.Length, $"webrtc:{frame.SourceId}");
                     }
                 }
                 catch { }
@@ -1311,15 +1316,29 @@ namespace Kinectv1
                 {
                     try
                     {
-                        var q = _teamTalkSttQueue?.Count ?? 0;
-                        var dropped = _teamTalkSttQueue?.DroppedFrames ?? 0;
-                        Console.WriteLine($"[TeamTalk][stt] fps={frames} q={q} dropped={dropped}");
+                        var (depth, dropped, totalDropped, depthMs) = _webRtcSttQueue?.GetStats(16000, 320) ?? (0, 0, 0, 0);
+                        Console.WriteLine($"[WebRTC][stt] fps={frames} q={depth} ({depthMs:F0}ms) dropped={dropped}");
                     }
                     catch { }
                     frames = 0;
                     lastLog = now;
                 }
             }
+        }
+
+        private static short[] Upsample8kTo16k(short[] input)
+        {
+            if (input == null || input.Length == 0) return Array.Empty<short>();
+            var output = new short[input.Length * 2];
+            for (int i = 0; i < input.Length; i++)
+            {
+                output[i * 2] = input[i];
+                if (i < input.Length - 1)
+                    output[i * 2 + 1] = (short)((input[i] + input[i + 1]) / 2);
+                else
+                    output[i * 2 + 1] = input[i];
+            }
+            return output;
         }
 
         private static byte[] ShortsToBytes(short[] pcm)
@@ -1354,7 +1373,7 @@ namespace Kinectv1
                 _currentAudioMode = mode;
                 _isMicrophoneInputEnabled = (mode == AudioInMode.LocalMic);
                 _isDiscordInputEnabled = (mode == AudioInMode.DiscordVoice);
-                _isTeamTalkInputEnabled = (mode == AudioInMode.TeamTalkVoice);
+                _isWebRtcInputEnabled = (mode == AudioInMode.WebRtcVoice);
 
                 // Reflect in UI (single-selection behavior)
                 if (MicInputEnabledCheckBox != null)
@@ -1363,8 +1382,8 @@ namespace Kinectv1
                     DiscordInputEnabledCheckBox.IsChecked = _isDiscordInputEnabled;
                 try
                 {
-                    var teamTalkCb = this.FindName("TeamTalkInputEnabledCheckBox") as CheckBox;
-                    if (teamTalkCb != null) teamTalkCb.IsChecked = _isTeamTalkInputEnabled;
+                    var webRtcCb = this.FindName("WebRtcInputEnabledCheckBox") as CheckBox;
+                    if (webRtcCb != null) webRtcCb.IsChecked = _isWebRtcInputEnabled;
                 }
                 catch { }
 
@@ -1375,11 +1394,12 @@ namespace Kinectv1
                     try { VoiceRecognizer.SetMicrophoneInputEnabled(false); } catch { }
                     try { VoiceRecognizer.SetMumbleInputEnabled(false); } catch { }
                     try { TtsService.CancelCurrentLocalTts(); } catch { }
-                    try { Console.WriteLine("[AudioMode] Mic forcibly disabled (Discord mode)"); } catch { }
+                    _ = StopWebRtcAsync();
+                    Console.WriteLine("[AudioMode] Mic forcibly disabled (Discord mode)");
                 }
-                else if (_isTeamTalkInputEnabled)
+                else if (_isWebRtcInputEnabled)
                 {
-                    // Ensure Discord is disconnected
+                    // Disconnect Discord
                     _ = Task.Run(async () => { try { await DiscordNetBotManager.LeaveAllVoiceAsync(); } catch { } });
 
                     // Disable mic and discord input
@@ -1387,57 +1407,32 @@ namespace Kinectv1
                     try { VoiceRecognizer.SetDiscordInputEnabled(false); } catch { }
                     try { VoiceRecognizer.SetMumbleInputEnabled(true); } catch { }
 
-                    // Persist selection intent: ensure TeamTalk enabled in settings (persistent)
+                    // Enable WebRTC in settings
                     try
                     {
-                        var svc = App.SettingsProvider; var curr = svc?.Current; if (svc != null && curr != null)
+                        var svc = App.SettingsProvider; var curr = svc?.Current;
+                        if (svc != null && curr != null)
                         {
-                            var tt = curr.TeamTalk;
-                            var nextTt = new Kinectv1.Settings.TeamTalkSettings(
-                                Enabled: true,
-                                AutoConnect: tt.AutoConnect,
-                                Host: tt.Host,
-                                TcpPort: tt.TcpPort,
-                                UdpPort: tt.UdpPort,
-                                Encrypted: tt.Encrypted,
-                                TlsValidate: tt.TlsValidate,
-                                Nickname: tt.Nickname,
-                                Username: tt.Username,
-                                Password: tt.Password,
-                                Channel: tt.Channel,
-                                ChannelPassword: tt.ChannelPassword,
-                                ChannelPath: tt.ChannelPath
-                            );
-                            var next = curr with { TeamTalk = nextTt };
+                            var nextWebRtc = new WebRtcSettings(Enabled: true, Port: curr.WebRtc.Port);
+                            var next = curr with { WebRtc = nextWebRtc };
                             svc.Save(next);
                         }
                     }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"Persist TeamTalk enable failed: {ex.Message}");
-                    }
+                    catch (Exception ex) { Console.WriteLine($"Persist WebRTC enable failed: {ex.Message}"); }
 
-                    // Connect to TeamTalk using settings
-                    var snap = App.SettingsProvider?.Current;
-                    var tt2 = snap?.TeamTalk;
-                    if (tt2 != null)
-                    {
-                        Console.WriteLine($"[TeamTalk] Auto-connect on mode select -> {tt2.Host}:{tt2.TcpPort} as {tt2.Username}");
-                        EnsureTeamTalkStartedFromSettings();
-                    }
+                    // Start WebRTC
+                    Console.WriteLine("[WebRTC] Auto-start on mode select");
+                    EnsureWebRtcStartedFromSettings();
                 }
                 else
                 {
-                    // Mic mode: disconnect both remote sources
+                    // Mic mode: disconnect remote sources
                     _ = Task.Run(async () => { try { await DiscordNetBotManager.LeaveAllVoiceAsync(); } catch { } });
-                    
-                    // Stop TeamTalk when leaving TeamTalk mode
-                    _ = StopTeamTalkAsync();
+                    _ = StopWebRtcAsync();
                 }
 
                 // Apply to recognizer
-                // Only apply mic enable for non-Discord modes; already forced off above in Discord branch
-                if (!_isDiscordInputEnabled && !_isTeamTalkInputEnabled)
+                if (!_isDiscordInputEnabled && !_isWebRtcInputEnabled)
                 {
                     try { VoiceRecognizer.SetMicrophoneInputEnabled(_isMicrophoneInputEnabled); } catch { }
                 }

@@ -37,6 +37,7 @@
     <PackageReference Include="Discord.Net.Commands" Version="3.18.0" />
     <PackageReference Include="Discord.Net.WebSocket" Version="3.18.0" />
     <PackageReference Include="System.Threading.Channels" Version="8.0.0" />
+    <PackageReference Include="SIPSorcery" Version="6.2.4" />
     <PackageReference Include="Concentus" Version="1.1.7" />
     <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="8.0.0" />
     <PackageReference Include="System.Configuration.ConfigurationManager" Version="10.0.2" />
@@ -252,10 +253,13 @@
     <Copy SourceFiles="@(DiscordLibs)" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" Condition=" '@(DiscordLibs)' != '' " />
   </Target>
 
+  <!-- Remove BearWare.TeamTalk reference - replaced by WebRTC -->
+  <!--
   <ItemGroup>
     <Reference Include="BearWare.TeamTalk">
       <HintPath>lib\teamtalk\BearWare.TeamTalk.dll</HintPath>
       <Private>true</Private>
     </Reference>
   </ItemGroup>
+  -->
 </Project>
