@@ -146,19 +146,16 @@
     <MakeDir Directories="$(OutLib)onnxruntime" Condition="!Exists('$(OutLib)onnxruntime')" />
     <MakeDir Directories="$(OutLib)discord" Condition="!Exists('$(OutLib)discord')" />
     <MakeDir Directories="$(OutLib)vosk" Condition="!Exists('$(OutLib)vosk')" />
-    <MakeDir Directories="$(OutLib)kinect" Condition="!Exists('$(OutLib)kinect')" />
 
     <ItemGroup>
       <RuntimesOrt Include="$(OutputPath)runtimes\**\onnxruntime*.dll" />
       <RuntimesDiscord Include="$(OutputPath)runtimes\**\opus*.dll;$(OutputPath)runtimes\**\libsodium*.dll" />
       <RuntimesVosk Include="$(OutputPath)runtimes\**\*vosk*.dll" />
-      <RuntimesKinect Include="$(OutputPath)runtimes\**\Kinect*.dll" />
     </ItemGroup>
 
     <Copy SourceFiles="@(RuntimesOrt)" DestinationFolder="$(OutLib)onnxruntime\" SkipUnchangedFiles="true" Condition=" '@(RuntimesOrt)' != '' " />
     <Copy SourceFiles="@(RuntimesDiscord)" DestinationFolder="$(OutLib)discord\" SkipUnchangedFiles="true" Condition=" '@(RuntimesDiscord)' != '' " />
     <Copy SourceFiles="@(RuntimesVosk)" DestinationFolder="$(OutLib)vosk\" SkipUnchangedFiles="true" Condition=" '@(RuntimesVosk)' != '' " />
-    <Copy SourceFiles="@(RuntimesKinect)" DestinationFolder="$(OutLib)kinect\" SkipUnchangedFiles="true" Condition=" '@(RuntimesKinect)' != '' " />
   </Target>
 
   <ItemGroup>
@@ -226,9 +223,9 @@
   </ItemGroup>
 
   <Target Name="VerifyRuntimeSetup" AfterTargets="Build">
-    <Message Text="✅ .NET Framework 4.8.1 Build Status:" Importance="high" />
-    <Message Text="Build completed - using .NET Framework with native Kinect support" Importance="high" />
-    <Message Text="✅ Using Newtonsoft.Json for better .NET Framework compatibility" Importance="high" />
+    <Message Text="✅ .NET 8.0 Build Status:" Importance="high" />
+    <Message Text="Build completed - using .NET 8.0 with WPF support" Importance="high" />
+    <Message Text="✅ Using Newtonsoft.Json for JSON serialization" Importance="high" />
     <Message Text="✅ System prompt files copied to output directory" Importance="high" />
   </Target>
 
