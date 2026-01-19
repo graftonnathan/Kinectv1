@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net481</TargetFramework>
+    <TargetFramework>net8.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
     <Nullable>disable</Nullable>
     <PlatformTarget>x64</PlatformTarget>
@@ -29,6 +29,18 @@
     <Compile Remove="Old\**\*.cs" />
     <None Include="tools\**\*" Exclude="tools\obj\**\*" />
     <None Include="tests\**\*" />
+    <PackageReference Include="Microsoft.Kinect" Version="2.0.1410.19000" />
+    <PackageReference Include="Microsoft.Kinect.Face.x64" Version="2.0.1410.19000" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.22.1" />
+    <PackageReference Include="NAudio" Version="2.2.1" />
+    <PackageReference Include="Vosk" Version="0.3.38" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="Discord.Net" Version="3.18.0" />
+    <PackageReference Include="Discord.Net.Commands" Version="3.18.0" />
+    <PackageReference Include="Discord.Net.WebSocket" Version="3.18.0" />
+    <PackageReference Include="System.Threading.Channels" Version="7.0.0" />
+    <PackageReference Include="Concentus" Version="1.1.7" />
+    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="8.0.0" />
   </ItemGroup>
 
   <ItemGroup>
@@ -176,21 +188,6 @@
     <Content Remove="C:\Users\Naya-Side\.nuget\packages\mumblesharp\2.0.1\contentFiles\any\netstandard2.0\Audio\Codecs\Opus\Libs\64bit\opus.dll" />
     <Content Remove="prompts\Dasiy.txt" />
     <Content Remove="prompts\Mommy.txt" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <PackageReference Include="Microsoft.Kinect" Version="2.0.1410.19000" />
-    <PackageReference Include="Microsoft.Kinect.Face.x64" Version="2.0.1410.19000" />
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.22.1" />
-    <PackageReference Include="NAudio" Version="2.2.1" />
-    <PackageReference Include="Vosk" Version="0.3.38" />
-    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
-    <PackageReference Include="Discord.Net" Version="3.18.0" />
-    <PackageReference Include="Discord.Net.Commands" Version="3.18.0" />
-    <PackageReference Include="Discord.Net.WebSocket" Version="3.18.0" />
-    <PackageReference Include="System.Threading.Channels" Version="7.0.0" />
-    <PackageReference Include="Concentus" Version="1.1.7" />
-    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="8.0.0" />
   </ItemGroup>
   
   <ItemGroup>
