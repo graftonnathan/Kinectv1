@@ -1,10 +1,18 @@
 // Voice AI - WebRTC Client
+
+// AudioInMode enum values (must match C# enum):
+// LocalMic = 0, DiscordVoice = 1, SystemLoopback = 2, WebRtcVoice = 3
+const MODE_MIC = 0;
+const MODE_DISCORD = 1;
+const MODE_WEBRTC = 3;
+
 let ws = null;
 let pc = null;
 let stream = null;
 let audioCtx = null;
-let mode = 0;
+let mode = MODE_MIC;
 let voiceOn = false;
+let pendingText = null; // Track text we just sent to avoid double-display
 
 const chat = document.getElementById('chat');
 const empty = document.getElementById('empty');
@@ -22,12 +30,21 @@ function setStatus(text, state) {
     dot.className = 'dot' + (state ? ' ' + state : '');
 }
 
+// Map mode number to slider position (0, 1, 2 for visual positions)
+function modeToSliderPos(m) {
+    if (m === MODE_MIC) return 0;
+    if (m === MODE_DISCORD) return 1;
+    if (m === MODE_WEBRTC) return 2;
+    return 0;
+}
+
 // Mode UI - 3-position switch
 function updateMode(m) {
     mode = m;
+    const pos = modeToSliderPos(m);
     
     // Update slider position
-    slider.className = 'switch-slider' + (m === 1 ? ' pos-1' : m === 2 ? ' pos-2' : '');
+    slider.className = 'switch-slider' + (pos === 1 ? ' pos-1' : pos === 2 ? ' pos-2' : '');
     
     // Update active option
     document.querySelectorAll('.switch-option').forEach(opt => {
@@ -35,12 +52,17 @@ function updateMode(m) {
     });
     
     // Update level bar color
-    const levelClasses = ['mic', 'discord', 'webrtc'];
-    level.className = 'level-fill ' + levelClasses[m];
+    if (m === MODE_MIC) {
+        level.className = 'level-fill mic';
+    } else if (m === MODE_DISCORD) {
+        level.className = 'level-fill discord';
+    } else if (m === MODE_WEBRTC) {
+        level.className = 'level-fill webrtc';
+    }
     
     // Voice button only enabled in WebRTC mode
-    voiceBtn.disabled = m !== 2;
-    if (m !== 2 && voiceOn) stopVoice();
+    voiceBtn.disabled = m !== MODE_WEBRTC;
+    if (m !== MODE_WEBRTC && voiceOn) stopVoice();
 }
 
 // Set mode on server
@@ -102,7 +124,14 @@ function send() {
     const text = input.value.trim();
     if (!text) return;
     input.value = '';
+    
+    // Add message locally and track it to avoid double-display
     addMsg(text, 'user');
+    pendingText = text;
+    
+    // Clear pending after short delay (in case server echo never arrives)
+    setTimeout(() => { if (pendingText === text) pendingText = null; }, 2000);
+    
     if (ws?.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'text', text }));
     }
@@ -110,7 +139,7 @@ function send() {
 
 // Voice toggle
 async function toggleVoice() {
-    if (mode !== 2) return;
+    if (mode !== MODE_WEBRTC) return;
     voiceOn ? stopVoice() : await startVoice();
 }
 
@@ -201,7 +230,7 @@ function connect() {
     
     ws.onopen = () => {
         setStatus('Connected', 'on');
-        if (voiceOn && stream && mode === 2) createPC();
+        if (voiceOn && stream && mode === MODE_WEBRTC) createPC();
     };
     
     ws.onmessage = async e => {
@@ -211,8 +240,15 @@ function connect() {
                 if (msg.mode !== undefined) updateMode(msg.mode);
                 break;
             case 'transcription':
-                addMsg(msg.text, 'user');
-                showTyping();
+                // Skip if this is our own message echoed back
+                if (pendingText && msg.text === pendingText) {
+                    pendingText = null; // Clear the pending flag
+                    showTyping(); // Still show typing indicator
+                } else {
+                    // This is from voice input or another source
+                    addMsg(msg.text, 'user');
+                    showTyping();
+                }
                 break;
             case 'response_chunk':
                 appendResponse(msg.text);

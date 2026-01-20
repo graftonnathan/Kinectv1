@@ -27,6 +27,22 @@ namespace Kinectv1.Voice
         // Track mode change requests to trigger MainWindow
         public static event Action<AudioInMode> OnModeChangeRequested;
         
+        // Allow MainWindow to receive text input from web UI
+        public static event Action<string, string> OnWebTextInput; // (speaker, text)
+        
+        // Allow MainWindow to broadcast mode changes to web clients
+        private static WebRtcSignalingServer _instance;
+        public static void BroadcastModeChange(int mode)
+        {
+            if (_instance == null)
+            {
+                Console.WriteLine($"[WebRTC] BroadcastModeChange skipped - server not started yet (mode={mode})");
+                return;
+            }
+            Console.WriteLine($"[WebRTC] Broadcasting mode change: {mode} to {_instance._clients.Count} clients");
+            _instance?.Broadcast(new { type = "status", mode });
+        }
+
         private readonly ConcurrentDictionary<string, WebSocket> _clients = new();
         private int _clientId = 0;
         
@@ -88,6 +104,7 @@ namespace Kinectv1.Voice
 
         public async Task StartAsync(CancellationToken ct)
         {
+            _instance = this; // Set instance for static broadcast access
             _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             _listener = new HttpListener();
             _listener.Prefixes.Add($"http://+:{_port}/");
@@ -154,27 +171,27 @@ namespace Kinectv1.Voice
         // Only relay if WebRTC mode is active
         private void OnPartial(string text)
         {
-            if (GetCurrentMode() != 2) return; // Only WebRTC mode
+            if (GetCurrentMode() != 3) return; // WebRtcVoice = 3
             Broadcast(new { type = "partial", text });
         }
 
         private void OnTranscription(string text)
         {
-            if (GetCurrentMode() != 2) return;
+            if (GetCurrentMode() != 3) return; // WebRtcVoice = 3
             Broadcast(new { type = "transcription", text });
         }
 
         private string _buffer = "";
         private void OnChunk(string chunk)
         {
-            if (GetCurrentMode() != 2 && !_webRtcActive) return;
+            if (GetCurrentMode() != 3 && !_webRtcActive) return; // WebRtcVoice = 3
             _buffer += chunk;
             Broadcast(new { type = "response_chunk", text = _buffer });
         }
 
         private void OnResponse(string response)
         {
-            if (GetCurrentMode() != 2 && !_webRtcActive) return;
+            if (GetCurrentMode() != 3 && !_webRtcActive) return; // WebRtcVoice = 3
             _buffer = "";
             Broadcast(new { type = "response", text = response });
         }
@@ -344,7 +361,13 @@ namespace Kinectv1.Voice
                             // Mark as WebRTC-sourced
                             _webRtcActive = true;
                             
-                            // Echo to chat
+                            // Determine speaker
+                            var speaker = App.SettingsProvider?.Current?.Ollama?.ForcedSpeakerId ?? "User";
+                            
+                            // Notify desktop UI of the text input
+                            try { OnWebTextInput?.Invoke(speaker, text); } catch { }
+                            
+                            // Echo to web clients
                             Broadcast(new { type = "transcription", text });
                             
                             // Send to LLM
@@ -352,7 +375,6 @@ namespace Kinectv1.Voice
                             {
                                 try
                                 {
-                                    var speaker = App.SettingsProvider?.Current?.Ollama?.ForcedSpeakerId ?? "User";
                                     await OllamaService.DispatchAsync(speaker, text);
                                 }
                                 catch (Exception ex)

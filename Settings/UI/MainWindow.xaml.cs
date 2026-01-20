@@ -992,6 +992,9 @@ namespace Kinectv1
 
             // Subscribe to mode change requests from web UI
             WebRtcSignalingServer.OnModeChangeRequested += OnWebUiModeChangeRequested;
+            
+            // Subscribe to text input from web UI
+            WebRtcSignalingServer.OnWebTextInput += OnWebUiTextInput;
         }
 
         private void OnWebUiModeChangeRequested(AudioInMode mode)
@@ -1012,293 +1015,35 @@ namespace Kinectv1
             }));
         }
 
-        private void EnsureWebRtcStartedFromSettings()
+        private void OnWebUiTextInput(string speaker, string text)
         {
-            try
+            // Called from web UI - must dispatch to UI thread
+            Dispatcher.BeginInvoke(new Action(() =>
             {
-                var cfg = App.SettingsProvider?.Current?.WebRtc;
-                if (cfg == null || !cfg.Enabled) return;
-
-                if (_webRtcCts != null && !_webRtcCts.IsCancellationRequested) return;
-
-                EnsureWebRtcWiring();
-
-                _webRtcCts = new CancellationTokenSource();
-
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        await _webRtcTransport.StartAsync(_webRtcCts.Token);
-                        Console.WriteLine($"[WebRTC] Started. Join URL: {_webRtcTransport.GetJoinUrl()}");
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"[WebRTC] StartAsync failed: {ex.Message}");
-                        try { await StopWebRtcAsync(); } catch { }
-                    }
-                });
-
-                _webRtcSttTask = Task.Run(() => WebRtcSttWorker(_webRtcCts.Token));
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine("[WebRTC] start failed: " + ex.Message);
-            }
-        }
-
-        private async Task StopWebRtcAsync()
-        {
-            try
-            {
-                var cts = _webRtcCts;
-                _webRtcCts = null;
-                if (cts != null)
-                {
-                    try { cts.Cancel(); } catch { }
-                    try { cts.Dispose(); } catch { }
-                }
-
-                var t = _webRtcSttTask;
-                _webRtcSttTask = null;
-                if (t != null) { try { await Task.WhenAny(t, Task.Delay(1000)); } catch { } }
-
-                if (_webRtcTransport != null)
-                {
-                    await _webRtcTransport.StopAsync();
-                }
-            }
-            catch { }
-        }
-
-        private void WebRtcSttWorker(CancellationToken ct)
-        {
-            int frames = 0;
-            DateTime lastLog = DateTime.UtcNow;
-
-            while (!ct.IsCancellationRequested)
-            {
-                if (_webRtcSttQueue == null || !_webRtcSttQueue.TryDequeue(out var frame))
-                {
-                    Thread.Sleep(2);
-                    continue;
-                }
-
                 try
                 {
-                    frames++;
-
-                    var pcm = frame.Pcm16;
-                    var sr = frame.SampleRate;
-                    var ch = frame.Channels;
-
-                    // Resample to 16k mono for Vosk
-                    byte[] pcm16k;
-                    if (sr == 16000 && ch == 1)
+                    Console.WriteLine($"[WebUI] Text input from {speaker}: {text.Substring(0, Math.Min(50, text.Length))}...");
+                    
+                    // Update transcription label to show the input
+                    if (TranscriptionLabel != null)
                     {
-                        pcm16k = ShortsToBytes(pcm);
+                        TranscriptionLabel.Content = text;
                     }
-                    else if (sr == 8000 && ch == 1)
+                    
+                    // Show speaker
+                    try { ShowSpeakerResolvedForOllama(speaker, 1.0f, "webui"); } catch { }
+                    
+                    // Update status
+                    if (OllamaStatusText != null)
                     {
-                        // Upsample 8k to 16k (simple interpolation)
-                        var upsampled = Upsample8kTo16k(pcm);
-                        pcm16k = ShortsToBytes(upsampled);
-                    }
-                    else
-                    {
-                        // Convert to float and resample
-                        var floats = new float[pcm.Length];
-                        for (int i = 0; i < pcm.Length; i++) floats[i] = pcm[i] / 32768.0f;
-
-                        float[] res;
-                        if (sr == 48000)
-                        {
-                            if (ch == 1) res = AudioUtils.ResampleMono48kTo16k(floats, floats.Length, "webrtc");
-                            else res = AudioUtils.ResampleStereo48kTo16kMono(floats, floats.Length, "webrtc");
-                        }
-                        else
-                        {
-                            res = Array.Empty<float>();
-                        }
-
-                        pcm16k = FloatsToPcm16Bytes(res);
-                    }
-
-                    if (pcm16k != null && pcm16k.Length > 0)
-                    {
-                        var normalizedFrame = Kinectv1.Voice.NormalizedAudioFrame.Create(
-                            pcm16k, pcm16k.Length, 
-                            Kinectv1.Voice.AudioSourceType.WebRtc, 
-                            frame.SourceId);
-                        VoiceRecognizer.ProcessAudio(normalizedFrame);
+                        OllamaStatusText.Text = "🤖 Ollama: Processing (from WebUI)...";
                     }
                 }
-                catch { }
-
-                var now = DateTime.UtcNow;
-                if ((now - lastLog).TotalSeconds >= 1)
+                catch (Exception ex)
                 {
-                    try
-                    {
-                        var (depth, dropped, totalDropped, depthMs) = _webRtcSttQueue?.GetStats(16000, 320) ?? (0, 0, 0, 0);
-                        Console.WriteLine($"[WebRTC][stt] fps={frames} q={depth} ({depthMs:F0}ms) dropped={dropped}");
-                    }
-                    catch { }
-                    frames = 0;
-                    lastLog = now;
+                    Console.WriteLine($"[WebUI] Text input UI update error: {ex.Message}");
                 }
-            }
-        }
-
-        private static short[] Upsample8kTo16k(short[] input)
-        {
-            if (input == null || input.Length == 0) return Array.Empty<short>();
-            var output = new short[input.Length * 2];
-            for (int i = 0; i < input.Length; i++)
-            {
-                output[i * 2] = input[i];
-                if (i < input.Length - 1)
-                    output[i * 2 + 1] = (short)((input[i] + input[i + 1]) / 2);
-                else
-                    output[i * 2 + 1] = input[i];
-            }
-            return output;
-        }
-
-        private static byte[] ShortsToBytes(short[] pcm)
-        {
-            if (pcm == null || pcm.Length == 0) return Array.Empty<byte>();
-            var bytes = new byte[pcm.Length * 2];
-            Buffer.BlockCopy(pcm, 0, bytes, 0, bytes.Length);
-            return bytes;
-        }
-
-        private static byte[] FloatsToPcm16Bytes(float[] floats)
-        {
-            if (floats == null || floats.Length == 0) return Array.Empty<byte>();
-            var bytes = new byte[floats.Length * 2];
-            for (int i = 0; i < floats.Length; i++)
-            {
-                float f = floats[i];
-                if (f > 1f) f = 1f;
-                if (f < -1f) f = -1f;
-                short s = (short)(f * 32767.0f);
-                bytes[i * 2] = (byte)(s & 0xFF);
-                bytes[i * 2 + 1] = (byte)((s >> 8) & 0xFF);
-            }
-            return bytes;
-        }
-
-        private void ApplyAudioMode(AudioInMode mode)
-        {
-            _updatingAudioMode = true;
-            try
-            {
-                _currentAudioMode = mode;
-                _isMicrophoneInputEnabled = (mode == AudioInMode.LocalMic);
-                _isDiscordInputEnabled = (mode == AudioInMode.DiscordVoice);
-                _isWebRtcInputEnabled = (mode == AudioInMode.WebRtcVoice);
-
-                Console.WriteLine($"[AudioMode] Applying mode={mode}, mic={_isMicrophoneInputEnabled}, discord={_isDiscordInputEnabled}, webrtc={_isWebRtcInputEnabled}");
-
-                // Update active source label and meter color
-                if (ActiveSourceLabel != null && RmsBar != null)
-                {
-                    if (_isMicrophoneInputEnabled)
-                    {
-                        ActiveSourceLabel.Text = "🎤 Mic";
-                        RmsBar.Foreground = _rmsGreenBrush ?? new SolidColorBrush(Colors.Green);
-                    }
-                    else if (_isDiscordInputEnabled)
-                    {
-                        ActiveSourceLabel.Text = "💬 Discord";
-                        RmsBar.Foreground = _discordLowBrush ?? new SolidColorBrush(Colors.SteelBlue);
-                    }
-                    else if (_isWebRtcInputEnabled)
-                    {
-                        ActiveSourceLabel.Text = "📱 WebRTC";
-                        RmsBar.Foreground = (TryFindResource("AccentPurple") as SolidColorBrush) ?? new SolidColorBrush(Colors.Purple);
-                    }
-                }
-
-                // Reset smoothed RMS when switching sources
-                _smoothedRms = 0f;
-                _lastMicPct = -1;
-                _lastMicBucket = -1;
-
-                // Reflect in UI (single-selection behavior)
-                if (MicInputEnabledCheckBox != null)
-                    MicInputEnabledCheckBox.IsChecked = _isMicrophoneInputEnabled;
-                if (DiscordInputEnabledCheckBox != null)
-                    DiscordInputEnabledCheckBox.IsChecked = _isDiscordInputEnabled;
-                try
-                {
-                    var webRtcCb = this.FindName("WebRtcInputEnabledCheckBox") as CheckBox;
-                    if (webRtcCb != null) webRtcCb.IsChecked = _isWebRtcInputEnabled;
-                }
-                catch { }
-
-                // Enforce disconnect-on-switch policy
-                if (_isDiscordInputEnabled)
-                {
-                    try { VoiceRecognizer.SetMicrophoneInputEnabled(false); } catch { }
-                    try { VoiceRecognizer.SetWebRtcInputEnabled(false); } catch { }
-                    try { TtsService.CancelCurrentLocalTts(); } catch { }
-                    // Note: WebRTC server stays running for UI access, just not processing voice
-                    Console.WriteLine("[AudioMode] Mic forcibly disabled (Discord mode)");
-                }
-                else if (_isWebRtcInputEnabled)
-                {
-                    _ = Task.Run(async () => { try { await DiscordNetBotManager.LeaveAllVoiceAsync(); } catch { } });
-                    try { VoiceRecognizer.SetMicrophoneInputEnabled(false); } catch { }
-                    try { VoiceRecognizer.SetDiscordInputEnabled(false); } catch { }
-                    try { VoiceRecognizer.SetWebRtcInputEnabled(true); } catch { }
-
-                    // Persist WebRTC enabled state
-                    try
-                    {
-                        var svc = App.SettingsProvider; var curr = svc?.Current;
-                        if (svc != null && curr != null)
-                        {
-                            var nextWebRtc = new WebRtcSettings(Enabled: true, Port: curr.WebRtc.Port);
-                            var next = curr with { WebRtc = nextWebRtc };
-                            svc.Save(next);
-                        }
-                    }
-                    catch (Exception ex) { Console.WriteLine($"Persist WebRTC enable failed: {ex.Message}"); }
-
-                    // Server should already be running from StartWebRtcServerAlways()
-                    // Just ensure it's started if somehow missed
-                    if (_webRtcCts == null || _webRtcCts.IsCancellationRequested)
-                    {
-                        Console.WriteLine("[WebRTC] Server not running, starting now");
-                        StartWebRtcServerAlways();
-                    }
-                    else
-                    {
-                        Console.WriteLine("[WebRTC] Voice processing enabled (server already running)");
-                    }
-                }
-                else
-                {
-                    // Local mic mode - ensure mic is enabled
-                    _ = Task.Run(async () => { try { await DiscordNetBotManager.LeaveAllVoiceAsync(); } catch { } });
-                    // Note: WebRTC server stays running for UI access, just not processing voice
-                    try { VoiceRecognizer.SetMicrophoneInputEnabled(true); } catch { }
-                    Console.WriteLine("[AudioMode] Mic enabled (LocalMic mode)");
-                }
-
-                // Apply to recognizer
-                if (!_isDiscordInputEnabled && !_isWebRtcInputEnabled)
-                {
-                    try { VoiceRecognizer.SetMicrophoneInputEnabled(_isMicrophoneInputEnabled); } catch { }
-                }
-                try { VoiceRecognizer.SetDiscordInputEnabled(_isDiscordInputEnabled); } catch { }
-            }
-            finally
-            {
-                _updatingAudioMode = false;
-            }
+            }));
         }
 
         // Text input to AI handlers
@@ -1610,6 +1355,251 @@ namespace Kinectv1
                 sumSq += n * n;
             }
             return (float)(Math.Sqrt(sumSq / pcm.Length) * 10000.0);
+        }
+
+        private void ApplyAudioMode(AudioInMode mode)
+        {
+            _updatingAudioMode = true;
+            try
+            {
+                _currentAudioMode = mode;
+                _isMicrophoneInputEnabled = (mode == AudioInMode.LocalMic);
+                _isDiscordInputEnabled = (mode == AudioInMode.DiscordVoice);
+                _isWebRtcInputEnabled = (mode == AudioInMode.WebRtcVoice);
+
+                Console.WriteLine($"[AudioMode] Applying mode={mode}, mic={_isMicrophoneInputEnabled}, discord={_isDiscordInputEnabled}, webrtc={_isWebRtcInputEnabled}");
+
+                // Broadcast mode change to web clients
+                try { WebRtcSignalingServer.BroadcastModeChange((int)mode); } catch { }
+
+                // Update active source label and meter color
+                if (ActiveSourceLabel != null && RmsBar != null)
+                {
+                    if (_isMicrophoneInputEnabled)
+                    {
+                        ActiveSourceLabel.Text = "🎤 Mic";
+                        RmsBar.Foreground = _rmsGreenBrush ?? new SolidColorBrush(Colors.Green);
+                    }
+                    else if (_isDiscordInputEnabled)
+                    {
+                        ActiveSourceLabel.Text = "💬 Discord";
+                        RmsBar.Foreground = _discordLowBrush ?? new SolidColorBrush(Colors.SteelBlue);
+                    }
+                    else if (_isWebRtcInputEnabled)
+                    {
+                        ActiveSourceLabel.Text = "📱 WebRTC";
+                        RmsBar.Foreground = (TryFindResource("AccentPurple") as SolidColorBrush) ?? new SolidColorBrush(Colors.Purple);
+                    }
+                }
+
+                // Reset smoothed RMS when switching sources
+                _smoothedRms = 0f;
+                _lastMicPct = -1;
+                _lastMicBucket = -1;
+
+                // Reflect in UI (single-selection behavior)
+                if (MicInputEnabledCheckBox != null)
+                    MicInputEnabledCheckBox.IsChecked = _isMicrophoneInputEnabled;
+                if (DiscordInputEnabledCheckBox != null)
+                    DiscordInputEnabledCheckBox.IsChecked = _isDiscordInputEnabled;
+                try
+                {
+                    var webRtcCb = this.FindName("WebRtcInputEnabledCheckBox") as CheckBox;
+                    if (webRtcCb != null) webRtcCb.IsChecked = _isWebRtcInputEnabled;
+                }
+                catch { }
+
+                // Enforce disconnect-on-switch policy
+                if (_isDiscordInputEnabled)
+                {
+                    try { VoiceRecognizer.SetMicrophoneInputEnabled(false); } catch { }
+                    try { VoiceRecognizer.SetWebRtcInputEnabled(false); } catch { }
+                    try { TtsService.CancelCurrentLocalTts(); } catch { }
+                    Console.WriteLine("[AudioMode] Mic forcibly disabled (Discord mode)");
+                }
+                else if (_isWebRtcInputEnabled)
+                {
+                    _ = Task.Run(async () => { try { await DiscordNetBotManager.LeaveAllVoiceAsync(); } catch { } });
+                    try { VoiceRecognizer.SetMicrophoneInputEnabled(false); } catch { }
+                    try { VoiceRecognizer.SetDiscordInputEnabled(false); } catch { }
+                    try { VoiceRecognizer.SetWebRtcInputEnabled(true); } catch { }
+
+                    try
+                    {
+                        var svc = App.SettingsProvider; var curr = svc?.Current;
+                        if (svc != null && curr != null)
+                        {
+                            var nextWebRtc = new WebRtcSettings(Enabled: true, Port: curr.WebRtc.Port);
+                            var next = curr with { WebRtc = nextWebRtc };
+                            svc.Save(next);
+                        }
+                    }
+                    catch (Exception ex) { Console.WriteLine($"Persist WebRTC enable failed: {ex.Message}"); }
+
+                    if (_webRtcCts == null || _webRtcCts.IsCancellationRequested)
+                    {
+                        Console.WriteLine("[WebRTC] Server not running, starting now");
+                        StartWebRtcServerAlways();
+                    }
+                    else
+                    {
+                        Console.WriteLine("[WebRTC] Voice processing enabled (server already running)");
+                    }
+                }
+                else
+                {
+                    _ = Task.Run(async () => { try { await DiscordNetBotManager.LeaveAllVoiceAsync(); } catch { } });
+                    try { VoiceRecognizer.SetMicrophoneInputEnabled(true); } catch { }
+                    Console.WriteLine("[AudioMode] Mic enabled (LocalMic mode)");
+                }
+
+                if (!_isDiscordInputEnabled && !_isWebRtcInputEnabled)
+                {
+                    try { VoiceRecognizer.SetMicrophoneInputEnabled(_isMicrophoneInputEnabled); } catch { }
+                }
+                try { VoiceRecognizer.SetDiscordInputEnabled(_isDiscordInputEnabled); } catch { }
+            }
+            finally
+            {
+                _updatingAudioMode = false;
+            }
+        }
+
+        private async Task StopWebRtcAsync()
+        {
+            try
+            {
+                var cts = _webRtcCts;
+                _webRtcCts = null;
+                if (cts != null)
+                {
+                    try { cts.Cancel(); } catch { }
+                    try { cts.Dispose(); } catch { }
+                }
+
+                var t = _webRtcSttTask;
+                _webRtcSttTask = null;
+                if (t != null) { try { await Task.WhenAny(t, Task.Delay(1000)); } catch { } }
+
+                if (_webRtcTransport != null)
+                {
+                    await _webRtcTransport.StopAsync();
+                }
+            }
+            catch { }
+        }
+
+        private void WebRtcSttWorker(CancellationToken ct)
+        {
+            int frames = 0;
+            DateTime lastLog = DateTime.UtcNow;
+
+            while (!ct.IsCancellationRequested)
+            {
+                if (_webRtcSttQueue == null || !_webRtcSttQueue.TryDequeue(out var frame))
+                {
+                    Thread.Sleep(2);
+                    continue;
+                }
+
+                try
+                {
+                    frames++;
+                    var pcm = frame.Pcm16;
+                    var sr = frame.SampleRate;
+                    var ch = frame.Channels;
+
+                    byte[] pcm16k;
+                    if (sr == 16000 && ch == 1)
+                    {
+                        pcm16k = ShortsToBytes(pcm);
+                    }
+                    else if (sr == 8000 && ch == 1)
+                    {
+                        var upsampled = Upsample8kTo16k(pcm);
+                        pcm16k = ShortsToBytes(upsampled);
+                    }
+                    else
+                    {
+                        var floats = new float[pcm.Length];
+                        for (int i = 0; i < pcm.Length; i++) floats[i] = pcm[i] / 32768.0f;
+
+                        float[] res;
+                        if (sr == 48000)
+                        {
+                            if (ch == 1) res = AudioUtils.ResampleMono48kTo16k(floats, floats.Length, "webrtc");
+                            else res = AudioUtils.ResampleStereo48kTo16kMono(floats, floats.Length, "webrtc");
+                        }
+                        else
+                        {
+                            res = Array.Empty<float>();
+                        }
+                        pcm16k = FloatsToPcm16Bytes(res);
+                    }
+
+                    if (pcm16k != null && pcm16k.Length > 0)
+                    {
+                        var normalizedFrame = Kinectv1.Voice.NormalizedAudioFrame.Create(
+                            pcm16k, pcm16k.Length,
+                            Kinectv1.Voice.AudioSourceType.WebRtc,
+                            frame.SourceId);
+                        VoiceRecognizer.ProcessAudio(normalizedFrame);
+                    }
+                }
+                catch { }
+
+                var now = DateTime.UtcNow;
+                if ((now - lastLog).TotalSeconds >= 1)
+                {
+                    try
+                    {
+                        var (depth, dropped, totalDropped, depthMs) = _webRtcSttQueue?.GetStats(16000, 320) ?? (0, 0, 0, 0);
+                        Console.WriteLine($"[WebRTC][stt] fps={frames} q={depth} ({depthMs:F0}ms) dropped={dropped}");
+                    }
+                    catch { }
+                    frames = 0;
+                    lastLog = now;
+                }
+            }
+        }
+
+        private static short[] Upsample8kTo16k(short[] input)
+        {
+            if (input == null || input.Length == 0) return Array.Empty<short>();
+            var output = new short[input.Length * 2];
+            for (int i = 0; i < input.Length; i++)
+            {
+                output[i * 2] = input[i];
+                if (i < input.Length - 1)
+                    output[i * 2 + 1] = (short)((input[i] + input[i + 1]) / 2);
+                else
+                    output[i * 2 + 1] = input[i];
+            }
+            return output;
+        }
+
+        private static byte[] ShortsToBytes(short[] pcm)
+        {
+            if (pcm == null || pcm.Length == 0) return Array.Empty<byte>();
+            var bytes = new byte[pcm.Length * 2];
+            Buffer.BlockCopy(pcm, 0, bytes, 0, bytes.Length);
+            return bytes;
+        }
+
+        private static byte[] FloatsToPcm16Bytes(float[] floats)
+        {
+            if (floats == null || floats.Length == 0) return Array.Empty<byte>();
+            var bytes = new byte[floats.Length * 2];
+            for (int i = 0; i < floats.Length; i++)
+            {
+                float f = floats[i];
+                if (f > 1f) f = 1f;
+                if (f < -1f) f = -1f;
+                short s = (short)(f * 32767.0f);
+                bytes[i * 2] = (byte)(s & 0xFF);
+                bytes[i * 2 + 1] = (byte)((s >> 8) & 0xFF);
+            }
+            return bytes;
         }
     }
 }
