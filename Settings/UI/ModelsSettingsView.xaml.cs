@@ -190,7 +190,6 @@ namespace Kinectv1.UI.Settings
             else UI.Settings.SettingsWindow.CurrentEmbedded?.TriggerDefaults();
         }
 
-        // --- Browsers and other handlers unchanged below ---
         private void BrowseTtsModelButton_Click(object sender, RoutedEventArgs e)
         {
             try
@@ -235,29 +234,43 @@ namespace Kinectv1.UI.Settings
             }
         }
 
-        private void BrowseTtsVocoderButton_Click(object sender, RoutedEventArgs e)
+        private void TtsVoiceComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e) { }
+        private void ExecutionModeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e) { }
+        
+        private void TestVoiceButton_Click(object sender, RoutedEventArgs e)
         {
             try
             {
-                var dlg = new OpenFileDialog
+                var text = TestPhraseTextBox?.Text?.Trim();
+                if (string.IsNullOrWhiteSpace(text)) text = "Hello, this is a test.";
+                
+                var voice = TtsVoiceComboBox?.SelectedItem?.ToString();
+                if (string.IsNullOrWhiteSpace(voice))
                 {
-                    Title = "Select TTS Vocoder (.onnx)",
-                    Filter = "ONNX model (*.onnx)|*.onnx|All files (*.*)|*.*"
-                };
-                if (dlg.ShowDialog() == true)
-                {
-                    TtsVocoderPathTextBox.Text = dlg.FileName;
+                    MessageBox.Show("Please select a voice first.", "Test Voice", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
                 }
+                
+                StatusTextBlock.Text = "Testing voice...";
+                _ = System.Threading.Tasks.Task.Run(async () =>
+                {
+                    try
+                    {
+                        await Kinectv1.Tts.TtsService.SpeakWithPreemptionAsync(text, voice);
+                        Dispatcher.BeginInvoke(new Action(() => StatusTextBlock.Text = "Voice test complete"));
+                    }
+                    catch (Exception ex)
+                    {
+                        Dispatcher.BeginInvoke(new Action(() => StatusTextBlock.Text = $"Voice test failed: {ex.Message}"));
+                    }
+                });
             }
             catch (Exception ex)
             {
-                MessageBox.Show(ex.Message, "Browse Vocoder", MessageBoxButton.OK, MessageBoxImage.Error);
+                StatusTextBlock.Text = $"Error: {ex.Message}";
             }
         }
 
-        private void TtsVoiceComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e) { }
-        private void ExecutionModeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e) { }
-        private void TestVoiceButton_Click(object sender, RoutedEventArgs e) { }
         private void BrowseSttModelButton_Click(object sender, RoutedEventArgs e)
         {
             try
@@ -275,7 +288,9 @@ namespace Kinectv1.UI.Settings
                 MessageBox.Show(ex.Message, "Browse STT Model", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
+
         private void MicInputComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e) { }
+
         private void BrowseSpeakerModelButton_Click(object sender, RoutedEventArgs e)
         {
             try
@@ -293,25 +308,6 @@ namespace Kinectv1.UI.Settings
             catch (Exception ex)
             {
                 MessageBox.Show(ex.Message, "Browse Speaker Model", MessageBoxButton.OK, MessageBoxImage.Error);
-            }
-        }
-        private void BrowseArcFaceModelButton_Click(object sender, RoutedEventArgs e)
-        {
-            try
-            {
-                var dlg = new OpenFileDialog
-                {
-                    Title = "Select ArcFace Model (.onnx)",
-                    Filter = "ONNX model (*.onnx)|*.onnx|All files (*.*)|*.*"
-                };
-                if (dlg.ShowDialog() == true)
-                {
-                    ArcFaceModelPathTextBox.Text = dlg.FileName;
-                }
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show(ex.Message, "Browse ArcFace Model", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
     }

@@ -94,6 +94,18 @@ namespace Kinectv1.UI.Settings
 
             Categories.Add(new SettingsCategoryVM
             {
+                Name = "Tools",
+                EditorView = new ToolsSettingsView()
+            });
+
+            Categories.Add(new SettingsCategoryVM
+            {
+                Name = "Memory",
+                EditorView = new MemorySettingsView()
+            });
+
+            Categories.Add(new SettingsCategoryVM
+            {
                 Name = "Discord",
                 EditorView = new DiscordSettingsView()
             });
@@ -102,12 +114,6 @@ namespace Kinectv1.UI.Settings
             {
                 Name = "WebRTC",
                 EditorView = new WebRtcSettingsView()
-            });
-
-            Categories.Add(new SettingsCategoryVM
-            {
-                Name = "Memory",
-                EditorView = new MemorySettingsView()
             });
 
             if (Categories.Count > 0)

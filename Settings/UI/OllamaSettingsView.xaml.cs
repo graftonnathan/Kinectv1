@@ -242,7 +242,9 @@ namespace Kinectv1.UI.Settings
                     ChunkOverlapTokens: cur.Ollama.ChunkOverlapTokens,
                     VectorSearchTopK: cur.Ollama.VectorSearchTopK,
                     RecencyBoostFactor: cur.Ollama.RecencyBoostFactor,
-                    MinRetrievalScore: cur.Ollama.MinRetrievalScore
+                    MinRetrievalScore: cur.Ollama.MinRetrievalScore,
+                    // Preserve tools setting
+                    ToolsEnabled: cur.Ollama.ToolsEnabled
                 );
                 var updated = cur with { Ollama = next };
                 SettingsService.ValidateOrThrow(updated);

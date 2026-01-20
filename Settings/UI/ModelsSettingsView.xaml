@@ -181,10 +181,10 @@
         <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="20">
             <StackPanel>
                 <!-- Header -->
-                <TextBlock Text="General Settings" FontSize="16" FontWeight="SemiBold" 
+                <TextBlock Text="Settings" FontSize="16" FontWeight="SemiBold" 
                            Foreground="{DynamicResource TextPrimary}" Margin="0,0,0,12"/>
 
-                <!-- TTS Model Settings -->
+                <!-- TTS Settings -->
                 <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0" CornerRadius="0" 
                         Background="{DynamicResource WindowBackground}" Margin="0,0,0,16">
                     <StackPanel>
@@ -194,7 +194,7 @@
                         <!-- TTS Enabled -->
                         <Grid Margin="0,0,0,8">
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="220"/>
+                                <ColumnDefinition Width="180"/>
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
                             <TextBlock Grid.Column="0" Text="Enable TTS" VerticalAlignment="Center" 
@@ -202,27 +202,10 @@
                             <CheckBox Grid.Column="1" Name="TtsEnabledCheckBox" Style="{StaticResource ThemedCheckBoxStyle}"/>
                         </Grid>
 
-                        <!-- TTS Model Path -->
-                        <Grid Margin="0,0,0,8">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="220"/>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="Model File" VerticalAlignment="Center" 
-                                       Foreground="{DynamicResource TextSecondary}"/>
-                            <TextBox Grid.Column="1" Name="TtsModelPathTextBox" Margin="0,0,8,0" 
-                                     Style="{StaticResource ThemedTextBoxStyle}" Height="30"
-                                     VerticalContentAlignment="Center"/>
-                            <Button Grid.Column="2" Name="BrowseTtsModelButton" Content="Browse" 
-                                    Width="80" Height="30" Click="BrowseTtsModelButton_Click"
-                                    Style="{StaticResource ThemedButtonStyle}"/>
-                        </Grid>
-
                         <!-- TTS Model Folder -->
                         <Grid Margin="0,0,0,8">
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="220"/>
+                                <ColumnDefinition Width="180"/>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
@@ -236,28 +219,28 @@
                                     Style="{StaticResource ThemedButtonStyle}"/>
                         </Grid>
 
-                        <!-- TTS Vocoder Path -->
+                        <!-- TTS Model Path -->
                         <Grid Margin="0,0,0,8">
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="220"/>
+                                <ColumnDefinition Width="180"/>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="Vocoder File" VerticalAlignment="Center" 
+                            <TextBlock Grid.Column="0" Text="Model File (.onnx)" VerticalAlignment="Center" 
                                        Foreground="{DynamicResource TextSecondary}"/>
-                            <TextBox Grid.Column="1" Name="TtsVocoderPathTextBox" Margin="0,0,8,0" 
+                            <TextBox Grid.Column="1" Name="TtsModelPathTextBox" Margin="0,0,8,0" 
                                      Style="{StaticResource ThemedTextBoxStyle}" Height="30"
                                      VerticalContentAlignment="Center"/>
-                            <Button Grid.Column="2" Name="BrowseTtsVocoderButton" Content="Browse" 
-                                    Width="80" Height="30" Click="BrowseTtsVocoderButton_Click"
+                            <Button Grid.Column="2" Name="BrowseTtsModelButton" Content="Browse" 
+                                    Width="80" Height="30" Click="BrowseTtsModelButton_Click"
                                     Style="{StaticResource ThemedButtonStyle}"/>
                         </Grid>
 
                         <!-- TTS Voice Selection -->
                         <Grid Margin="0,0,0,8">
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="220"/>
-                                <ColumnDefinition Width="300"/>
+                                <ColumnDefinition Width="180"/>
+                                <ColumnDefinition Width="250"/>
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
                             <TextBlock Grid.Column="0" Text="Voice" VerticalAlignment="Center" 
@@ -267,11 +250,28 @@
                                       SelectionChanged="TtsVoiceComboBox_SelectionChanged"/>
                         </Grid>
 
+                        <!-- Execution Mode -->
+                        <Grid Margin="0,0,0,8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="180"/>
+                                <ColumnDefinition Width="150"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Execution" VerticalAlignment="Center" 
+                                       Foreground="{DynamicResource TextSecondary}"/>
+                            <ComboBox Grid.Column="1" Name="ExecutionModeComboBox" Height="30"
+                                      Style="{StaticResource ThemedComboBoxStyle}"
+                                      SelectionChanged="ExecutionModeComboBox_SelectionChanged">
+                                <ComboBoxItem Content="CPU" Tag="CPU"/>
+                                <ComboBoxItem Content="GPU (CUDA)" Tag="GPU"/>
+                            </ComboBox>
+                        </Grid>
+
                         <!-- TTS Output Device -->
                         <Grid Margin="0,0,0,8">
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="220"/>
-                                <ColumnDefinition Width="300"/>
+                                <ColumnDefinition Width="180"/>
+                                <ColumnDefinition Width="250"/>
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
                             <TextBlock Grid.Column="0" Text="Output Device" VerticalAlignment="Center" 
@@ -283,147 +283,140 @@
                         <!-- Local TTS Volume -->
                         <Grid Margin="0,0,0,8">
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="220"/>
-                                <ColumnDefinition Width="300"/>
+                                <ColumnDefinition Width="180"/>
+                                <ColumnDefinition Width="250"/>
                                 <ColumnDefinition Width="Auto"/>
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
                             <TextBlock Grid.Column="0" Text="Local Volume" VerticalAlignment="Center" 
                                        Foreground="{DynamicResource TextSecondary}"/>
                             <Slider Grid.Column="1" Name="LocalVolumeSlider" Minimum="0" Maximum="100" TickFrequency="5" IsSnapToTickEnabled="True"/>
-                            <TextBlock Grid.Column="2" Name="LocalVolumeValueText" Margin="8,0,0,0" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
+                            <TextBlock Grid.Column="2" Name="LocalVolumeValueText" Width="40" Margin="8,0,0,0" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
                         </Grid>
 
                         <!-- Discord TTS Volume -->
                         <Grid Margin="0,0,0,8">
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="220"/>
-                                <ColumnDefinition Width="300"/>
+                                <ColumnDefinition Width="180"/>
+                                <ColumnDefinition Width="250"/>
                                 <ColumnDefinition Width="Auto"/>
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
                             <TextBlock Grid.Column="0" Text="Discord Volume" VerticalAlignment="Center" 
                                        Foreground="{DynamicResource TextSecondary}"/>
                             <Slider Grid.Column="1" Name="DiscordVolumeSlider" Minimum="0" Maximum="100" TickFrequency="5" IsSnapToTickEnabled="True"/>
-                            <TextBlock Grid.Column="2" Name="DiscordVolumeValueText" Margin="8,0,0,0" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
+                            <TextBlock Grid.Column="2" Name="DiscordVolumeValueText" Width="40" Margin="8,0,0,0" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
                         </Grid>
 
-                        <!-- Execution Mode -->
+                        <!-- TTS Speed -->
                         <Grid Margin="0,0,0,8">
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="220"/>
-                                <ColumnDefinition Width="200"/>
+                                <ColumnDefinition Width="180"/>
+                                <ColumnDefinition Width="250"/>
+                                <ColumnDefinition Width="Auto"/>
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="Execution Mode" VerticalAlignment="Center" 
+                            <TextBlock Grid.Column="0" Text="Speed" VerticalAlignment="Center" 
                                        Foreground="{DynamicResource TextSecondary}"/>
-                            <ComboBox Grid.Column="1" Name="ExecutionModeComboBox" Height="30"
-                                      Style="{StaticResource ThemedComboBoxStyle}"
-                                      SelectionChanged="ExecutionModeComboBox_SelectionChanged">
-                                <ComboBoxItem Content="CPU" Tag="CPU"/>
-                                <ComboBoxItem Content="GPU (CUDA)" Tag="GPU"/>
-                            </ComboBox>
+                            <Slider Grid.Column="1" Name="TtsSpeedSlider" Minimum="50" Maximum="200" TickFrequency="5" IsSnapToTickEnabled="True"/>
+                            <TextBlock Grid.Column="2" Name="TtsSpeedValueText" Width="40" Margin="8,0,0,0" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
                         </Grid>
 
                         <!-- Voice Test -->
                         <Grid Margin="0,0,0,8">
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="220"/>
+                                <ColumnDefinition Width="180"/>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="Test Phrase" VerticalAlignment="Center" 
+                            <TextBlock Grid.Column="0" Text="Test" VerticalAlignment="Center" 
                                        Foreground="{DynamicResource TextSecondary}"/>
                             <TextBox Grid.Column="1" Name="TestPhraseTextBox" Margin="0,0,8,0" 
                                      Style="{StaticResource ThemedTextBoxStyle}" Height="30"
-                                     VerticalContentAlignment="Center" Text="Hello, this is a test of the text to speech system."/>
-                            <Button Grid.Column="2" Name="TestVoiceButton" Content="Test" 
+                                     VerticalContentAlignment="Center" Text="Hello, this is a test."/>
+                            <Button Grid.Column="2" Name="TestVoiceButton" Content="Play" 
                                     Width="80" Height="30" Click="TestVoiceButton_Click"
                                     Style="{StaticResource ThemedButtonStyle}"/>
                         </Grid>
 
-                        <!-- TTS Pacing: Speed -->
-                        <Grid Margin="0,0,0,8">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="220"/>
-                                <ColumnDefinition Width="300"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="Speed (x)" VerticalAlignment="Center" 
-                                       Foreground="{DynamicResource TextSecondary}"/>
-                            <Slider Grid.Column="1" Name="TtsSpeedSlider" Minimum="50" Maximum="200" TickFrequency="5" IsSnapToTickEnabled="True"/>
-                            <TextBlock Grid.Column="2" Name="TtsSpeedValueText" Margin="8,0,0,0" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
-                        </Grid>
+                        <!-- Advanced TTS (Collapsed by default) -->
+                        <Expander Header="Advanced TTS Settings" Foreground="{DynamicResource TextSecondary}" Margin="0,8,0,0">
+                            <StackPanel Margin="0,8,0,0">
+                                <!-- Trim Silence Threshold -->
+                                <Grid Margin="0,0,0,8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="180"/>
+                                        <ColumnDefinition Width="250"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Trim Threshold" VerticalAlignment="Center" 
+                                               Foreground="{DynamicResource TextSecondary}"/>
+                                    <Slider Grid.Column="1" Name="TrimSilenceThresholdSlider" Minimum="0" Maximum="100" TickFrequency="5" IsSnapToTickEnabled="True"/>
+                                    <TextBlock Grid.Column="2" Name="TrimSilenceThresholdValueText" Width="40" Margin="8,0,0,0" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
+                                </Grid>
 
-                        <!-- TTS Pacing: Trim Silence Threshold -->
-                        <Grid Margin="0,0,0,8">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="220"/>
-                                <ColumnDefinition Width="300"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="Trim Silence Threshold" VerticalAlignment="Center" 
-                                       Foreground="{DynamicResource TextSecondary}"/>
-                            <Slider Grid.Column="1" Name="TrimSilenceThresholdSlider" Minimum="0" Maximum="100" TickFrequency="5" IsSnapToTickEnabled="True"/>
-                            <TextBlock Grid.Column="2" Name="TrimSilenceThresholdValueText" Margin="8,0,0,0" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
-                        </Grid>
+                                <!-- Trim Leave (ms) -->
+                                <Grid Margin="0,0,0,8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="180"/>
+                                        <ColumnDefinition Width="250"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Trim Leave (ms)" VerticalAlignment="Center" 
+                                               Foreground="{DynamicResource TextSecondary}"/>
+                                    <Slider Grid.Column="1" Name="TtsTrimLeaveSlider" Minimum="0" Maximum="100" TickFrequency="5" IsSnapToTickEnabled="True"/>
+                                    <TextBlock Grid.Column="2" Name="TtsTrimLeaveValueText" Width="40" Margin="8,0,0,0" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
+                                </Grid>
 
-                        <!-- TTS Pacing: Trim Leave (ms) -->
-                        <Grid Margin="0,0,0,8">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="220"/>
-                                <ColumnDefinition Width="300"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="Trim Leave (ms)" VerticalAlignment="Center" 
-                                       Foreground="{DynamicResource TextSecondary}"/>
-                            <Slider Grid.Column="1" Name="TtsTrimLeaveSlider" Minimum="0" Maximum="100" TickFrequency="5" IsSnapToTickEnabled="True"/>
-                            <TextBlock Grid.Column="2" Name="TtsTrimLeaveValueText" Margin="8,0,0,0" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
-                        </Grid>
+                                <!-- Trim Max (ms) -->
+                                <Grid Margin="0,0,0,8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="180"/>
+                                        <ColumnDefinition Width="250"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Trim Max (ms)" VerticalAlignment="Center" 
+                                               Foreground="{DynamicResource TextSecondary}"/>
+                                    <Slider Grid.Column="1" Name="TtsTrimMaxSlider" Minimum="50" Maximum="3000" TickFrequency="50" IsSnapToTickEnabled="True"/>
+                                    <TextBlock Grid.Column="2" Name="TtsTrimMaxValueText" Width="50" Margin="8,0,0,0" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
+                                </Grid>
 
-                        <!-- TTS Pacing: Trim Max (ms) -->
-                        <Grid Margin="0,0,0,8">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="220"/>
-                                <ColumnDefinition Width="300"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="Trim Max (ms)" VerticalAlignment="Center" 
-                                       Foreground="{DynamicResource TextSecondary}"/>
-                            <Slider Grid.Column="1" Name="TtsTrimMaxSlider" Minimum="50" Maximum="3000" TickFrequency="50" IsSnapToTickEnabled="True"/>
-                            <TextBlock Grid.Column="2" Name="TtsTrimMaxValueText" Margin="8,0,0,0" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
-                        </Grid>
+                                <!-- Padding (ms) -->
+                                <Grid Margin="0,0,0,8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="180"/>
+                                        <ColumnDefinition Width="250"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Clause Padding (ms)" VerticalAlignment="Center" 
+                                               Foreground="{DynamicResource TextSecondary}"/>
+                                    <Slider Grid.Column="1" Name="TtsPaddingSlider" Minimum="0" Maximum="200" TickFrequency="10" IsSnapToTickEnabled="True"/>
+                                    <TextBlock Grid.Column="2" Name="TtsPaddingValueText" Width="40" Margin="8,0,0,0" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
+                                </Grid>
 
-                        <!-- TTS Pacing: Padding (ms) -->
-                        <Grid Margin="0,0,0,8">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="220"/>
-                                <ColumnDefinition Width="300"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="Padding (ms)" VerticalAlignment="Center" 
-                                       Foreground="{DynamicResource TextSecondary}"/>
-                            <Slider Grid.Column="1" Name="TtsPaddingSlider" Minimum="0" Maximum="200" TickFrequency="10" IsSnapToTickEnabled="True"/>
-                            <TextBlock Grid.Column="2" Name="TtsPaddingValueText" Margin="8,0,0,0" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
-                        </Grid>
-
-                        <!-- IPA Timeouts -->
-                        <Grid Margin="0,0,0,8">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="220"/>
-                                <ColumnDefinition Width="150"/>
-                                <ColumnDefinition Width="150"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="IPA Timeouts (ms)" VerticalAlignment="Center" 
-                                       Foreground="{DynamicResource TextSecondary}"/>
-                            <TextBox Grid.Column="1" Name="TtsIpaServiceTimeoutTextBox" Height="30" Margin="0,0,8,0" Style="{StaticResource ThemedTextBoxStyle}" ToolTip="Service timeout (200–5000 ms)"/>
-                            <TextBox Grid.Column="2" Name="TtsIpaOneShotTimeoutTextBox" Height="30" Margin="0,0,8,0" Style="{StaticResource ThemedTextBoxStyle}" ToolTip="One‑shot fallback timeout (200–5000 ms)"/>
-                        </Grid>
+                                <!-- IPA Timeouts -->
+                                <Grid Margin="0,0,0,8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="180"/>
+                                        <ColumnDefinition Width="120"/>
+                                        <ColumnDefinition Width="120"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="IPA Timeouts (ms)" VerticalAlignment="Center" 
+                                               Foreground="{DynamicResource TextSecondary}"/>
+                                    <TextBox Grid.Column="1" Name="TtsIpaServiceTimeoutTextBox" Height="30" Margin="0,0,8,0" Style="{StaticResource ThemedTextBoxStyle}" ToolTip="Service timeout"/>
+                                    <TextBox Grid.Column="2" Name="TtsIpaOneShotTimeoutTextBox" Height="30" Margin="0,0,8,0" Style="{StaticResource ThemedTextBoxStyle}" ToolTip="One-shot fallback timeout"/>
+                                </Grid>
+                            </StackPanel>
+                        </Expander>
                     </StackPanel>
                 </Border>
 
-                <!-- STT & Models Settings -->
+                <!-- STT Settings -->
                 <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0" CornerRadius="0" 
                         Background="{DynamicResource WindowBackground}" Margin="0,0,0,16">
                     <StackPanel>
@@ -433,11 +426,11 @@
                         <!-- STT Model Path -->
                         <Grid Margin="0,0,0,8">
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="220"/>
+                                <ColumnDefinition Width="180"/>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="Vosk Model" VerticalAlignment="Center" 
+                            <TextBlock Grid.Column="0" Text="Vosk Model Folder" VerticalAlignment="Center" 
                                        Foreground="{DynamicResource TextSecondary}"/>
                             <TextBox Grid.Column="1" Name="SttModelPathTextBox" Margin="0,0,8,0" 
                                      Style="{StaticResource ThemedTextBoxStyle}" Height="30"
@@ -447,41 +440,60 @@
                                     Style="{StaticResource ThemedButtonStyle}"/>
                         </Grid>
 
-                        <!-- Microphone (STT) Input Device -->
+                        <!-- Microphone Input Device -->
                         <Grid Margin="0,0,0,8">
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="220"/>
-                                <ColumnDefinition Width="300"/>
+                                <ColumnDefinition Width="180"/>
+                                <ColumnDefinition Width="250"/>
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="Microphone (STT)" VerticalAlignment="Center" 
+                            <TextBlock Grid.Column="0" Text="Microphone" VerticalAlignment="Center" 
                                        Foreground="{DynamicResource TextSecondary}"/>
                             <ComboBox Grid.Column="1" Name="MicInputComboBox" Height="30"
                                       Style="{StaticResource ThemedComboBoxStyle}"
                                       SelectionChanged="MicInputComboBox_SelectionChanged"/>
                         </Grid>
+                    </StackPanel>
+                </Border>
 
-                        <!-- Voice Match Threshold -->
+                <!-- Voice Activity Detection -->
+                <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0" CornerRadius="0" 
+                        Background="{DynamicResource WindowBackground}" Margin="0,0,0,16">
+                    <StackPanel>
+                        <TextBlock Text="Voice Activity Detection (VAD)" FontSize="14" FontWeight="SemiBold" 
+                                   Foreground="{DynamicResource TextPrimary}" Margin="0,0,0,8"/>
+
+                        <!-- Voice Threshold -->
                         <Grid Margin="0,0,0,8">
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="220"/>
-                                <ColumnDefinition Width="200"/>
+                                <ColumnDefinition Width="180"/>
+                                <ColumnDefinition Width="150"/>
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="Voice Match Threshold (0..1)" VerticalAlignment="Center" 
+                            <TextBlock Grid.Column="0" Text="Voice Threshold (0–10000)" VerticalAlignment="Center" 
                                        Foreground="{DynamicResource TextSecondary}"/>
-                            <TextBox Grid.Column="1" Name="SpeakerMatchThresholdTextBox" Margin="0,0,8,0" 
-                                     Style="{StaticResource ThemedTextBoxStyle}" Height="30"/>
+                            <TextBox Grid.Column="1" Name="AudioVoiceThresholdTextBox" Margin="0,0,8,0" 
+                                     Style="{StaticResource ThemedTextBoxStyle}" Height="30"
+                                     ToolTip="RMS level that triggers speech detection. Lower = more sensitive."/>
                         </Grid>
+                    </StackPanel>
+                </Border>
 
-                        <!-- Speaker Embedding Model Path -->
+                <!-- Speaker Identification -->
+                <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0" CornerRadius="0" 
+                        Background="{DynamicResource WindowBackground}" Margin="0,0,0,16">
+                    <StackPanel>
+                        <TextBlock Text="Speaker Identification" FontSize="14" FontWeight="SemiBold" 
+                                   Foreground="{DynamicResource TextPrimary}" Margin="0,0,0,8"/>
+
+                        <!-- Speaker Model Path -->
                         <Grid Margin="0,0,0,8">
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="220"/>
+                                <ColumnDefinition Width="180"/>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="Speaker Model" VerticalAlignment="Center" 
+                            <TextBlock Grid.Column="0" Text="Embedding Model" VerticalAlignment="Center" 
                                        Foreground="{DynamicResource TextSecondary}"/>
                             <TextBox Grid.Column="1" Name="SpeakerModelPathTextBox" Margin="0,0,8,0" 
                                      Style="{StaticResource ThemedTextBoxStyle}" Height="30"
@@ -491,175 +503,18 @@
                                     Style="{StaticResource ThemedButtonStyle}"/>
                         </Grid>
 
-                        <!-- ArcFace Model Path -->
+                        <!-- Speaker Match Threshold -->
                         <Grid Margin="0,0,0,8">
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="220"/>
+                                <ColumnDefinition Width="180"/>
+                                <ColumnDefinition Width="150"/>
                                 <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="ArcFace Model" VerticalAlignment="Center" 
+                            <TextBlock Grid.Column="0" Text="Match Threshold (0–1)" VerticalAlignment="Center" 
                                        Foreground="{DynamicResource TextSecondary}"/>
-                            <TextBox Grid.Column="1" Name="ArcFaceModelPathTextBox" Margin="0,0,8,0" 
+                            <TextBox Grid.Column="1" Name="SpeakerMatchThresholdTextBox" Margin="0,0,8,0" 
                                      Style="{StaticResource ThemedTextBoxStyle}" Height="30"
-                                     VerticalContentAlignment="Center"/>
-                            <Button Grid.Column="2" Name="BrowseArcFaceModelButton" Content="Browse" 
-                                    Width="80" Height="30" Click="BrowseArcFaceModelButton_Click"
-                                    Style="{StaticResource ThemedButtonStyle}"/>
-                        </Grid>
-                    </StackPanel>
-                </Border>
-
-                <!-- Audio Settings -->
-                <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0" CornerRadius="0" 
-                        Background="{DynamicResource WindowBackground}" Margin="0,0,0,16">
-                    <StackPanel>
-                        <TextBlock Text="Audio" FontSize="14" FontWeight="SemiBold" 
-                                   Foreground="{DynamicResource TextPrimary}" Margin="0,0,0,8"/>
-
-                        <!-- Voice Threshold -->
-                        <Grid Margin="0,0,0,8">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="220"/>
-                                <ColumnDefinition Width="200"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="Voice Threshold (RMS 0–10000)" VerticalAlignment="Center" 
-                                       Foreground="{DynamicResource TextSecondary}"/>
-                            <TextBox Grid.Column="1" Name="AudioVoiceThresholdTextBox" Margin="0,0,8,0" 
-                                     Style="{StaticResource ThemedTextBoxStyle}" Height="30"/>
-                        </Grid>
-
-                        <!-- High Confidence Threshold -->
-                        <Grid Margin="0,0,0,8">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="220"/>
-                                <ColumnDefinition Width="200"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="High Confidence Threshold (0..1)" VerticalAlignment="Center" 
-                                       Foreground="{DynamicResource TextSecondary}"/>
-                            <TextBox Grid.Column="1" Name="AudioVoiceHighThresholdTextBox" Margin="0,0,8,0" 
-                                     Style="{StaticResource ThemedTextBoxStyle}" Height="30"/>
-                        </Grid>
-
-                        <!-- Confidence Logging -->
-                        <Grid Margin="0,0,0,8">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="220"/>
-                                <ColumnDefinition Width="200"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="Confidence Logging" VerticalAlignment="Center" 
-                                       Foreground="{DynamicResource TextSecondary}"/>
-                            <CheckBox Grid.Column="1" Name="VoiceConfidenceLoggingCheckBox" Content="Enable"/>
-                        </Grid>
-
-                        <!-- Buffer Size -->
-                        <Grid Margin="0,0,0,8">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="220"/>
-                                <ColumnDefinition Width="200"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="Buffer Size" VerticalAlignment="Center" 
-                                       Foreground="{DynamicResource TextSecondary}"/>
-                            <TextBox Grid.Column="1" Name="AudioBufferSizeTextBox" Margin="0,0,8,0" 
-                                     Style="{StaticResource ThemedTextBoxStyle}" Height="30"/>
-                        </Grid>
-                    </StackPanel>
-                </Border>
-
-                <!-- App Behavior -->
-                <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0" CornerRadius="0" 
-                        Background="{DynamicResource WindowBackground}" Margin="0,0,0,16">
-                    <StackPanel>
-                        <TextBlock Text="App Behavior" FontSize="14" FontWeight="SemiBold" 
-                                   Foreground="{DynamicResource TextPrimary}" Margin="0,0,0,8"/>
-
-                        <!-- Wake word requirement toggle -->
-                        <Grid Margin="0,0,0,8">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="220"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="Require wake word (Local)" VerticalAlignment="Center" 
-                                       Foreground="{DynamicResource TextSecondary}"/>
-                            <CheckBox Grid.Column="1" Name="RequireWakeWordCheckBox"/>
-                        </Grid>
-                    </StackPanel>
-                </Border>
-
-                <!-- Face Recognition Settings -->
-                <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0" CornerRadius="0" 
-                        Background="{DynamicResource WindowBackground}" Margin="0,0,0,16">
-                    <StackPanel>
-                        <TextBlock Text="Face Recognition" FontSize="14" FontWeight="SemiBold" 
-                                   Foreground="{DynamicResource TextPrimary}" Margin="0,0,0,8"/>
-
-                        <!-- Face Threshold (0..1) -->
-                        <Grid Margin="0,0,0,8">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="220"/>
-                                <ColumnDefinition Width="200"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="Face Threshold (0..1)" VerticalAlignment="Center" 
-                                       Foreground="{DynamicResource TextSecondary}"/>
-                            <TextBox Grid.Column="1" Name="FaceThresholdTextBox" Height="30" 
-                                     Style="{StaticResource ThemedTextBoxStyle}"/>
-                        </Grid>
-
-                        <!-- Fusion Face Weight (0..1) -->
-                        <Grid Margin="0,0,0,8">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="220"/>
-                                <ColumnDefinition Width="200"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="Fusion Face Weight (0..1)" VerticalAlignment="Center" 
-                                       Foreground="{DynamicResource TextSecondary}"/>
-                            <TextBox Grid.Column="1" Name="FusionFaceWeightTextBox" Height="30" 
-                                     Style="{StaticResource ThemedTextBoxStyle}"/>
-                        </Grid>
-
-                        <!-- Fusion Voice Weight (0..1) -->
-                        <Grid Margin="0,0,0,8">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="220"/>
-                                <ColumnDefinition Width="200"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="Fusion Voice Weight (0..1)" VerticalAlignment="Center" 
-                                       Foreground="{DynamicResource TextSecondary}"/>
-                            <TextBox Grid.Column="1" Name="FusionVoiceWeightTextBox" Height="30" 
-                                     Style="{StaticResource ThemedTextBoxStyle}"/>
-                        </Grid>
-
-                        <!-- Fusion Decay Half-Life (ms) -->
-                        <Grid Margin="0,0,0,8">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="220"/>
-                                <ColumnDefinition Width="200"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="Fusion Decay Half-Life (ms)" VerticalAlignment="Center" 
-                                       Foreground="{DynamicResource TextSecondary}"/>
-                            <TextBox Grid.Column="1" Name="FusionHalfLifeTextBox" Height="30" 
-                                     Style="{StaticResource ThemedTextBoxStyle}"/>
-                        </Grid>
-
-                        <!-- Fusion Unknown Threshold (0..1) -->
-                        <Grid Margin="0,0,0,0">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="220"/>
-                                <ColumnDefinition Width="200"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="Fusion Unknown Threshold (0..1)" VerticalAlignment="Center" 
-                                       Foreground="{DynamicResource TextSecondary}"/>
-                            <TextBox Grid.Column="1" Name="FusionUnknownThresholdTextBox" Height="30" 
-                                     Style="{StaticResource ThemedTextBoxStyle}"/>
+                                     ToolTip="Minimum similarity score to identify a speaker. Higher = stricter matching."/>
                         </Grid>
                     </StackPanel>
                 </Border>
@@ -667,20 +522,20 @@
                 <!-- Action Buttons -->
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">
                     <Button Name="ValidateButton" Content="Validate" 
-                            Width="120" Height="32" Margin="0,0,8,0" Click="ValidateButton_Click"
+                            Width="100" Height="32" Margin="0,0,8,0" Click="ValidateButton_Click"
                             Style="{StaticResource ThemedButtonStyle}"/>
                     <Button Name="SaveButton" Content="Save" 
-                            Width="120" Height="32" Margin="0,0,8,0" Click="SaveButton_Click"
+                            Width="100" Height="32" Margin="0,0,8,0" Click="SaveButton_Click"
                             Style="{StaticResource ThemedButtonStyle}"/>
-                    <Button Name="ResetButton" Content="Reset to Defaults" 
-                            Width="150" Height="32" Click="ResetButton_Click"
+                    <Button Name="ResetButton" Content="Defaults" 
+                            Width="100" Height="32" Click="ResetButton_Click"
                             Style="{StaticResource ThemedButtonStyle}"/>
                 </StackPanel>
 
                 <!-- Status Display -->
                 <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0" CornerRadius="0" 
                         Background="{DynamicResource WindowBackground}" Margin="0,12,0,0">
-                    <TextBlock Name="StatusTextBlock" Text="Ready - Configure your TTS and STT model paths above"
+                    <TextBlock Name="StatusTextBlock" Text="Configure your TTS and STT settings above"
                                Padding="6" FontSize="12" Foreground="{DynamicResource TextSecondary}"/>
                 </Border>
             </StackPanel>

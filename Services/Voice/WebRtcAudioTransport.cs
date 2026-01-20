@@ -372,6 +372,9 @@ namespace Kinectv1.Voice
                 _lastInboundFrameUtc = DateTime.UtcNow;
                 Interlocked.Increment(ref _inboundFramesThisSecond);
 
+                // Track speaker activity
+                WebRtcSpeakerTracker.RecordActivity("webrtc-client");
+
                 // Fire event (must be fast - no heavy processing!)
                 var frame = new AudioFrame(
                     Pcm16: pcm16,
@@ -526,6 +529,11 @@ namespace Kinectv1.Voice
                     var lastIn = _lastInboundFrameUtc == DateTime.MinValue ? "never" : $"{(now - _lastInboundFrameUtc).TotalMilliseconds:F0}ms ago";
 
                     Log($"[WebRTC][diag] state={_state} inFps={inFps} outFps={outFps} ttsQ={qDepth} ({depthMs:F0}ms) dropped={qDropped} lastIn={lastIn}");
+                    
+                    // Update speaker tracker with connection status
+                    var isListening = _state == VoiceTransportState.Listening || _state == VoiceTransportState.Connected;
+                    var isConnected = _state == VoiceTransportState.Connected;
+                    WebRtcSpeakerTracker.UpdateConnectionStatus(isListening, isConnected ? 1 : 0, inFps);
                 }
                 catch (OperationCanceledException) { break; }
                 catch { }

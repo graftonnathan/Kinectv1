@@ -128,7 +128,9 @@ namespace Kinectv1.Settings
         [property: Range(0, 200)] int ChunkOverlapTokens,
         [property: Range(1, 20)] int VectorSearchTopK, // Reduced max to prevent context bloat
         [property: Range(0.0, 1.0)] double RecencyBoostFactor,
-        [property: Range(0.0, 1.0)] double MinRetrievalScore // Minimum similarity to include a chunk
+        [property: Range(0.0, 1.0)] double MinRetrievalScore, // Minimum similarity to include a chunk
+        // Tool use (web search, etc.)
+        bool ToolsEnabled
     );
 
     // New: Discord settings for bot configuration

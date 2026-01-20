@@ -10,6 +10,7 @@ using System.Text.RegularExpressions;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Kinectv1.Llm;
+using Kinectv1.Llm.Tools;
 
 namespace Kinectv1
 {
@@ -36,6 +37,10 @@ namespace Kinectv1
         public static event Action OnMemoryArchiveStarted;
         public static event Action<int, int> OnMemoryArchiveCompleted; // (messagesArchived, chunksCreated)
         public static event Action<string> OnMemoryArchiveFailed;
+        
+        // New: Tool execution events
+        public static event Action<string, string> OnToolExecutionStarted; // (toolName, query)
+        public static event Action<string, string> OnToolExecutionCompleted; // (toolName, resultSummary)
 
         // Streaming cancellation support
         private static CancellationTokenSource _currentStreamingCts;
@@ -115,10 +120,6 @@ namespace Kinectv1
             }
         }
 
-        /// <summary>
-        /// Get the current memory key based on system prompt path.
-        /// Each system prompt gets its own isolated memory store.
-        /// </summary>
         private static string GetCurrentMemoryKey()
         {
             var systemPromptPath = Snap?.Ollama?.SystemPromptPath;
@@ -533,15 +534,12 @@ namespace Kinectv1
         /// </summary>
         public static async Task SendPromptStreamingAsync(string speakerName, string transcription, CancellationToken ct = default)
         {
-            // Create a new CTS for this streaming session that can be cancelled by barge-in
             CancellationTokenSource linkedCts;
             lock (_streamingCtsLock)
             {
-                // Cancel any previous streaming
                 try { _currentStreamingCts?.Cancel(); } catch { }
                 try { _currentStreamingCts?.Dispose(); } catch { }
                 
-                // Create new CTS linked with the passed token
                 _currentStreamingCts = ct == default 
                     ? new CancellationTokenSource() 
                     : CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -549,8 +547,6 @@ namespace Kinectv1
             }
             
             var streamingCt = linkedCts.Token;
-            
-            // Mark that we're starting to stream
             _isLlmStreaming = true;
             
             try
@@ -559,10 +555,17 @@ namespace Kinectv1
                 EnsureRouterInitialized();
                 var normalizedSpeaker = string.IsNullOrWhiteSpace(speakerName) ? "UnknownSpeaker" : speakerName.Trim();
                 
-                // Initialize vector memory if enabled
                 await EnsureMemoryInitializedAsync(streamingCt).ConfigureAwait(false);
                 
                 var system = LoadSystemPrompt();
+                
+                // Add tool instructions to system prompt if tools are enabled
+                var toolRegistry = ToolRegistry.Instance;
+                if (toolRegistry.IsEnabled)
+                {
+                    system += toolRegistry.GenerateToolPrompt();
+                }
+                
                 var history = BuildHistoryBlock(normalizedSpeaker);
                 
                 // Build context from vector memory (warm summary + retrieved chunks)
@@ -589,78 +592,17 @@ namespace Kinectv1
                 try { OnPromptSent?.Invoke(userPrompt); } catch { }
                 AppendConversation(normalizedSpeaker, "user", transcription);
                 
-                // Stream the response and process sentences as they arrive
-                var fullResponse = new StringBuilder();
-                var sentenceBuffer = new StringBuilder();
+                // Stream the response with tool support
+                var (finalResponse, toolsUsed) = await StreamResponseWithToolsAsync(system, userPrompt, normalizedSpeaker, streamingCt).ConfigureAwait(false);
                 
-                try
-                {
-                    // Pass the streaming token to the router so it can be cancelled by barge-in
-                    await foreach (var chunk in _router.ChatStreamAsync(system, userPrompt, streamingCt))
-                    {
-                        // Check cancellation at each chunk
-                        if (streamingCt.IsCancellationRequested)
-                        {
-                            Console.WriteLine("[OllamaService] Streaming cancelled (barge-in detected)");
-                            break;
-                        }
-                        
-                        if (string.IsNullOrEmpty(chunk)) continue;
-                        
-                        fullResponse.Append(chunk);
-                        sentenceBuffer.Append(chunk);
-                        
-                        // Fire chunk event for UI updates
-                        try { OnResponseChunk?.Invoke(chunk); } catch { }
-                        
-                        // Check for complete sentences and fire them for TTS
-                        var bufferedText = sentenceBuffer.ToString();
-                        var sentences = ExtractCompleteSentences(ref bufferedText);
-                        sentenceBuffer.Clear();
-                        sentenceBuffer.Append(bufferedText); // Keep the incomplete part
-                        
-                        foreach (var sentence in sentences)
-                        {
-                            // Check cancellation before firing each sentence
-                            if (streamingCt.IsCancellationRequested) break;
-                            
-                            var cleaned = SanitizeAssistantText(sentence);
-                            if (!string.IsNullOrWhiteSpace(cleaned))
-                            {
-                                try { OnResponseSentenceReady?.Invoke(cleaned); } catch { }
-                            }
-                        }
-                    }
-                }
-                catch (OperationCanceledException)
-                {
-                    Console.WriteLine("[OllamaService] Streaming cancelled (OperationCanceledException)");
-                    return;
-                }
-                
-                // Don't process remaining buffer or fire completion events if cancelled
                 if (streamingCt.IsCancellationRequested)
                 {
                     Console.WriteLine("[OllamaService] Streaming aborted - not saving partial response");
                     return;
                 }
                 
-                // Process any remaining text in the buffer (last sentence without trailing punctuation)
-                var remaining = sentenceBuffer.ToString().Trim();
-                if (!string.IsNullOrWhiteSpace(remaining) && remaining.Length > 1)
-                {
-                    // Even if it doesn't end with punctuation, it's the final part of the response
-                    var cleaned = SanitizeAssistantText(remaining);
-                    if (!string.IsNullOrWhiteSpace(cleaned) && cleaned.Length > 1)
-                    {
-                        Console.WriteLine($"[OllamaService] Flushing final buffer: {cleaned.Length} chars");
-                        try { OnResponseSentenceReady?.Invoke(cleaned); } catch { }
-                    }
-                }
-                
-                var raw = fullResponse.ToString();
-                if (string.IsNullOrWhiteSpace(raw)) raw = "(no response)";
-                var cleanedFull = SanitizeAssistantText(raw);
+                if (string.IsNullOrWhiteSpace(finalResponse)) finalResponse = "(no response)";
+                var cleanedFull = SanitizeAssistantText(finalResponse);
                 AppendConversation(normalizedSpeaker, "assistant", cleanedFull);
                 
                 // Check for memory overflow after appending the response
@@ -685,10 +627,8 @@ namespace Kinectv1
             }
             finally
             {
-                // Mark that streaming is complete
                 _isLlmStreaming = false;
                 
-                // Clean up CTS if it's still the current one
                 lock (_streamingCtsLock)
                 {
                     if (_currentStreamingCts == linkedCts)
@@ -697,6 +637,147 @@ namespace Kinectv1
                     }
                 }
             }
+        }
+
+        /// <summary>
+        /// Stream response from LLM with tool execution support.
+        /// If the LLM requests a tool, execute it and continue the conversation.
+        /// </summary>
+        private static async Task<(string finalResponse, bool toolsUsed)> StreamResponseWithToolsAsync(
+            string system, string userPrompt, string speaker, CancellationToken ct)
+        {
+            var toolRegistry = ToolRegistry.Instance;
+            var fullResponse = new StringBuilder();
+            var sentenceBuffer = new StringBuilder();
+            bool toolsUsed = false;
+            int toolIterations = 0;
+            const int maxToolIterations = 3; // Prevent infinite tool loops
+
+            string currentPrompt = userPrompt;
+
+            while (toolIterations < maxToolIterations)
+            {
+                fullResponse.Clear();
+                sentenceBuffer.Clear();
+
+                try
+                {
+                    await foreach (var chunk in _router.ChatStreamAsync(system, currentPrompt, ct))
+                    {
+                        if (ct.IsCancellationRequested) break;
+                        if (string.IsNullOrEmpty(chunk)) continue;
+                        
+                        fullResponse.Append(chunk);
+                        sentenceBuffer.Append(chunk);
+                        
+                        // Only fire chunk events on the final iteration (when no more tools)
+                        // For tool iterations, we buffer silently
+                        if (toolIterations == 0 || !toolRegistry.HasToolCalls(fullResponse.ToString()))
+                        {
+                            try { OnResponseChunk?.Invoke(chunk); } catch { }
+                        }
+                        
+                        // Extract and fire sentences for TTS (only if not a tool call response)
+                        if (!toolRegistry.HasToolCalls(fullResponse.ToString()))
+                        {
+                            var bufferedText = sentenceBuffer.ToString();
+                            var sentences = ExtractCompleteSentences(ref bufferedText);
+                            sentenceBuffer.Clear();
+                            sentenceBuffer.Append(bufferedText);
+                            
+                            foreach (var sentence in sentences)
+                            {
+                                if (ct.IsCancellationRequested) break;
+                                var cleaned = SanitizeAssistantText(sentence);
+                                if (!string.IsNullOrWhiteSpace(cleaned))
+                                {
+                                    try { OnResponseSentenceReady?.Invoke(cleaned); } catch { }
+                                }
+                            }
+                        }
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    return (fullResponse.ToString(), toolsUsed);
+                }
+
+                if (ct.IsCancellationRequested) break;
+
+                var responseText = fullResponse.ToString();
+
+                // Check for tool calls
+                if (toolRegistry.IsEnabled && toolRegistry.HasToolCalls(responseText))
+                {
+                    var toolCalls = toolRegistry.ParseToolCalls(responseText);
+                    if (toolCalls.Count > 0)
+                    {
+                        toolsUsed = true;
+                        toolIterations++;
+
+                        // Execute all tool calls
+                        var toolResults = new StringBuilder();
+                        foreach (var (toolName, parameters) in toolCalls)
+                        {
+                            try
+                            {
+                                // Extract query for display
+                                string queryDisplay = parameters;
+                                try
+                                {
+                                    var paramObj = JObject.Parse(parameters);
+                                    queryDisplay = paramObj["query"]?.ToString() ?? parameters;
+                                }
+                                catch { }
+
+                                Console.WriteLine($"[OllamaService] Tool call: {toolName}({queryDisplay})");
+                                try { OnToolExecutionStarted?.Invoke(toolName, queryDisplay); } catch { }
+
+                                var result = await toolRegistry.ExecuteToolAsync(toolName, parameters, ct).ConfigureAwait(false);
+                                
+                                // Summarize result for event
+                                var resultSummary = result?.Length > 100 ? result.Substring(0, 100) + "..." : result;
+                                try { OnToolExecutionCompleted?.Invoke(toolName, resultSummary); } catch { }
+
+                                toolResults.AppendLine($"[Tool Result: {toolName}]");
+                                toolResults.AppendLine(result);
+                                toolResults.AppendLine();
+                            }
+                            catch (Exception ex)
+                            {
+                                toolResults.AppendLine($"[Tool Error: {toolName}]");
+                                toolResults.AppendLine($"Error: {ex.Message}");
+                                toolResults.AppendLine();
+                            }
+                        }
+
+                        // Build continuation prompt with tool results
+                        var cleanedResponse = toolRegistry.RemoveToolCalls(responseText);
+                        currentPrompt = $"{userPrompt}\n\nASSISTANT: {cleanedResponse}\n\n{toolResults}\n\nPlease continue your response, incorporating the tool results naturally. Do not use any more tools.";
+                        
+                        Console.WriteLine($"[OllamaService] Continuing with tool results (iteration {toolIterations})");
+                        continue;
+                    }
+                }
+
+                // No tool calls, we're done
+                // Flush any remaining buffer
+                var remaining = sentenceBuffer.ToString().Trim();
+                if (!string.IsNullOrWhiteSpace(remaining) && remaining.Length > 1)
+                {
+                    var cleaned = SanitizeAssistantText(remaining);
+                    if (!string.IsNullOrWhiteSpace(cleaned) && cleaned.Length > 1)
+                    {
+                        try { OnResponseSentenceReady?.Invoke(cleaned); } catch { }
+                    }
+                }
+
+                return (responseText, toolsUsed);
+            }
+
+            // Max iterations reached
+            Console.WriteLine($"[OllamaService] Max tool iterations ({maxToolIterations}) reached");
+            return (fullResponse.ToString(), toolsUsed);
         }
 
         /// <summary>
@@ -725,15 +806,8 @@ namespace Kinectv1
                     {
                         var context = await mm.BuildContextAsync(transcription, normalizedSpeaker, ct).ConfigureAwait(false);
                         memoryContext = mm.FormatContextForPrompt(context);
-                        if (!string.IsNullOrWhiteSpace(memoryContext))
-                        {
-                            Console.WriteLine($"?? Retrieved memory context: {TokenEstimator.EstimateTokens(memoryContext)} tokens");
-                        }
                     }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"?? Memory context retrieval failed: {ex.Message}");
-                    }
+                    catch { }
                 }
                 
                 var userPrompt = BuildUserPromptWithMemory(normalizedSpeaker, transcription, null, history, memoryContext);
@@ -790,16 +864,12 @@ namespace Kinectv1
                     return;
                 }
 
-                // Process overflow - archive old messages to vector DB
                 var remaining = await mm.ProcessOverflowAsync(messages, speaker, ct).ConfigureAwait(false);
 
                 int archivedCount = messages.Count - remaining.Count;
                 if (archivedCount > 0)
                 {
-                    // Clear the old conversation history and keep only remaining messages
                     await ReplaceConversationHistoryAsync(speaker, remaining, ct).ConfigureAwait(false);
-                    
-                    // Save vector store
                     await mm.SaveAsync(ct).ConfigureAwait(false);
 
                     Console.WriteLine($"?? Archived {archivedCount} messages, {remaining.Count} remaining in hot context");
@@ -813,9 +883,6 @@ namespace Kinectv1
             }
         }
 
-        /// <summary>
-        /// Replace conversation history with the given messages (after archival).
-        /// </summary>
         private static Task ReplaceConversationHistoryAsync(string speaker, List<Llm.ConversationMessage> remaining, CancellationToken ct)
         {
             return Task.Run(() =>
@@ -827,7 +894,6 @@ namespace Kinectv1
                         var info = GetConversationStorageInfo();
                         if (string.IsNullOrWhiteSpace(info.explicitFile)) return;
 
-                        // Read existing file
                         var file = info.explicitFile;
                         var root = new JObject();
                         if (File.Exists(file))
@@ -836,7 +902,6 @@ namespace Kinectv1
                             catch { root = new JObject(); }
                         }
 
-                        // Replace speaker's messages with remaining ones
                         var newArr = new JArray();
                         foreach (var msg in remaining)
                         {
@@ -881,16 +946,12 @@ namespace Kinectv1
                 }
 
                 var messages = GetConversationMessagesPublic(normalizedSpeaker);
-                if (messages.Count == 0)
-                {
-                    return (0, 0);
-                }
+                if (messages.Count == 0) return (0, 0);
 
                 int tokensBefore = GetConversationTokenCount(normalizedSpeaker);
                 
                 try { OnMemoryArchiveStarted?.Invoke(); } catch { }
 
-                // Archive ALL messages (force mode)
                 var remaining = await mm.ProcessOverflowAsync(messages, normalizedSpeaker, ct, forceArchiveAll: true).ConfigureAwait(false);
 
                 int archivedCount = messages.Count - remaining.Count;
@@ -1022,11 +1083,6 @@ namespace Kinectv1
             return _systemPromptCache ?? string.Empty;
         }
 
-        private static string BuildUserPrompt(string speakerName, string transcription, string systemPrompt, string historyBlock)
-        {
-            return BuildUserPromptWithMemory(speakerName, transcription, systemPrompt, historyBlock, null);
-        }
-
         private static string BuildUserPromptWithMemory(string speakerName, string transcription, string systemPrompt, string historyBlock, string memoryContext)
         {
             var sb = new StringBuilder();
@@ -1057,6 +1113,9 @@ namespace Kinectv1
             if (string.IsNullOrWhiteSpace(text)) return text;
             try
             {
+                // Remove tool call blocks first
+                text = ToolRegistry.Instance.RemoveToolCalls(text);
+                
                 var t = CleanAssistantPrefix(text)
                     .Replace('\u201C', '"').Replace('\u201D', '"')
                     .Replace('\u2018', '\'').Replace('\u2019', '\'');

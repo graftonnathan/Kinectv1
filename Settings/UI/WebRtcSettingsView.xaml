@@ -4,21 +4,49 @@
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              mc:Ignorable="d"
-             d:DesignHeight="300" d:DesignWidth="600">
+             d:DesignHeight="600" d:DesignWidth="600">
     <UserControl.Resources>
         <SolidColorBrush x:Key="WindowBackground" Color="#FF1E1E1E"/>
         <SolidColorBrush x:Key="SurfaceBackground" Color="#FF2D2D30"/>
+        <SolidColorBrush x:Key="SurfaceBackgroundLight" Color="#FF3F3F46"/>
         <SolidColorBrush x:Key="BorderBrush" Color="#FF464647"/>
         <SolidColorBrush x:Key="TextPrimary" Color="#FFFFFFFF"/>
         <SolidColorBrush x:Key="TextSecondary" Color="#FFE0E0E0"/>
+        <SolidColorBrush x:Key="TextMuted" Color="#FF999999"/>
         <SolidColorBrush x:Key="AccentGreen" Color="#FF107C10"/>
         <SolidColorBrush x:Key="AccentBlue" Color="#FF0078D4"/>
+        <SolidColorBrush x:Key="AccentOrange" Color="#FFFF8C00"/>
+        <SolidColorBrush x:Key="AccentRed" Color="#FFE74C3C"/>
+        <SolidColorBrush x:Key="AccentPurple" Color="#FF8B5CF6"/>
+        
         <Style x:Key="ThemedButtonStyle" TargetType="Button">
             <Setter Property="Background" Value="{DynamicResource SurfaceBackground}"/>
             <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
             <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
             <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="Padding" Value="10,6"/>
+            <Setter Property="Padding" Value="12,6"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}" 
+                                BorderBrush="{TemplateBinding BorderBrush}" 
+                                BorderThickness="{TemplateBinding BorderThickness}" 
+                                CornerRadius="4"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Background" Value="{DynamicResource SurfaceBackgroundLight}"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.5"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
         <Style x:Key="ThemedTextBoxStyle" TargetType="TextBox">
             <Setter Property="Background" Value="{DynamicResource SurfaceBackground}"/>
@@ -41,56 +69,214 @@
 
         <TextBlock Text="WebRTC Voice Settings" Foreground="{DynamicResource TextPrimary}" FontSize="16" FontWeight="SemiBold"/>
 
-        <StackPanel Grid.Row="1" Margin="0,10,0,0">
-            <Grid Margin="0,0,0,8">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="220"/>
-                    <ColumnDefinition Width="*"/>
-                </Grid.ColumnDefinitions>
-                <TextBlock Text="Enable WebRTC Voice" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
-                <CheckBox x:Name="EnabledCheckBox" Grid.Column="1" Style="{StaticResource ThemedCheckBoxStyle}"/>
-            </Grid>
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="0,10,0,0">
+            <StackPanel>
+                <!-- Connection Status Card -->
+                <Border Background="{DynamicResource SurfaceBackground}" CornerRadius="4" Padding="16" Margin="0,0,0,16">
+                    <StackPanel>
+                        <TextBlock Text="Connection Status" FontSize="14" FontWeight="SemiBold" 
+                                   Foreground="{DynamicResource TextPrimary}" Margin="0,0,0,12"/>
+                        
+                        <Grid Margin="0,0,0,8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="120"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Status:" VerticalAlignment="Center" 
+                                       Foreground="{DynamicResource TextMuted}" FontSize="12"/>
+                            <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                <Ellipse x:Name="StatusIndicator" Width="10" Height="10" 
+                                         Fill="{DynamicResource TextMuted}" Margin="0,0,8,0"/>
+                                <TextBlock x:Name="ConnectionStatusText" Text="Not Started" 
+                                           Foreground="{DynamicResource TextSecondary}" FontSize="12"/>
+                            </StackPanel>
+                        </Grid>
+                        
+                        <Grid Margin="0,0,0,8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="120"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Clients:" VerticalAlignment="Center" 
+                                       Foreground="{DynamicResource TextMuted}" FontSize="12"/>
+                            <TextBlock x:Name="ClientCountText" Grid.Column="1" Text="0 connected" 
+                                       Foreground="{DynamicResource TextSecondary}" FontSize="12"/>
+                        </Grid>
+                        
+                        <Grid Margin="0,0,0,8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="120"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Audio In:" VerticalAlignment="Center" 
+                                       Foreground="{DynamicResource TextMuted}" FontSize="12"/>
+                            <TextBlock x:Name="AudioInStatsText" Grid.Column="1" Text="--" 
+                                       Foreground="{DynamicResource TextSecondary}" FontSize="12"/>
+                        </Grid>
+                    </StackPanel>
+                </Border>
 
-            <Grid Margin="0,0,0,8">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="220"/>
-                    <ColumnDefinition Width="*"/>
-                </Grid.ColumnDefinitions>
-                <TextBlock Text="Port" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
-                <TextBox x:Name="PortTextBox" Grid.Column="1" Style="{StaticResource ThemedTextBoxStyle}" Width="100" HorizontalAlignment="Left"/>
-            </Grid>
+                <!-- Settings Card -->
+                <Border Background="{DynamicResource SurfaceBackground}" CornerRadius="4" Padding="16" Margin="0,0,0,16">
+                    <StackPanel>
+                        <TextBlock Text="Settings" FontSize="14" FontWeight="SemiBold" 
+                                   Foreground="{DynamicResource TextPrimary}" Margin="0,0,0,12"/>
+                        
+                        <Grid Margin="0,0,0,8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="200"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Enable WebRTC Voice" VerticalAlignment="Center" 
+                                       Foreground="{DynamicResource TextSecondary}"/>
+                            <CheckBox x:Name="EnabledCheckBox" Grid.Column="1" 
+                                      Style="{StaticResource ThemedCheckBoxStyle}"/>
+                        </Grid>
 
-            <Grid Margin="0,0,0,8">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="220"/>
-                    <ColumnDefinition Width="*"/>
-                </Grid.ColumnDefinitions>
-                <TextBlock Text="Join URL" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
-                <StackPanel Grid.Column="1" Orientation="Horizontal">
-                    <TextBox x:Name="JoinUrlTextBox" Style="{StaticResource ThemedTextBoxStyle}" IsReadOnly="True" Width="250"/>
-                    <Button Content="?? Copy" Margin="5,0,0,0" Style="{StaticResource ThemedButtonStyle}" Click="CopyUrlButton_Click"/>
-                </StackPanel>
-            </Grid>
+                        <Grid Margin="0,0,0,8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="200"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Port" VerticalAlignment="Center" 
+                                       Foreground="{DynamicResource TextSecondary}"/>
+                            <TextBox x:Name="PortTextBox" Grid.Column="1" 
+                                     Style="{StaticResource ThemedTextBoxStyle}" 
+                                     Width="100" HorizontalAlignment="Left"/>
+                        </Grid>
 
-            <Border Background="{DynamicResource SurfaceBackground}" CornerRadius="5" Padding="10" Margin="0,10,0,0">
-                <StackPanel>
-                    <TextBlock Text="?? How to Connect" Foreground="{DynamicResource TextPrimary}" FontWeight="SemiBold" Margin="0,0,0,5"/>
-                    <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource TextSecondary}">
-                        1. Enable WebRTC above and save settings&#x0a;
-                        2. Select "WebRTC" as input mode in Audio tab&#x0a;
-                        3. On your iPhone, open Safari and navigate to the Join URL&#x0a;
-                        4. Tap "Join Voice" and allow microphone access&#x0a;
-                        5. Your iPhone mic audio will stream to this PC for STT&#x0a;
-                        6. TTS responses will play through your iPhone speaker
-                    </TextBlock>
-                </StackPanel>
-            </Border>
+                        <Grid Margin="0,0,0,8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="200"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Join URL" VerticalAlignment="Center" 
+                                       Foreground="{DynamicResource TextSecondary}"/>
+                            <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                <TextBox x:Name="JoinUrlTextBox" 
+                                         Style="{StaticResource ThemedTextBoxStyle}" 
+                                         IsReadOnly="True" Width="250"/>
+                                <Button Content="Copy" Margin="8,0,0,0" 
+                                        Style="{StaticResource ThemedButtonStyle}" 
+                                        Click="CopyUrlButton_Click"/>
+                            </StackPanel>
+                        </Grid>
+                    </StackPanel>
+                </Border>
 
-            <TextBlock x:Name="StatusText" Foreground="{DynamicResource TextSecondary}" Margin="0,10,0,0"/>
-        </StackPanel>
+                <!-- Recent Speakers Card -->
+                <Border Background="{DynamicResource SurfaceBackground}" CornerRadius="4" Padding="16" Margin="0,0,0,16">
+                    <StackPanel>
+                        <Grid Margin="0,0,0,12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Recent Speakers" FontSize="14" FontWeight="SemiBold" 
+                                       Foreground="{DynamicResource TextPrimary}"/>
+                            <Button x:Name="RefreshSpeakersButton" Grid.Column="1" Content="Refresh" 
+                                    Style="{StaticResource ThemedButtonStyle}" 
+                                    Click="RefreshSpeakersButton_Click" Padding="8,4"/>
+                        </Grid>
+                        
+                        <TextBlock x:Name="NoSpeakersText" Text="No speakers detected yet" 
+                                   Foreground="{DynamicResource TextMuted}" FontSize="12" 
+                                   Visibility="Visible"/>
+                        
+                        <ItemsControl x:Name="SpeakersListControl" Visibility="Collapsed">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Background="{DynamicResource SurfaceBackgroundLight}" 
+                                            CornerRadius="4" Padding="12,8" Margin="0,0,0,4">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            
+                                            <!-- Speaker indicator -->
+                                            <Ellipse Width="8" Height="8" Margin="0,0,10,0"
+                                                     VerticalAlignment="Center">
+                                                <Ellipse.Style>
+                                                    <Style TargetType="Ellipse">
+                                                        <Setter Property="Fill" Value="#FF107C10"/>
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding IsActive}" Value="False">
+                                                                <Setter Property="Fill" Value="#FF666666"/>
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Ellipse.Style>
+                                            </Ellipse>
+                                            
+                                            <!-- Speaker name -->
+                                            <TextBlock Grid.Column="1" Text="{Binding DisplayName}" 
+                                                       Foreground="{DynamicResource TextPrimary}" 
+                                                       FontSize="13" VerticalAlignment="Center"/>
+                                            
+                                            <!-- Last seen timestamp -->
+                                            <TextBlock Grid.Column="2" Text="{Binding LastSeenDisplay}" 
+                                                       Foreground="{DynamicResource TextMuted}" 
+                                                       FontSize="11" VerticalAlignment="Center"/>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </Border>
 
-        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right">
-            <Button Content="Save" Style="{StaticResource ThemedButtonStyle}" Background="{DynamicResource AccentGreen}" Click="SaveButton_Click"/>
+                <!-- How to Connect Card -->
+                <Border Background="{DynamicResource SurfaceBackground}" CornerRadius="4" Padding="16" Margin="0,0,0,16">
+                    <StackPanel>
+                        <TextBlock Text="How to Connect" Foreground="{DynamicResource TextPrimary}" 
+                                   FontWeight="SemiBold" FontSize="14" Margin="0,0,0,12"/>
+                        <StackPanel>
+                            <TextBlock Text="1. Enable WebRTC above and save settings" 
+                                       Foreground="{DynamicResource TextSecondary}" FontSize="12" Margin="0,0,0,4"/>
+                            <TextBlock Text="2. Select 'WebRTC' as input mode in Audio section" 
+                                       Foreground="{DynamicResource TextSecondary}" FontSize="12" Margin="0,0,0,4"/>
+                            <TextBlock Text="3. On your phone, open browser and go to Join URL" 
+                                       Foreground="{DynamicResource TextSecondary}" FontSize="12" Margin="0,0,0,4"/>
+                            <TextBlock Text="4. Tap 'Join Voice' and allow microphone access" 
+                                       Foreground="{DynamicResource TextSecondary}" FontSize="12" Margin="0,0,0,4"/>
+                            <TextBlock Text="5. Your phone mic audio will stream to this PC for STT" 
+                                       Foreground="{DynamicResource TextSecondary}" FontSize="12" Margin="0,0,0,4"/>
+                            <TextBlock Text="6. TTS responses play through local speakers" 
+                                       Foreground="{DynamicResource TextSecondary}" FontSize="12"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <!-- Customize Web Client Card -->
+                <Border Background="{DynamicResource SurfaceBackground}" CornerRadius="4" Padding="16" Margin="0,0,0,16">
+                    <StackPanel>
+                        <TextBlock Text="Customize Web Client" Foreground="{DynamicResource TextPrimary}" 
+                                   FontWeight="SemiBold" FontSize="14" Margin="0,0,0,12"/>
+                        <TextBlock Text="Edit the web page that remote clients see when they connect."
+                                   Foreground="{DynamicResource TextSecondary}" FontSize="12" Margin="0,0,0,12" TextWrapping="Wrap"/>
+                        
+                        <StackPanel Orientation="Horizontal">
+                            <Button Content="Open Web Folder" Style="{StaticResource ThemedButtonStyle}" 
+                                    Click="OpenWebFolderButton_Click" Margin="0,0,8,0"/>
+                            <Button Content="Reload" Style="{StaticResource ThemedButtonStyle}" 
+                                    Click="ReloadWebContentButton_Click"/>
+                        </StackPanel>
+                        
+                        <TextBlock x:Name="WebFolderPathText" 
+                                   Foreground="{DynamicResource TextMuted}" FontSize="11" 
+                                   Margin="0,8,0,0" TextWrapping="Wrap"/>
+                    </StackPanel>
+                </Border>
+
+                <TextBlock x:Name="StatusText" Foreground="{DynamicResource TextMuted}" Margin="0,0,0,10"/>
+            </StackPanel>
+        </ScrollViewer>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
+            <Button Content="Save" Style="{StaticResource ThemedButtonStyle}" 
+                    Background="{DynamicResource AccentGreen}" Click="SaveButton_Click"/>
         </StackPanel>
     </Grid>
 </UserControl>

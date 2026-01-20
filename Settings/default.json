@@ -77,7 +77,8 @@
     "chunkOverlapTokens": 30,
     "vectorSearchTopK": 3,
     "recencyBoostFactor": 0.15,
-    "minRetrievalScore": 0.55
+    "minRetrievalScore": 0.55,
+    "toolsEnabled": false
   },
   "discord": {
     "enabled": false,
