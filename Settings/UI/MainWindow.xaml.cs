@@ -21,9 +21,8 @@ namespace Kinectv1
     public partial class MainWindow : Window
     {
         private float[] _lastVoiceEmbedding = null;
-        private bool _isDarkMode = true; // Default to dark mode
+        private bool _isDarkMode = true;
 
-        // Cancellation token for cleanup
         private CancellationTokenSource _cancellationTokenSource = new CancellationTokenSource();
         private bool _isClosing = false;
 
@@ -32,8 +31,8 @@ namespace Kinectv1
         private volatile float _latestDiscordRmsValue = 0f;
         private volatile float _latestWebRtcRmsValue = 0f;
 
-        // ENHANCED DOUBLE REGISTRATION PREVENTION - Discord initialization protection
-        private static int _discordInitInProgress = 0; // 0 = not in progress, 1 = in progress
+        // Discord initialization protection
+        private static int _discordInitInProgress = 0;
 
         // Audio input settings
         private bool _isMicrophoneInputEnabled = true;
@@ -42,31 +41,40 @@ namespace Kinectv1
         private AudioInMode _currentAudioMode = AudioInMode.LocalMic;
         private bool _updatingAudioMode = false;
 
-        // Missing UI control placeholders to prevent compilation errors
+        // UI control placeholders (moved to Settings tab or removed)
         private ComboBox ToneComboBox = new ComboBox();
         private TextBox TestOllamaPromptTextBox = new TextBox();
+        private TextBox TtsTestTextBox = new TextBox();
+        private ComboBox TtsModelComboBox = new ComboBox();
+        private ComboBox TtsSpeakerComboBox = new ComboBox();
+        private TextBlock TtsModelStatusText = new TextBlock();
+        private Button TtsGpuToggleButton = new Button();
+        
+        // Removed UI elements (combined into single RMS meter)
+        private ProgressBar DiscordRmsBar = new ProgressBar();
+        private TextBlock DiscordRmsText = new TextBlock();
+        private ProgressBar WebRtcRmsBar = new ProgressBar();
+        private TextBlock WebRtcRmsText = new TextBlock();
 
         // Embedded settings window host
         private UI.Settings.SettingsWindow _embeddedSettingsWindow;
 
-        // --- RMS Visualization Optimizations (Phase 2) ---
-        private DispatcherTimer _rmsUiTimer; // single timer drives all RMS UI updates
+        // RMS Visualization
+        private DispatcherTimer _rmsUiTimer;
         private SolidColorBrush _rmsGreenBrush, _rmsOrangeBrush, _rmsRedBrush;
         private SolidColorBrush _discordLowBrush, _discordMidBrush, _discordHighBrush;
         private double _lastMicPct = -1, _lastDiscordPct = -1, _lastWebRtcPct = -1;
         private int _lastMicBucket = -1, _lastDiscordBucket = -1, _lastWebRtcBucket = -1;
-        private float _smoothedRms = 0f; // baseline RMS (mic)
-        private float _smoothedDiscordRms = 0f; // baseline discord
-        private float _smoothedWebRtcRms = 0f; // baseline WebRTC
-        // NEW: track last RMS update times to allow decay when capture pauses
+        private float _smoothedRms = 0f;
+        private float _smoothedDiscordRms = 0f;
+        private float _smoothedWebRtcRms = 0f;
         private DateTime _lastMicRmsTime = DateTime.MinValue;
         private DateTime _lastDiscordRmsTime = DateTime.MinValue;
         private DateTime _lastWebRtcRmsTime = DateTime.MinValue;
 
-        private double _localTtsVolume = 1.0; // 100%
-        private double _discordTtsVolume = 1.0; // 100%
+        private double _localTtsVolume = 1.0;
+        private double _discordTtsVolume = 1.0;
 
-        // Track when streaming TTS was recently active to prevent fallback double-play after barge-in
         private DateTime _lastStreamingTtsActive = DateTime.MinValue;
 
         // WebRTC service and audio queue for STT
@@ -91,63 +99,16 @@ namespace Kinectv1
 
                 // Set window properties for better focus behavior
                 this.ShowInTaskbar = true;
-                this.Title = "Kinect Face & Voice Recognition";
-
-                // Add keyboard shortcuts for testing
-                this.KeyDown += (sender, e) =>
-                {
-                    if (e.Key == Key.F && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
-                    {
-                        try
-                        {
-                            Console.WriteLine("🧪 Testing Identity Fusion System (Ctrl+F pressed)");
-                            IdentityFusionTracker.TestFusion();
-                        }
-                        catch (Exception ex)
-                        {
-                            Console.WriteLine($"Error testing fusion: {ex.Message}");
-                        }
-                    }
-                    else if (e.Key == Key.H && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
-                    {
-                        try
-                        {
-                            Console.WriteLine("🧪 Hosted services quick-check (Ctrl+H pressed)");
-                            // Placeholder to avoid missing test harness type in release builds
-                            Task.Run(async () => { await Task.Delay(10); Console.WriteLine("Hosted services check placeholder."); });
-                        }
-                        catch (Exception ex)
-                        {
-                            Console.WriteLine($"Error testing hosted services: {ex.Message}");
-                        }
-                    }
-                    else if (e.Key == Key.S && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
-                    {
-                        try
-                        {
-                            Console.WriteLine("🧪 Shutdown lifecycle quick-check (Ctrl+S pressed)");
-                            // Placeholder to avoid missing test harness type in release builds
-                            Task.Run(async () => { await Task.Delay(10); Console.WriteLine("Shutdown lifecycle check placeholder."); });
-                        }
-                        catch (Exception ex)
-                        {
-                            Console.WriteLine($"Error testing shutdown lifecycle: {ex.Message}");
-                        }
-                    }
-                };
+                this.Title = "Voice Recognition & AI Assistant";
 
                 // Hook GUI events
                 try
                 {
                     VoiceRecognizer.OnTranscription += UpdateTranscription;
                     VoiceRecognizer.OnRmsLevel += UpdateRmsLevel;
-                    VoiceRecognizer.OnDiscordRmsLevel += UpdateDiscordRmsLevel; // NEW: Discord RMS event
-                    // Mumble RMS is driven directly from MumbleClientManager.OnRmsLevel
-                    VoiceRecognizer.OnSpeakerMatch += ShowSpeakerMatch; // Will no-op (live view disabled)
-                    // Show only resolved-at-dispatch events
+                    VoiceRecognizer.OnDiscordRmsLevel += UpdateDiscordRmsLevel;
                     VoiceRecognizer.OnSpeakerResolvedForOllama += ShowSpeakerResolvedForOllama;
-                    VoiceRecognizer.OnNameHeard += name => EnhancedKinectFaceTracker.QueueLabel(name);
-                    VoiceRecognizer.OnVoiceEmbedding += OnVoiceEmbedding; // capture embeddings
+                    VoiceRecognizer.OnVoiceEmbedding += OnVoiceEmbedding;
 
                     // Ensure final-only UI and LLM dispatch wiring
                     WireTranscriptionEvents();
@@ -184,16 +145,6 @@ namespace Kinectv1
                     Console.WriteLine($"Could not hook Discord bot events: {ex.Message}");
                 }
 
-                // Start enhanced face tracker (required for enroll face/video)
-                try
-                {
-                    EnhancedKinectFaceTracker.Start();
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Failed to start face tracker: {ex.Message}");
-                }
-
                 // Load and apply saved settings
                 LoadApplicationSettings();
 
@@ -215,19 +166,16 @@ namespace Kinectv1
                 // Initialize volume controls
                 InitializeVolumeControls();
 
-                // Initialize identity fusion cleanup timer
-                InitializeIdentityFusionCleanup();
-
                 // Initialize embedded settings into the Settings tab
                 InitializeEmbeddedSettings();
 
-                // NEW: Initialize optimized RMS visualization pull model
+                // Initialize optimized RMS visualization pull model
                 InitializeRmsVisualizer();
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"MainWindow initialization failed: {ex.Message}");
-                this.Title = "Kinect Face & Voice Recognition - Error";
+                this.Title = "Voice Recognition & AI Assistant - Error";
 
                 try
                 {
@@ -251,13 +199,19 @@ namespace Kinectv1
             try
             {
                 // Cache theme brushes once (fallback to defaults if missing)
-                _rmsGreenBrush = (TryFindResource("AccentGreen") as SolidColorBrush) ?? new SolidColorBrush(Colors.Green);
-                _rmsOrangeBrush = (TryFindResource("AccentOrange") as SolidColorBrush) ?? new SolidColorBrush(Colors.Orange);
-                _rmsRedBrush = (TryFindResource("AccentRed") as SolidColorBrush) ?? new SolidColorBrush(Colors.Red);
+                _rmsGreenBrush = (TryFindResource("AccentGreen") as SolidColorBrush) ?? new SolidColorBrush(Color.FromRgb(34, 197, 94));
+                _rmsOrangeBrush = (TryFindResource("AccentOrange") as SolidColorBrush) ?? new SolidColorBrush(Color.FromRgb(245, 158, 11));
+                _rmsRedBrush = (TryFindResource("AccentRed") as SolidColorBrush) ?? new SolidColorBrush(Color.FromRgb(239, 68, 68));
 
-                _discordLowBrush = (TryFindResource("AccentBlue") as SolidColorBrush) ?? new SolidColorBrush(Colors.SteelBlue);
-                _discordMidBrush = (TryFindResource("AccentPurple") as SolidColorBrush) ?? new SolidColorBrush(Colors.MediumPurple);
-                _discordHighBrush = (TryFindResource("AccentOrange") as SolidColorBrush) ?? new SolidColorBrush(Colors.Orange);
+                _discordLowBrush = (TryFindResource("AccentBlue") as SolidColorBrush) ?? new SolidColorBrush(Color.FromRgb(59, 130, 246));
+                _discordMidBrush = (TryFindResource("AccentPurple") as SolidColorBrush) ?? new SolidColorBrush(Color.FromRgb(139, 92, 246));
+                _discordHighBrush = (TryFindResource("AccentOrange") as SolidColorBrush) ?? new SolidColorBrush(Color.FromRgb(245, 158, 11));
+
+                // Ensure initial color is set
+                if (RmsBar != null)
+                {
+                    RmsBar.Foreground = _rmsGreenBrush;
+                }
 
                 _rmsUiTimer = new DispatcherTimer(DispatcherPriority.Render, Dispatcher)
                 {
@@ -265,6 +219,8 @@ namespace Kinectv1
                 };
                 _rmsUiTimer.Tick += (s, e) => RmsUiTick();
                 _rmsUiTimer.Start();
+                
+                Console.WriteLine("[RMS] Visualizer initialized, timer started");
             }
             catch (Exception ex)
             {
@@ -277,131 +233,67 @@ namespace Kinectv1
             if (_isClosing) return;
             var now = DateTime.UtcNow;
 
-            // MIC (Local)
-            if (_isMicrophoneInputEnabled && RmsBar != null && RmsText != null)
+            // Determine which source is active and get the appropriate RMS value
+            float inputRms = 0f;
+            bool isStale = false;
+            SolidColorBrush accentBrush = _rmsGreenBrush;
+
+            if (_isMicrophoneInputEnabled)
             {
-                bool stale = (now - _lastMicRmsTime).TotalMilliseconds > 200; // >200ms no new frames
-                var input = stale ? 0f : _latestRmsValue; // raw scale 0..10000*
-
-                if (input > _smoothedRms)
-                    _smoothedRms = _smoothedRms * 0.4f + input * 0.6f; // attack
-                else
-                    _smoothedRms = _smoothedRms * 0.85f + input * 0.15f; // decay
-
-                // Accelerated decay when stale (capture paused / silence)
-                if (stale && input == 0f)
-                {
-                    _smoothedRms *= 0.80f; // speed up fall
-                    if (_smoothedRms < 5f) _smoothedRms = 0f; // snap to absolute zero near floor
-                }
-
-                var pct = Math.Max(0.0, Math.Min(100.0, (_smoothedRms / 10000.0) * 100.0));
-
-                // Always update if stale & decreasing even if change < 0.5 to avoid plateau perception
-                bool forceUpdate = stale && pct < _lastMicPct;
-                if (forceUpdate || Math.Abs(pct - _lastMicPct) >= 0.5)
-                {
-                    RmsBar.Value = pct;
-                    _lastMicPct = pct;
-                    int pctIntNow = (int)pct;
-                    RmsText.Text = $"RMS: {_smoothedRms:F1} ({pctIntNow}%)";
-                }
-                else if (RmsText.Text.Length == 0)
-                {
-                    RmsText.Text = $"RMS: {_smoothedRms:F1} ({(int)pct}%)";
-                }
-
-                int bucket = (pct <= 33) ? 0 : (pct <= 66 ? 1 : 2);
-                if (bucket != _lastMicBucket)
-                {
-                    _lastMicBucket = bucket;
-                    RmsBar.Foreground = bucket == 0 ? _rmsGreenBrush : bucket == 1 ? _rmsOrangeBrush : _rmsRedBrush;
-                }
+                isStale = (now - _lastMicRmsTime).TotalMilliseconds > 200;
+                inputRms = isStale ? 0f : _latestRmsValue;
+                accentBrush = _rmsGreenBrush;
+            }
+            else if (_isDiscordInputEnabled)
+            {
+                isStale = (now - _lastDiscordRmsTime).TotalMilliseconds > 200;
+                inputRms = isStale ? 0f : _latestDiscordRmsValue;
+                accentBrush = _discordLowBrush;
+            }
+            else if (_isWebRtcInputEnabled)
+            {
+                isStale = (now - _lastWebRtcRmsTime).TotalMilliseconds > 250;
+                inputRms = isStale ? 0f : _latestWebRtcRmsValue;
+                accentBrush = (TryFindResource("AccentPurple") as SolidColorBrush) ?? new SolidColorBrush(Colors.Purple);
             }
 
-            // DISCORD (now unified scaling 0..10000 like mic)
-            if (_isDiscordInputEnabled && DiscordRmsBar != null && DiscordRmsText != null)
+            // Smooth the RMS value
+            if (inputRms > _smoothedRms)
+                _smoothedRms = _smoothedRms * 0.4f + inputRms * 0.6f;
+            else
+                _smoothedRms = _smoothedRms * 0.85f + inputRms * 0.15f;
+
+            // Accelerated decay when stale
+            if (isStale && inputRms == 0f)
             {
-                bool staleD = (now - _lastDiscordRmsTime).TotalMilliseconds > 200; // align with mic stale window
-                var input = staleD ? 0f : _latestDiscordRmsValue; // raw scale 0..10000*
-
-                if (input > _smoothedDiscordRms)
-                    _smoothedDiscordRms = _smoothedDiscordRms * 0.4f + input * 0.6f; // same attack
-                else
-                    _smoothedDiscordRms = _smoothedDiscordRms * 0.85f + input * 0.15f; // same decay
-
-                if (staleD && input == 0f)
-                {
-                    _smoothedDiscordRms *= 0.80f;
-                    if (_smoothedDiscordRms < 5f) _smoothedDiscordRms = 0f; // same floor snap as mic
-                }
-
-                var pct = Math.Max(0.0, Math.Min(100.0, (_smoothedDiscordRms / 10000.0) * 100.0));
-                bool forceUpdate = staleD && pct < _lastDiscordPct;
-                if (forceUpdate || Math.Abs(pct - _lastDiscordPct) >= 0.5)
-                {
-                    DiscordRmsBar.Value = pct;
-                    _lastDiscordPct = pct;
-                    DiscordRmsText.Text = $"RMS: {_smoothedDiscordRms:F1} ({(int)pct}%)";
-                }
-                else if (DiscordRmsText.Text.Length == 0)
-                {
-                    DiscordRmsText.Text = $"RMS: {_smoothedDiscordRms:F1} ({(int)pct}%)";
-                }
-
-                int bucket = (pct <= 33) ? 0 : (pct <= 66 ? 1 : 2);
-                if (bucket != _lastDiscordBucket)
-                {
-                    _lastDiscordBucket = bucket;
-                    DiscordRmsBar.Foreground = bucket == 0 ? _discordLowBrush : bucket == 1 ? _discordMidBrush : _discordHighBrush;
-                }
+                _smoothedRms *= 0.80f;
+                if (_smoothedRms < 5f) _smoothedRms = 0f;
             }
 
-            // WEBRTC
-            try
+            var pct = Math.Max(0.0, Math.Min(100.0, (_smoothedRms / 10000.0) * 100.0));
+
+            // Update UI - always update to ensure responsiveness
+            if (RmsBar != null && RmsText != null)
             {
-                var bar = this.FindName("WebRtcRmsBar") as ProgressBar;
-                var text = this.FindName("WebRtcRmsText") as TextBlock;
-                // Show when WebRTC input mode is selected
-                bool showWebRtc = _isWebRtcInputEnabled;
-                if (showWebRtc && bar != null && text != null)
+                RmsBar.Value = pct;
+                RmsText.Text = $"{(int)pct}%";
+                _lastMicPct = pct;
+
+                // Update color based on level for mic, keep source color for others
+                if (_isMicrophoneInputEnabled)
                 {
-                    bool staleW = (now - _lastWebRtcRmsTime).TotalMilliseconds > 250;
-                    var input = staleW ? 0f : _latestWebRtcRmsValue; // raw scale 0..10000 (same as mic)
-
-                    if (input > _smoothedWebRtcRms)
-                        _smoothedWebRtcRms = _smoothedWebRtcRms * 0.4f + input * 0.6f;
-                    else
-                        _smoothedWebRtcRms = _smoothedWebRtcRms * 0.85f + input * 0.15f;
-
-                    if (staleW && input == 0f)
-                    {
-                        _smoothedWebRtcRms *= 0.80f;
-                        if (_smoothedWebRtcRms < 5f) _smoothedWebRtcRms = 0f;
-                    }
-
-                    var pct = Math.Max(0.0, Math.Min(100.0, (_smoothedWebRtcRms / 10000.0) * 100.0));
-                    bool forceUpdate = staleW && pct < _lastWebRtcPct;
-                    if (forceUpdate || Math.Abs(pct - _lastWebRtcPct) >= 0.5)
-                    {
-                        bar.Value = pct;
-                        _lastWebRtcPct = pct;
-                        text.Text = $"RMS: {_smoothedWebRtcRms:F1} ({(int)pct}%)";
-                    }
-                    else if (text.Text.Length == 0)
-                    {
-                        text.Text = $"RMS: {_smoothedWebRtcRms:F1} ({(int)pct}%)";
-                    }
-
                     int bucket = (pct <= 33) ? 0 : (pct <= 66 ? 1 : 2);
-                    if (bucket != _lastWebRtcBucket)
+                    if (bucket != _lastMicBucket)
                     {
-                        _lastWebRtcBucket = bucket;
-                        bar.Foreground = bucket == 0 ? _rmsGreenBrush : bucket == 1 ? _rmsOrangeBrush : _rmsRedBrush;
+                        _lastMicBucket = bucket;
+                        RmsBar.Foreground = bucket == 0 ? _rmsGreenBrush : bucket == 1 ? _rmsOrangeBrush : _rmsRedBrush;
                     }
                 }
+                else if (RmsBar.Foreground != accentBrush)
+                {
+                    RmsBar.Foreground = accentBrush;
+                }
             }
-            catch { }
         }
 
         private void InitializeEmbeddedSettings()
@@ -454,7 +346,6 @@ namespace Kinectv1
                 var dark = Kinectv1.App.SettingsProvider?.Current?.Ui?.DarkMode ?? true;
                 _isDarkMode = dark;
                 ApplyTheme(_isDarkMode);
-                Console.WriteLine($"🎨 Theme loaded: {(_isDarkMode ? "Dark" : "Light")} mode");
             }
             catch (Exception ex)
             {
@@ -470,54 +361,47 @@ namespace Kinectv1
             {
                 if (isDarkMode)
                 {
-                    // Dark theme colors
-                    this.Resources["WindowBackground"] = new SolidColorBrush(Color.FromRgb(30, 30, 30));
-                    this.Resources["SurfaceBackground"] = new SolidColorBrush(Color.FromRgb(45, 45, 48));
-                    this.Resources["SurfaceBackgroundLight"] = new SolidColorBrush(Color.FromRgb(63, 63, 70));
-                    this.Resources["BorderBrush"] = new SolidColorBrush(Color.FromRgb(70, 70, 71));
+                    // Dark theme
+                    this.Resources["WindowBackground"] = new SolidColorBrush(Color.FromRgb(18, 18, 18));
+                    this.Resources["SurfaceBackground"] = new SolidColorBrush(Color.FromRgb(30, 30, 30));
+                    this.Resources["SurfaceBackgroundLight"] = new SolidColorBrush(Color.FromRgb(42, 42, 42));
+                    this.Resources["BorderBrush"] = new SolidColorBrush(Color.FromRgb(58, 58, 58));
                     this.Resources["TextPrimary"] = new SolidColorBrush(Colors.White);
-                    this.Resources["TextSecondary"] = new SolidColorBrush(Color.FromRgb(224, 224, 224));
-                    this.Resources["TextMuted"] = new SolidColorBrush(Color.FromRgb(176, 176, 176));
+                    this.Resources["TextSecondary"] = new SolidColorBrush(Color.FromRgb(176, 176, 176));
+                    this.Resources["TextMuted"] = new SolidColorBrush(Color.FromRgb(112, 112, 112));
 
-                    // Update TextBox text colors directly
                     EnrollNameBox.Foreground = Brushes.White;
                     TtsTestTextBox.Foreground = Brushes.White;
                     EnrollNameBox.CaretBrush = Brushes.White;
                     TtsTestTextBox.CaretBrush = Brushes.White;
-
-                    Console.WriteLine("🌙 Dark theme applied");
                 }
                 else
                 {
-                    // Light theme colors
-                    this.Resources["WindowBackground"] = new SolidColorBrush(Colors.White);
-                    this.Resources["SurfaceBackground"] = new SolidColorBrush(Color.FromRgb(248, 248, 248));
-                    this.Resources["SurfaceBackgroundLight"] = new SolidColorBrush(Color.FromRgb(232, 232, 232));
-                    this.Resources["BorderBrush"] = new SolidColorBrush(Color.FromRgb(208, 208, 208));
-                    this.Resources["TextPrimary"] = new SolidColorBrush(Color.FromRgb(32, 32, 32));
-                    this.Resources["TextSecondary"] = new SolidColorBrush(Color.FromRgb(64, 64, 64));
-                    this.Resources["TextMuted"] = new SolidColorBrush(Color.FromRgb(96, 96, 96));
+                    // Light theme
+                    this.Resources["WindowBackground"] = new SolidColorBrush(Color.FromRgb(250, 250, 250));
+                    this.Resources["SurfaceBackground"] = new SolidColorBrush(Colors.White);
+                    this.Resources["SurfaceBackgroundLight"] = new SolidColorBrush(Color.FromRgb(245, 245, 245));
+                    this.Resources["BorderBrush"] = new SolidColorBrush(Color.FromRgb(229, 229, 229));
+                    this.Resources["TextPrimary"] = new SolidColorBrush(Color.FromRgb(23, 23, 23));
+                    this.Resources["TextSecondary"] = new SolidColorBrush(Color.FromRgb(82, 82, 82));
+                    this.Resources["TextMuted"] = new SolidColorBrush(Color.FromRgb(140, 140, 140));
 
-                    // Update TextBox text colors directly
                     EnrollNameBox.Foreground = Brushes.Black;
                     TtsTestTextBox.Foreground = Brushes.Black;
                     EnrollNameBox.CaretBrush = Brushes.Black;
                     TtsTestTextBox.CaretBrush = Brushes.Black;
-
-                    Console.WriteLine("☀️ Light theme applied");
                 }
 
-                // Accent colors remain the same for both themes
-                this.Resources["AccentBlue"] = new SolidColorBrush(Color.FromRgb(0, 120, 212));
-                this.Resources["AccentGreen"] = new SolidColorBrush(Color.FromRgb(16, 124, 16));
-                this.Resources["AccentOrange"] = new SolidColorBrush(Color.FromRgb(255, 140, 0));
-                this.Resources["AccentRed"] = new SolidColorBrush(Color.FromRgb(231, 76, 60));
+                // Accent colors (same for both)
+                this.Resources["AccentBlue"] = new SolidColorBrush(Color.FromRgb(59, 130, 246));
+                this.Resources["AccentGreen"] = new SolidColorBrush(Color.FromRgb(34, 197, 94));
+                this.Resources["AccentOrange"] = new SolidColorBrush(Color.FromRgb(245, 158, 11));
+                this.Resources["AccentRed"] = new SolidColorBrush(Color.FromRgb(239, 68, 68));
                 this.Resources["AccentPurple"] = new SolidColorBrush(Color.FromRgb(139, 92, 246));
 
-                // Update theme toggle button text
                 if (ThemeToggleButton != null)
                 {
-                    ThemeToggleButton.Content = isDarkMode ? "☀️ Light Mode" : "🌙 Dark Mode";
+                    ThemeToggleButton.Content = isDarkMode ? "☀️" : "🌙";
                 }
             }
             catch (Exception ex)
@@ -547,50 +431,6 @@ namespace Kinectv1
             {
                 Console.WriteLine($"Failed to toggle theme: {ex.Message}");
             }
-        }
-
-        private void OnFaceDetected(int left, int top, int width, int height, string name, float confidence)
-        {
-            // Handle face detection events for main window integration
-        }
-
-        // NEW: Handle all detected faces with tracking information
-        private void OnAllFacesDetected(List<EnhancedKinectFaceTracker.FaceTrackingInfo> faces)
-        {
-            // This receives ALL detected faces with their tracking IDs, recognition status, and emotions
-            foreach (var face in faces)
-            {
-                string status = face.IsRecognized ? $"Recognized: {face.Name} ({face.Confidence:F2})" : "Unknown";
-                string emotionInfo = face.Emotion.PrimaryEmotion != "Neutral" ? $" | Emotion: {face.Emotion}" : "";
-
-                // Only log significant changes or new faces to reduce console spam
-                if (face.IsRecognized && face.Confidence > 0.5f && face.Emotion.PrimaryEmotion != "Neutral")
-                {
-                    Console.WriteLine($"Face TrackingID {face.TrackingId}: {status}{emotionInfo} at ({face.Left},{face.Top}) {face.Width}x{face.Height}");
-                }
-            }
-        }
-
-        // NEW: Handle identity fusion updates - replaces ad-hoc speaker fallback
-        private void OnIdentityFused(ulong trackingId, string fusedName, float fusedScore)
-        {
-            if (_isClosing) return; // Prevent UI updates during shutdown
-
-            // Live speaker/fusion view disabled – we only show dispatched speaker
-            // Keep debug log for diagnostics, but do not update SpeakerLabel here
-            try
-            {
-                Console.WriteLine($"🔀 Identity Fusion TrackingID {trackingId}: {fusedName} (score={fusedScore:F3})");
-            }
-            catch { }
-            return;
-        }
-
-        protected override void OnSourceInitialized(EventArgs e)
-        {
-            base.OnSourceInitialized(e);
-            this.Activate();
-            this.Focus();
         }
 
         protected override void OnActivated(EventArgs e)
@@ -632,7 +472,7 @@ namespace Kinectv1
         {
             if (_isClosing) return;
             _latestRmsValue = rawRms;
-            _lastMicRmsTime = DateTime.UtcNow; // NEW
+            _lastMicRmsTime = DateTime.UtcNow;
         }
 
         private void UpdateDiscordRmsLevel(float rawRms)
@@ -819,19 +659,6 @@ namespace Kinectv1
             }
         }
         private void InitializeVolumeControls() { }
-        private void InitializeIdentityFusionCleanup() { }
-
-        // Implement ShowSpeakerMatch to update UI on voice matches
-        private void ShowSpeakerMatch(string speakerName, float confidence)
-        {
-            // Live voice view disabled – only show dispatched speaker resolution
-            try
-            {
-                Console.WriteLine($"[Live voice match suppressed] {speakerName} ({confidence:F2})");
-            }
-            catch { }
-            return;
-        }
 
         // Show speaker resolved at dispatch time (what is actually sent to Ollama)
         private void ShowSpeakerResolvedForOllama(string speakerName, float confidence, string method)
@@ -845,26 +672,15 @@ namespace Kinectv1
                     if (_isClosing) return;
                     if (SpeakerLabel == null) return;
 
-                    var display = string.IsNullOrWhiteSpace(speakerName) ? "UnknownSpeaker" : speakerName;
+                    var display = string.IsNullOrWhiteSpace(speakerName) ? "Unknown" : speakerName;
                     var score = Math.Max(0f, Math.Min(1f, confidence));
 
-                    SpeakerLabel.Content = $"{display} ({score:F2}) [Dispatched]";
+                    // Compact display format
+                    SpeakerLabel.Content = score >= 0.5f ? display : $"{display} ({score:P0})";
 
-                    // Theme-aware background based on confidence
-                    Brush backgroundBrush;
-                    if (display == "UnknownSpeaker" || score < 0.3f)
-                        backgroundBrush = new SolidColorBrush(_isDarkMode ? Color.FromRgb(101, 68, 68) : Color.FromRgb(255, 192, 192));
-                    else if (score < 0.5f)
-                        backgroundBrush = new SolidColorBrush(_isDarkMode ? Color.FromRgb(102, 85, 68) : Color.FromRgb(255, 255, 128));
-                    else if (score < 0.7f)
-                        backgroundBrush = new SolidColorBrush(_isDarkMode ? Color.FromRgb(68, 85, 102) : Color.FromRgb(192, 224, 255));
-                    else
-                        backgroundBrush = new SolidColorBrush(_isDarkMode ? Color.FromRgb(68, 102, 68) : Color.FromRgb(192, 255, 192));
-
-                    SpeakerLabel.Background = backgroundBrush;
                     if (OllamaStatusText != null)
                     {
-                        OllamaStatusText.Text = $"Dispatching as: {display} ({score:F2}) via {method}";
+                        OllamaStatusText.Text = $"Speaking as {display}";
                     }
                 }), DispatcherPriority.Background);
             }
@@ -942,14 +758,14 @@ namespace Kinectv1
         }
         private void OnVoiceEmbedding(float[] embedding) { _lastVoiceEmbedding = embedding; try { if (VoiceEnrollmentManager.IsEnrolling) VoiceEnrollmentManager.ProcessVoiceSample(embedding); } catch { } }
         private void OnOllamaPromptSent(string prompt) { }
-        
+
         /// <summary>
         /// Handle streaming chunks from LLM for real-time UI updates.
         /// </summary>
         private void OnOllamaResponseChunk(string chunk)
         {
             if (_isClosing || string.IsNullOrEmpty(chunk)) return;
-            
+
             try
             {
                 Dispatcher.BeginInvoke(new Action(() =>
@@ -983,7 +799,7 @@ namespace Kinectv1
                 if (!ttsEnabled) return;
 
                 var voice = App.SettingsProvider?.Current?.Tts?.Speaker;
-                
+
                 // Determine routing based on active input mode
                 var speakLocal = _isMicrophoneInputEnabled; // Local mic mode = local speakers
                 var speakDiscord = _isDiscordInputEnabled && Kinectv1.Discord.DiscordNetBotManager.IsInVoiceChannel;
@@ -1004,7 +820,7 @@ namespace Kinectv1
                         catch (Exception ex) { Console.WriteLine($"Discord streaming TTS error: {ex.Message}"); }
                     });
                 }
-                
+
                 if (speakWebRtc)
                 {
                     // Remove WebRTC send call for now; direct connection not available
@@ -1043,19 +859,19 @@ namespace Kinectv1
                 // DO NOT fall back to full-response TTS - this causes the "repeat" bug.
                 // If streaming was used, sentences were already queued.
                 // If streaming was cancelled (barge-in), we don't want to play the old response.
-                
+
                 // Only use fallback if streaming was NEVER active for this response
                 // (e.g., non-streaming mode or immediate error)
                 var timeSinceStreaming = (DateTime.UtcNow - _lastStreamingTtsActive).TotalMilliseconds;
                 bool streamingWasUsed = timeSinceStreaming < 30000; // 30 second window - if any streaming happened recently
-                
+
                 if (streamingWasUsed)
                 {
                     // Streaming was used - don't play full response again
                     Console.WriteLine($"[TTS] Skipping full response fallback - streaming was used ({timeSinceStreaming:F0}ms ago)");
                     return;
                 }
-                
+
                 // Streaming was never used (non-streaming path or very old response)
                 if (!TtsService.IsStreamingPlaybackActive)
                 {
@@ -1064,7 +880,7 @@ namespace Kinectv1
                     if (!ttsEnabled) return;
 
                     var voice = App.SettingsProvider?.Current?.Tts?.Speaker;
-                    
+
                     // Determine routing based on active input mode
                     var speakLocal = _isMicrophoneInputEnabled; // Local mic mode = local speakers
                     var speakDiscord = _isDiscordInputEnabled && Kinectv1.Discord.DiscordNetBotManager.IsInVoiceChannel;
@@ -1087,7 +903,7 @@ namespace Kinectv1
                             try { await Kinectv1.Discord.DiscordNetBotManager.SendTtsToDiscordAsync(response, voice); } catch (Exception ex) { Console.WriteLine($"Discord TTS error: {ex.Message}"); }
                         });
                     }
-                    
+
                     if (speakWebRtc)
                     {
                         // Remove WebRTC send call for now; direct connection not available
@@ -1306,7 +1122,11 @@ namespace Kinectv1
 
                     if (pcm16k != null && pcm16k.Length > 0)
                     {
-                        VoiceRecognizer.ProcessExternalAudio(pcm16k, pcm16k.Length, $"webrtc:{frame.SourceId}");
+                        var normalizedFrame = Kinectv1.Voice.NormalizedAudioFrame.Create(
+                            pcm16k, pcm16k.Length, 
+                            Kinectv1.Voice.AudioSourceType.WebRtc, 
+                            frame.SourceId);
+                        VoiceRecognizer.ProcessAudio(normalizedFrame);
                     }
                 }
                 catch { }
@@ -1375,6 +1195,33 @@ namespace Kinectv1
                 _isDiscordInputEnabled = (mode == AudioInMode.DiscordVoice);
                 _isWebRtcInputEnabled = (mode == AudioInMode.WebRtcVoice);
 
+                Console.WriteLine($"[AudioMode] Applying mode={mode}, mic={_isMicrophoneInputEnabled}, discord={_isDiscordInputEnabled}, webrtc={_isWebRtcInputEnabled}");
+
+                // Update active source label and meter color
+                if (ActiveSourceLabel != null && RmsBar != null)
+                {
+                    if (_isMicrophoneInputEnabled)
+                    {
+                        ActiveSourceLabel.Text = "🎤 Mic";
+                        RmsBar.Foreground = _rmsGreenBrush ?? new SolidColorBrush(Colors.Green);
+                    }
+                    else if (_isDiscordInputEnabled)
+                    {
+                        ActiveSourceLabel.Text = "💬 Discord";
+                        RmsBar.Foreground = _discordLowBrush ?? new SolidColorBrush(Colors.SteelBlue);
+                    }
+                    else if (_isWebRtcInputEnabled)
+                    {
+                        ActiveSourceLabel.Text = "📱 WebRTC";
+                        RmsBar.Foreground = (TryFindResource("AccentPurple") as SolidColorBrush) ?? new SolidColorBrush(Colors.Purple);
+                    }
+                }
+
+                // Reset smoothed RMS when switching sources
+                _smoothedRms = 0f;
+                _lastMicPct = -1;
+                _lastMicBucket = -1;
+
                 // Reflect in UI (single-selection behavior)
                 if (MicInputEnabledCheckBox != null)
                     MicInputEnabledCheckBox.IsChecked = _isMicrophoneInputEnabled;
@@ -1390,24 +1237,19 @@ namespace Kinectv1
                 // Enforce disconnect-on-switch policy
                 if (_isDiscordInputEnabled)
                 {
-                    // HARD DISABLE mic capture in Discord mode to prevent local barge-in triggers
                     try { VoiceRecognizer.SetMicrophoneInputEnabled(false); } catch { }
-                    try { VoiceRecognizer.SetMumbleInputEnabled(false); } catch { }
+                    try { VoiceRecognizer.SetWebRtcInputEnabled(false); } catch { }
                     try { TtsService.CancelCurrentLocalTts(); } catch { }
                     _ = StopWebRtcAsync();
                     Console.WriteLine("[AudioMode] Mic forcibly disabled (Discord mode)");
                 }
                 else if (_isWebRtcInputEnabled)
                 {
-                    // Disconnect Discord
                     _ = Task.Run(async () => { try { await DiscordNetBotManager.LeaveAllVoiceAsync(); } catch { } });
-
-                    // Disable mic and discord input
                     try { VoiceRecognizer.SetMicrophoneInputEnabled(false); } catch { }
                     try { VoiceRecognizer.SetDiscordInputEnabled(false); } catch { }
-                    try { VoiceRecognizer.SetMumbleInputEnabled(true); } catch { }
+                    try { VoiceRecognizer.SetWebRtcInputEnabled(true); } catch { }
 
-                    // Enable WebRTC in settings
                     try
                     {
                         var svc = App.SettingsProvider; var curr = svc?.Current;
@@ -1420,15 +1262,16 @@ namespace Kinectv1
                     }
                     catch (Exception ex) { Console.WriteLine($"Persist WebRTC enable failed: {ex.Message}"); }
 
-                    // Start WebRTC
                     Console.WriteLine("[WebRTC] Auto-start on mode select");
                     EnsureWebRtcStartedFromSettings();
                 }
                 else
                 {
-                    // Mic mode: disconnect remote sources
+                    // Local mic mode - ensure mic is enabled
                     _ = Task.Run(async () => { try { await DiscordNetBotManager.LeaveAllVoiceAsync(); } catch { } });
                     _ = StopWebRtcAsync();
+                    try { VoiceRecognizer.SetMicrophoneInputEnabled(true); } catch { }
+                    Console.WriteLine("[AudioMode] Mic enabled (LocalMic mode)");
                 }
 
                 // Apply to recognizer
@@ -1551,7 +1394,20 @@ namespace Kinectv1
 
         private void OnPartialTranscription(string text)
         {
-            // Intentionally ignore to avoid "as spoken" UI updates
+            if (_isClosing) return;
+            try
+            {
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    if (_isClosing) return;
+                    if (PartialTranscriptionLabel != null)
+                    {
+                        // Show partial text with ellipsis to indicate it's still listening
+                        PartialTranscriptionLabel.Content = string.IsNullOrWhiteSpace(text) ? "" : $"» {text}...";
+                    }
+                }), DispatcherPriority.Background);
+            }
+            catch { }
         }
 
         private void OnFinalTranscription(string text)
@@ -1564,6 +1420,9 @@ namespace Kinectv1
                     if (_isClosing) return;
                     if (TranscriptionLabel != null)
                         TranscriptionLabel.Content = text;
+                    // Clear partial when final arrives
+                    if (PartialTranscriptionLabel != null)
+                        PartialTranscriptionLabel.Content = "";
                 });
             }
             catch { }
@@ -1651,10 +1510,8 @@ namespace Kinectv1
         }
 
         // XAML click handlers that are referenced in MainWindow.xaml
-        private void EnrollButton_Click(object sender, RoutedEventArgs e) { }
         private void EnrollVoiceButton_Click(object sender, RoutedEventArgs e) { }
         private void CancelVoiceButton_Click(object sender, RoutedEventArgs e) { }
-        private void ShowVideoButton_Click(object sender, RoutedEventArgs e) { }
         private void ListSpeakersButton_Click(object sender, RoutedEventArgs e) { }
         private void FlushVoiceButton_Click(object sender, RoutedEventArgs e) { }
         private void ToggleOllamaButton_Click(object sender, RoutedEventArgs e) { }

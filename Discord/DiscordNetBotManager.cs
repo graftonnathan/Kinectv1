@@ -178,7 +178,29 @@ namespace Kinectv1.Discord
         }
 
         public static void ProcessVoiceData(byte[] audioData, string username)
-        { try { if (!_isRunning || !(Kinectv1.App.SettingsProvider?.Current?.Discord?.Enabled ?? false)) return; if (!VoiceRecognizer.IsDiscordInputEnabled()) return; if (audioData?.Length < 100) return; var (processedAudio, processedLength, rawRms) = DiscordAudioProcessor.ProcessDiscordAudio(audioData, audioData.Length, username); float scaledRms = rawRms > 0f ? Math.Min(10000f, (rawRms / 32768f) * 10000f) : 0f; VoiceRecognizer.OnDiscordRmsLevel?.Invoke(scaledRms); if (processedAudio != null && processedLength > 320 && VoiceRecognizer.IsReady()) { SpeakerIdentifier.SetDiscordSpeakerHint(username); VoiceRecognizer.ProcessExternalAudio(processedAudio, processedLength, $"Discord:{username}"); } } catch (Exception ex) { OnErrorOccurred?.Invoke($"Voice processing error: {ex.Message}"); } }
+        { 
+            try 
+            { 
+                if (!_isRunning || !(Kinectv1.App.SettingsProvider?.Current?.Discord?.Enabled ?? false)) return; 
+                if (!VoiceRecognizer.IsDiscordInputEnabled()) return; 
+                if (audioData?.Length < 100) return; 
+                
+                var (processedAudio, processedLength, rawRms) = DiscordAudioProcessor.ProcessDiscordAudio(audioData, audioData.Length, username); 
+                float scaledRms = rawRms > 0f ? Math.Min(10000f, (rawRms / 32768f) * 10000f) : 0f; 
+                VoiceRecognizer.OnDiscordRmsLevel?.Invoke(scaledRms); 
+                
+                if (processedAudio != null && processedLength > 320 && VoiceRecognizer.IsReady()) 
+                { 
+                    SpeakerIdentifier.SetDiscordSpeakerHint(username); 
+                    var frame = Kinectv1.Voice.NormalizedAudioFrame.Create(processedAudio, processedLength, Kinectv1.Voice.AudioSourceType.Discord, username);
+                    VoiceRecognizer.ProcessAudio(frame); 
+                } 
+            } 
+            catch (Exception ex) 
+            { 
+                OnErrorOccurred?.Invoke($"Voice processing error: {ex.Message}"); 
+            } 
+        }
 
         public static async Task SetVoiceConnection(IAudioClient audioClient, ulong channelId, string channelName)
         {

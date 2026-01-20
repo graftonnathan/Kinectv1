@@ -1,92 +1,257 @@
 # ASR VAD & Preroll Pipeline
 
+## Architecture Overview
+
+All audio sources now use a unified pipeline through `AudioManager` and `VoiceRecognizer`:
+
+```
+??????????????????????????????????????????????????????????????????????????
+?                      IAudioSource Implementations                       ?
+???????????????????????????????????????????????????????????????????????????
+? LocalMicSource  ? DiscordAudioSource ? WebRtcAudioSource                ?
+? 16kHz mono      ? 48k?16k resample   ? 8k?16k upsample                  ?
+???????????????????????????????????????????????????????????????????????????
+         ?                  ?                        ?
+         ?????????????????????????????????????????????
+                            ? NormalizedAudioFrame
+                            ?
+                   ???????????????????????
+                   ?   VoiceRecognizer   ?
+                   ?                     ?
+                   ? ProcessAudio(frame) ?
+                   ? - VAD (mic only)    ?
+                   ? - Preroll buffer    ?
+                   ? - Vosk STT          ?
+                   ???????????????????????
+                             ?
+                             ?
+                     OnTranscription event
+```
+
 ## Components
+
 | Component | Responsibility |
 |-----------|----------------|
-| `VoiceRecognizer` | Mic capture, external (Discord) audio ingestion, VAD state, preroll management, feeding Vosk recognizer |
-| `VoskRecognizer` | Offline speech recognition (partial + final JSON results) |
+| `IAudioSource` | Interface for all audio sources |
+| `LocalMicSource` | NAudio mic capture, 16kHz mono output |
+| `DiscordAudioSource` | Bridge for Discord audio (48k?16k) |
+| `WebRtcAudioSource` | WebRTC transport wrapper (8k?16k) |
+| `AudioManager` | Source coordination and mode switching |
+| `NormalizedAudioFrame` | Standard frame format with RMS |
+| `VoiceRecognizer` | VAD, preroll, Vosk STT |
 | `SpeakerEmbedder` | Voice embeddings (parallel capture) |
-| `TtsPlaybackController` | Used indirectly for barge?in logic (cancel on speech) |
+| `TtsPlaybackController` | Barge-in coordination |
 
-## Capture Flow (Microphone)
-```
-WaveInEvent (50ms mono 16k PCM) ? ProcessFrame
-  RMS ? VAD update
-  if INACTIVE: store frame in circular preroll (up to 500ms)
-  if ACTIVATED: replay preroll ? feed frames to Vosk + speaker embedder
-  if transition ACTIVE?INACTIVE with silence timeout: flush final
+## Audio Sources
+
+| Source | Sample Rate | Format | Resampling |
+|--------|-------------|--------|------------|
+| LocalMicSource | 16kHz | PCM16 mono | None (native) |
+| DiscordAudioSource | 48kHz stereo ? 16kHz mono | Via `DiscordAudioProcessor` |
+| WebRtcAudioSource | 8kHz PCMU ? 16kHz mono | Linear interpolation |
+
+## NormalizedAudioFrame
+
+All sources output `NormalizedAudioFrame`:
+
+```csharp
+public readonly struct NormalizedAudioFrame
+{
+    public byte[] Pcm16 { get; }        // PCM16 little-endian mono @ 16kHz
+    public int Length { get; }          // Valid bytes
+    public float Rms { get; }           // Pre-computed RMS (0-10000)
+    public AudioSourceType Source { get; }  // LocalMic, Discord, WebRtc
+    public string SourceId { get; }     // Optional identifier
+}
 ```
 
-## External / Discord Audio Path
-- Arrives as queued PCM (already resampled + conditioned elsewhere)
-- Processed only when Discord input enabled
-- Shares same VAD logic and final/partial emission
+## Single Entry Point
 
-## VAD Logic
-| Variable | Meaning |
-|----------|---------|
-| `_vadRmsThreshold` | Dynamic RMS threshold (`Audio.VoiceThreshold` mapped to 0..10000 scale) |
-| `_vadDebounceMs` | Minimum sustained time above threshold to enter ACTIVE |
-| `_vadSilenceMs` | Time below threshold to exit ACTIVE & flush final |
+```csharp
+// Preferred entry point (type-safe)
+VoiceRecognizer.ProcessAudio(NormalizedAudioFrame frame);
 
-Activation condition:
+// Legacy wrapper (backward compatible)
+VoiceRecognizer.ProcessExternalAudio(byte[] pcm, int length, string source);
 ```
-rms >= threshold continuously for >= debounce window
-```
-Deactivation:
-```
-(now - _lastAbove) >= _vadSilenceMs
+
+## VAD Logic (Local Mic Only)
+
+External sources (Discord, WebRTC) bypass VAD and feed directly to Vosk.
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `_vadRmsThreshold` | from `Audio.VoiceThreshold` | RMS threshold (0-10000 scale) |
+| `_vadDebounceMs` | 30ms | Minimum loud frames before ACTIVE |
+| `_vadSilenceMs` | 800ms | Silent frames before flush |
+
+### Frame-Based VAD
+
+VAD uses frame counting (not wall-clock time) to handle queue backup:
+
+```csharp
+int silenceFramesNeeded = _vadSilenceMs / frameDurationMs;
+int debounceFramesNeeded = _vadDebounceMs / frameDurationMs;
+
+if (rms >= _vadRmsThreshold)
+{
+    _consecutiveLoudFrames++;
+    if (_consecutiveLoudFrames >= debounceFramesNeeded)
+        _speechActive = true;
+}
+else
+{
+    _consecutiveSilentFrames++;
+    if (_consecutiveSilentFrames >= silenceFramesNeeded)
+        _speechActive = false;
+}
 ```
 
 ## Preroll
+
 | Aspect | Value |
 |--------|-------|
-| Frame size | 50 ms |
-| Stored frames | 10 (500 ms) |
-| Purpose | Recover initial phonemes that occur before VAD crosses threshold |
+| Frame size | 20 ms |
+| Stored frames | 30 (600 ms) |
+| Purpose | Recover initial phonemes before VAD threshold crossed |
+
+## Latency Optimizations
+
+The following optimizations reduce end-to-end latency:
+
+| Parameter | Old Value | New Value | Impact |
+|-----------|-----------|-----------|--------|
+| Frame size | 50ms | 20ms | Faster response to speech start |
+| Preroll buffer | 1200ms | 600ms | Less data to replay on VAD activation |
+| VAD debounce | 50ms | 30ms | Faster speech detection |
+| VAD silence timeout | 1500ms | 800ms | Faster final transcription |
+| Audio processor idle | Thread.Sleep(2) | SpinWait | Lower latency when queue empty |
+| JSON parsing | JObject.Parse | String parsing | Reduced CPU overhead per result |
+
+## Processing Flow
+
+### Local Mic (with VAD)
+```
+NormalizedAudioFrame ? ProcessAudioInternal
+  ?? RMS ? OnRmsLevel (UI meter)
+  ?? UpdateVadFromRms
+  ?? if !ACTIVE: StorePreRoll
+  ?? if ACTIVE && wasInactive: ReplayPreRoll
+  ?? if ACTIVE: FeedRecognizer + SpeakerEmbedder
+  ?? if wasActive && !ACTIVE: FlushFinal
+```
+
+### External Sources (no VAD)
+```
+NormalizedAudioFrame ? ProcessAudioInternal
+  ?? RMS ? OnDiscordRmsLevel (UI meter)
+  ?? SpeakerEmbedder.AddPcm16
+  ?? FeedRecognizer (immediate)
+```
+
+## Barge-In Interaction
+
+| Barge-In Enabled | Behavior |
+|------------------|----------|
+| true | VAD rising edge during TTS cancels playback |
+| false | Frames buffered in preroll while TTS active |
 
 ## Partial & Final Emission
+
 | State | Action |
 |-------|--------|
-| Partial (ACTIVE) | Periodic `rec.PartialResult()` decoded ? `OnPartialTranscription` |
-| Final (waveform accepted) | `rec.Result()` (accepted flag) ? `OnTranscription` |
-| Forced final | On ACTIVE?INACTIVE or manual flush after silence |
+| Partial (ACTIVE) | `rec.PartialResult()` ? `OnPartialTranscription` |
+| Final (accepted) | `rec.Result()` ? `OnTranscription` |
+| Forced final | On ACTIVE?INACTIVE transition |
 
-## Barge?In Interaction
-| Barge?In Enabled | Behavior |
-|------------------|----------|
-| true | VAD rising edge during local TTS cancels playback (controller cancel + grace timestamp) |
-| false | Frames buffered in preroll only while TTS active; no recognition fed to Vosk |
+### External Audio Finals
+
+For external sources, transcription emits immediately on Vosk accept:
+```csharp
+if (frame.Source.IsExternal())
+{
+    OnTranscription?.Invoke(text);  // Immediate
+}
+```
 
 ## Speaker Embedding Path
-- All ACTIVE (and preroll replay) frames passed to `SpeakerEmbedder.AddPcm16`
-- Embedding emission independent of TTS state (barge?in does not pause buffering)
+
+- All ACTIVE frames (and preroll replay) ? `SpeakerEmbedder.AddPcm16`
+- Embedding emission independent of TTS state
 
 ## Threading
+
 | Thread | Work |
 |--------|------|
-| UI / main | Startup / enabling devices |
-| WaveIn callback | Mic frames ? `ProcessFrame` (fast operations only) |
-| External queue worker | Dequeues external frames every few ms |
+| UI / main | Startup, mode switching |
+| WaveIn callback | Mic frames ? `ProcessAudioInternal` (direct, no queue) |
+| Audio processor task | Dequeue and process external frames |
+| WebRTC/Discord callbacks | Enqueue to audio processor |
 | Vosk internal | Recognition JSON generation |
 
-No blocking operations permitted inside real-time callback (no awaited tasks).
+## Tuning Parameters
 
-## Failure / Edge Handling
-| Case | Handling |
-|------|----------|
-| Recognizer not loaded | Frames ignored until model ready |
-| RMS spikes while mic disabled | Logged once every 100 frames (diagnostic) |
-| Long silence while ACTIVE | Silence timeout triggers flush + reset |
+These settings can be adjusted in `settings.json` under the `asr` section:
 
-## Optimization Points
-- Potential: adaptive threshold using noise floor tracking
-- Potential: dynamic preroll length based on average attack time
-- Potential: streaming partial token diffing (currently whole-partial string)
+```json
+{
+  "asr": {
+    "vadSilenceTimeoutMs": 800,
+    "vadDebounceTimeoutMs": 30,
+    "bargeInEnabled": true
+  },
+  "audio": {
+    "voiceThreshold": 0.02
+  }
+}
+```
+
+| Setting | Range | Default | Description |
+|---------|-------|---------|-------------|
+| `vadSilenceTimeoutMs` | 100-5000 | 800 | Time of silence before final emit |
+| `vadDebounceTimeoutMs` | 10-2000 | 30 | Time of loud frames before activation |
+| `voiceThreshold` | 0-1 | 0.02 | Normalized RMS threshold for VAD |
+
+## API Reference
+
+### AudioManager
+```csharp
+AudioManager.Instance.SetActiveSourceAsync(AudioSourceType.WebRtc);
+AudioManager.Instance.ActiveSource;
+AudioManager.Instance.OnAudioFrame += frame => { };
+AudioManager.Instance.OnRmsLevel += (source, rms) => { };
+```
+
+### VoiceRecognizer
+```csharp
+VoiceRecognizer.ProcessAudio(NormalizedAudioFrame frame);
+VoiceRecognizer.SetMicrophoneInputEnabled(bool enabled);
+VoiceRecognizer.SetDiscordInputEnabled(bool enabled);
+VoiceRecognizer.SetWebRtcInputEnabled(bool enabled);
+```
+
+### Query State
+```csharp
+bool ready = VoiceRecognizer.IsReady();
+var (queueSize, isProcessing) = VoiceRecognizer.GetExternalAudioStats();
+```
 
 ## Minimal Usage Example
+
 ```csharp
-VoiceRecognizer.Start(modelPath); // loads model + begins mic (if enabled)
+// Start with AudioManager (recommended)
+await AudioManager.Instance.StartAsync();
+AudioManager.Instance.OnAudioFrame += frame => 
+    VoiceRecognizer.ProcessAudio(frame);
+
+// Or direct VoiceRecognizer usage (legacy)
+VoiceRecognizer.Start(modelPath);
 VoiceRecognizer.OnTranscription += text => Console.WriteLine($"FINAL: {text}");
-VoiceRecognizer.OnPartialTranscription += part => Console.WriteLine($"PART: {part}");
 ```
+
+## Related Documentation
+
+- [Audio Pipeline Simplification](AUDIO_PIPELINE_SIMPLIFICATION.md) - Full architecture
+- [WebRTC Audio Bridge](WEBRTC_AUDIO_BRIDGE.md) - WebRTC transport
+- [Discord Audio Pipeline](Discord_Audio_Pipeline_Summary.md) - Discord processing
+- [TTS Preemption](TTS_PREEMPTION_AND_BARGE_IN.md) - Barge-in behavior
