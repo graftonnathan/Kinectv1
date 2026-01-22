@@ -144,7 +144,9 @@ namespace Kinectv1.Settings
     // WebRTC settings for LAN voice transport (replaces TeamTalk)
     public sealed record WebRtcSettings(
         bool Enabled,
-        [property: Range(1, 65535)] int Port
+        [property: Range(1, 65535)] int Port,
+        bool HttpsEnabled,
+        int HttpsPort
     );
 
     // New: UI settings

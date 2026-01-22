@@ -49,11 +49,28 @@ namespace Kinectv1.Voice
         private DateTime _lastDiagUtc = DateTime.MinValue;
         private DateTime _lastInboundFrameUtc = DateTime.MinValue;
 
+        // Add fields for HTTPS
+        private readonly bool _httpsEnabled;
+        private readonly int _httpsPort;
+
         public VoiceTransportState State => _state;
 
         public WebRtcAudioTransport(int port = 8787)
         {
             _port = port;
+            
+            // Load HTTPS settings
+            try
+            {
+                var cfg = App.SettingsProvider?.Current?.WebRtc;
+                _httpsEnabled = cfg?.HttpsEnabled ?? false;
+                _httpsPort = cfg?.HttpsPort ?? (port + 1);
+            }
+            catch
+            {
+                _httpsEnabled = false;
+                _httpsPort = port + 1;
+            }
         }
 
         public async Task StartAsync(CancellationToken ct)
@@ -70,10 +87,14 @@ namespace Kinectv1.Voice
                 OnStateChanged?.Invoke(_state);
                 Log($"[WebRTC] Starting signaling server on port {_port}...");
 
-                // Start signaling server
-                _signalingServer = new WebRtcSignalingServer(_port);
+                // Start signaling server with HTTPS if enabled
+                _signalingServer = new WebRtcSignalingServer(_port, _httpsEnabled, _httpsPort);
                 _signalingServer.OnLog += Log;
                 _signalingServer.OnWebSocketMessage += HandleSignalingMessage;
+                
+                // Subscribe to audio from web client (WebSocket-based)
+                WebRtcSignalingServer.OnWebAudioReceived += HandleWebSocketAudio;
+                
                 await _signalingServer.StartAsync(_cts.Token);
 
                 // Start TTS sender task
@@ -121,6 +142,9 @@ namespace Kinectv1.Voice
             }
 
             OnStateChanged?.Invoke(_state);
+            
+            // Unsubscribe from audio event
+            WebRtcSignalingServer.OnWebAudioReceived -= HandleWebSocketAudio;
 
             try { cts?.Cancel(); } catch { }
             try { if (sender != null) await Task.WhenAny(sender, Task.Delay(1000)); } catch { }
@@ -160,6 +184,10 @@ namespace Kinectv1.Voice
         public string GetJoinUrl()
         {
             var ip = GetLocalIPAddress();
+            if (_httpsEnabled)
+            {
+                return $"https://{ip}:{_httpsPort}/";
+            }
             return $"http://{ip}:{_port}/";
         }
 
@@ -389,6 +417,41 @@ namespace Kinectv1.Voice
             catch (Exception ex)
             {
                 Log($"[WebRTC] Inbound audio error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Handle audio received via WebSocket (from iOS Safari).
+        /// This is an alternative to WebRTC that works more reliably on mobile.
+        /// </summary>
+        private void HandleWebSocketAudio(AudioFrame frame)
+        {
+            try
+            {
+                if (frame.Pcm16 == null || frame.Pcm16.Length == 0) return;
+                
+                _lastInboundFrameUtc = DateTime.UtcNow;
+                Interlocked.Increment(ref _inboundFramesThisSecond);
+                
+                // Track speaker activity
+                WebRtcSpeakerTracker.RecordActivity("webrtc-client");
+                
+                // Forward to STT pipeline
+                OnInboundAudio?.Invoke(frame);
+                
+                // Mark connected state when receiving audio
+                lock (_lock)
+                {
+                    if (_state == VoiceTransportState.Listening)
+                    {
+                        _state = VoiceTransportState.Connected;
+                        OnStateChanged?.Invoke(_state);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"[WebRTC] WebSocket audio error: {ex.Message}");
             }
         }
 

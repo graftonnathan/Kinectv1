@@ -13,22 +13,30 @@ namespace Kinectv1.Voice
 {
     /// <summary>
     /// WebRTC signaling server with chat relay for WebRTC-sourced conversations only.
+    /// Supports both HTTP and HTTPS for iOS Safari microphone access.
     /// </summary>
     public sealed class WebRtcSignalingServer
     {
         public event Action<string> OnLog;
         public event Action<WebSocket, string> OnWebSocketMessage;
 
-        private readonly int _port;
-        private HttpListener _listener;
+        private readonly int _httpPort;
+        private readonly int _httpsPort;
+        private readonly bool _httpsEnabled;
+        private HttpListener _httpListener;
+        private HttpListener _httpsListener;
         private CancellationTokenSource _cts;
-        private Task _acceptTask;
+        private Task _httpAcceptTask;
+        private Task _httpsAcceptTask;
         
         // Track mode change requests to trigger MainWindow
         public static event Action<AudioInMode> OnModeChangeRequested;
         
         // Allow MainWindow to receive text input from web UI
         public static event Action<string, string> OnWebTextInput; // (speaker, text)
+        
+        // Allow WebRTC transport to receive audio from web client
+        public static event Action<AudioFrame> OnWebAudioReceived;
         
         // Allow MainWindow to broadcast mode changes to web clients
         private static WebRtcSignalingServer _instance;
@@ -44,24 +52,87 @@ namespace Kinectv1.Voice
         }
 
         private readonly ConcurrentDictionary<string, WebSocket> _clients = new();
+        private readonly ConcurrentDictionary<string, SemaphoreSlim> _clientSendLocks = new();
         private int _clientId = 0;
         
         private static readonly string _wwwrootPath;
 
         // Track if we're receiving WebRTC audio (to filter messages)
         private static volatile bool _webRtcActive = false;
-        public static bool IsWebRtcActive => _webRtcActive;
+        private static DateTime _webRtcActiveUntil = DateTime.MinValue;
+        public static bool IsWebRtcActive => _webRtcActive || DateTime.UtcNow < _webRtcActiveUntil;
         public static void SetWebRtcActive(bool active) => _webRtcActive = active;
+        
+        // Extend the active window (called when TTS starts)
+        private static void ExtendWebRtcActive(int seconds = 30)
+        {
+            _webRtcActiveUntil = DateTime.UtcNow.AddSeconds(seconds);
+        }
+
+        // TTS playback state tracking for self-hearing suppression
+        private static volatile bool _ttsSpeaking = false;
+        private static DateTime _ttsEndTime = DateTime.MinValue;
+        private static DateTime _lastTtsAudioTime = DateTime.MinValue;
+        private const int TTS_SUPPRESSION_MS = 300; // Suppress audio for 300ms after TTS ends (reduced)
+        private const int TTS_SPEAKING_TIMEOUT_MS = 5000; // Reset _ttsSpeaking if no audio for 5 seconds
+        
+        // Track frames for debugging
+        private static int _audioFramesReceived = 0;
+        private static int _audioFramesSuppressed = 0;
+        private static DateTime _lastAudioLogTime = DateTime.MinValue;
+        
+        /// <summary>
+        /// Check if audio should be suppressed (TTS is playing or just finished).
+        /// Respects the BargeInEnabled setting - when barge-in is enabled, audio is NEVER suppressed
+        /// so VoiceRecognizer can detect speech and trigger cancellation.
+        /// </summary>
+        public static bool ShouldSuppressAudio()
+        {
+            // Check if barge-in is enabled - if so, NEVER suppress audio
+            try
+            {
+                var bargeInEnabled = App.SettingsProvider?.Current?.Asr?.BargeInEnabled ?? true; // Default to true
+                if (bargeInEnabled)
+                {
+                    // Barge-in enabled: always allow audio through so VoiceRecognizer can detect speech
+                    return false;
+                }
+            }
+            catch { }
+            
+            // Safety check: if _ttsSpeaking is true but no audio has been sent recently, reset it
+            if (_ttsSpeaking && _lastTtsAudioTime != DateTime.MinValue)
+            {
+                var timeSinceLastAudio = (DateTime.UtcNow - _lastTtsAudioTime).TotalMilliseconds;
+                if (timeSinceLastAudio > TTS_SPEAKING_TIMEOUT_MS)
+                {
+                    _ttsSpeaking = false;
+                    _ttsEndTime = DateTime.UtcNow;
+                    Console.WriteLine($"[WebRTC] TTS speaking timeout - resetting flag after {timeSinceLastAudio:F0}ms");
+                }
+            }
+            
+            // Barge-in disabled: suppress audio during TTS playback
+            if (_ttsSpeaking) return true;
+            if (_ttsEndTime != DateTime.MinValue && (DateTime.UtcNow - _ttsEndTime).TotalMilliseconds < TTS_SUPPRESSION_MS)
+                return true;
+            return false;
+        }
 
         static WebRtcSignalingServer()
         {
             _wwwrootPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "wwwroot", "webrtc");
         }
 
-        public WebRtcSignalingServer(int port)
+        public WebRtcSignalingServer(int httpPort, bool httpsEnabled = false, int httpsPort = 8788)
         {
-            _port = port;
+            _httpPort = httpPort;
+            _httpsEnabled = httpsEnabled;
+            _httpsPort = httpsPort;
         }
+
+        // Legacy constructor for compatibility
+        public WebRtcSignalingServer(int port) : this(port, false, port + 1) { }
 
         /// <summary>
         /// Get the path where external web files should be placed.
@@ -104,43 +175,302 @@ namespace Kinectv1.Voice
 
         public async Task StartAsync(CancellationToken ct)
         {
-            _instance = this; // Set instance for static broadcast access
+            _instance = this;
             _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            _listener = new HttpListener();
-            _listener.Prefixes.Add($"http://+:{_port}/");
+
+            // Ensure firewall rules exist
+            EnsureFirewallRules();
+
+            // Start HTTP server
+            await StartHttpServerAsync();
+
+            // Start HTTPS server if enabled
+            if (_httpsEnabled)
+            {
+                await StartHttpsServerAsync();
+            }
+
+            SubscribeToEvents();
+        }
+
+        /// <summary>
+        /// Ensure Windows Firewall allows incoming connections on our ports.
+        /// </summary>
+        private void EnsureFirewallRules()
+        {
+            try
+            {
+                // Check if HTTP rule exists
+                var checkHttp = RunNetsh($"advfirewall firewall show rule name=\"Kinectv1 WebRTC HTTP\"");
+                if (!checkHttp.Contains("Kinectv1 WebRTC HTTP"))
+                {
+                    Log($"[WebRTC] Adding firewall rule for HTTP port {_httpPort}...");
+                    var result = RunNetsh($"advfirewall firewall add rule name=\"Kinectv1 WebRTC HTTP\" dir=in action=allow protocol=tcp localport={_httpPort}");
+                    if (result.Contains("Ok"))
+                        Log($"[WebRTC] Firewall rule added for HTTP");
+                    else
+                        Log($"[WebRTC] Firewall rule result: {result.Trim()}");
+                }
+
+                // Check if HTTPS rule exists
+                if (_httpsEnabled)
+                {
+                    var checkHttps = RunNetsh($"advfirewall firewall show rule name=\"Kinectv1 WebRTC HTTPS\"");
+                    if (!checkHttps.Contains("Kinectv1 WebRTC HTTPS"))
+                    {
+                        Log($"[WebRTC] Adding firewall rule for HTTPS port {_httpsPort}...");
+                        var result = RunNetsh($"advfirewall firewall add rule name=\"Kinectv1 WebRTC HTTPS\" dir=in action=allow protocol=tcp localport={_httpsPort}");
+                        if (result.Contains("Ok"))
+                            Log($"[WebRTC] Firewall rule added for HTTPS");
+                        else
+                            Log($"[WebRTC] Firewall rule result: {result.Trim()}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"[WebRTC] Firewall setup warning: {ex.Message}");
+                Log($"[WebRTC] If iPhone can't connect, manually add firewall rules for ports {_httpPort} and {_httpsPort}");
+            }
+        }
+
+        private async Task StartHttpServerAsync()
+        {
+            _httpListener = new HttpListener();
+            _httpListener.Prefixes.Add($"http://+:{_httpPort}/");
 
             try
             {
-                _listener.Start();
-                Log($"[WebRTC] Server started on port {_port}");
-                Log($"[WebRTC] Web content path: {_wwwrootPath}");
-                Log($"[WebRTC] index.html exists: {File.Exists(Path.Combine(_wwwrootPath, "index.html"))}");
+                _httpListener.Start();
+                var ip = GetLocalIP();
+                Log($"[WebRTC] HTTP server started on port {_httpPort}");
+                Log($"[WebRTC] HTTP URL: http://{ip}:{_httpPort}/");
             }
             catch (HttpListenerException ex) when (ex.ErrorCode == 5)
             {
-                _listener = new HttpListener();
-                _listener.Prefixes.Add($"http://localhost:{_port}/");
-                _listener.Prefixes.Add($"http://127.0.0.1:{_port}/");
-                _listener.Start();
-                Log($"[WebRTC] Server started on localhost:{_port}");
+                Log($"[WebRTC] WARNING: Cannot bind HTTP to all interfaces (Access Denied)");
+                Log($"[WebRTC] Attempting to register URL reservation...");
+                
+                // Try to add URL reservation automatically
+                var addAclResult = RunNetsh($"http add urlacl url=http://+:{_httpPort}/ user=Everyone");
+                Log($"[WebRTC] URL ACL result: {addAclResult.Trim()}");
+                
+                // Retry with full binding
+                try
+                {
+                    _httpListener = new HttpListener();
+                    _httpListener.Prefixes.Add($"http://+:{_httpPort}/");
+                    _httpListener.Start();
+                    var ip = GetLocalIP();
+                    Log($"[WebRTC] HTTP server started on port {_httpPort} (after ACL)");
+                    Log($"[WebRTC] HTTP URL: http://{ip}:{_httpPort}/");
+                }
+                catch
+                {
+                    // Fall back to localhost only
+                    _httpListener = new HttpListener();
+                    _httpListener.Prefixes.Add($"http://localhost:{_httpPort}/");
+                    _httpListener.Prefixes.Add($"http://127.0.0.1:{_httpPort}/");
+                    _httpListener.Start();
+                    Log($"[WebRTC] HTTP server started on localhost:{_httpPort} ONLY (LAN access disabled)");
+                    Log($"[WebRTC] To enable LAN access, run as Admin once or run:");
+                    Log($"[WebRTC]   netsh http add urlacl url=http://+:{_httpPort}/ user=Everyone");
+                }
             }
 
-            _acceptTask = Task.Run(() => AcceptLoop(_cts.Token), _cts.Token);
-            SubscribeToEvents();
+            _httpAcceptTask = Task.Run(() => AcceptLoop(_httpListener, "HTTP", _cts.Token), _cts.Token);
             await Task.CompletedTask;
+        }
+
+        private async Task StartHttpsServerAsync()
+        {
+            Log($"[WebRTC] HTTPS is enabled, attempting to start on port {_httpsPort}...");
+            
+            try
+            {
+                // Get or generate self-signed certificate
+                Log("[WebRTC] Getting/creating self-signed certificate...");
+                var cert = HttpsHelper.GetOrCreateCertificate();
+                var thumbprint = cert.Thumbprint;
+                Log($"[WebRTC] Certificate thumbprint: {thumbprint}");
+                
+                // Bind certificate to port using netsh (Windows)
+                // This requires admin privileges the first time
+                Log($"[WebRTC] Binding certificate to port {_httpsPort}...");
+                var bindResult = BindCertificateToPort(_httpsPort, thumbprint);
+                if (!bindResult)
+                {
+                    Log($"[WebRTC] *** HTTPS DISABLED: Could not bind certificate to port {_httpsPort} ***");
+                    Log($"[WebRTC] To fix this, run the application as Administrator ONCE, then restart normally.");
+                    Log($"[WebRTC] Or manually run in an Admin Command Prompt:");
+                    Log($"[WebRTC]   netsh http add sslcert ipport=0.0.0.0:{_httpsPort} certhash={thumbprint} appid={{00000000-0000-0000-0000-000000000000}}");
+                    return;
+                }
+
+                _httpsListener = new HttpListener();
+                var prefix = $"https://+:{_httpsPort}/";
+                Log($"[WebRTC] Adding HTTPS prefix: {prefix}");
+                _httpsListener.Prefixes.Add(prefix);
+
+                try
+                {
+                    _httpsListener.Start();
+                    Log($"[WebRTC] *** HTTPS SERVER STARTED SUCCESSFULLY ***");
+                    Log($"[WebRTC] HTTPS server listening on port {_httpsPort}");
+                    
+                    // Get local IP to display
+                    var ip = GetLocalIP();
+                    Log($"[WebRTC] HTTPS URL: https://{ip}:{_httpsPort}/");
+                    Log($"[WebRTC] NOTE: On first visit, you must accept the self-signed certificate warning in your browser.");
+                }
+                catch (HttpListenerException ex)
+                {
+                    Log($"[WebRTC] *** HTTPS FAILED TO START ***");
+                    Log($"[WebRTC] Error: {ex.Message}");
+                    Log($"[WebRTC] Error code: {ex.ErrorCode}");
+                    
+                    if (ex.ErrorCode == 5) // Access Denied
+                    {
+                        Log($"[WebRTC] Access Denied - Run as Administrator once to register the URL reservation:");
+                        Log($"[WebRTC]   netsh http add urlacl url=https://+:{_httpsPort}/ user=Everyone");
+                    }
+                    return;
+                }
+
+                _httpsAcceptTask = Task.Run(() => AcceptLoop(_httpsListener, "HTTPS", _cts.Token), _cts.Token);
+            }
+            catch (Exception ex)
+            {
+                Log($"[WebRTC] *** HTTPS SETUP FAILED ***");
+                Log($"[WebRTC] Exception: {ex.GetType().Name}: {ex.Message}");
+                if (ex.InnerException != null)
+                    Log($"[WebRTC] Inner: {ex.InnerException.Message}");
+            }
+
+            await Task.CompletedTask;
+        }
+
+        private static string GetLocalIP()
+        {
+            try
+            {
+                foreach (var ni in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    if (ni.OperationalStatus != System.Net.NetworkInformation.OperationalStatus.Up) continue;
+                    if (ni.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Loopback) continue;
+
+                    foreach (var addr in ni.GetIPProperties().UnicastAddresses)
+                    {
+                        if (addr.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+                        {
+                            var ip = addr.Address.ToString();
+                            if (!ip.StartsWith("127.") && !ip.StartsWith("169.254."))
+                                return ip;
+                        }
+                    }
+                }
+            }
+            catch { }
+            return "localhost";
+        }
+
+        private bool BindCertificateToPort(int port, string thumbprint)
+        {
+            try
+            {
+                // First, try to delete any existing binding
+                var deleteArgs = $"http delete sslcert ipport=0.0.0.0:{port}";
+                var deleteResult = RunNetsh(deleteArgs);
+                Log($"[WebRTC] Delete existing binding result: {deleteResult.Trim()}");
+                
+                // Now add the new binding
+                // The certificate must be in the LocalMachine\MY or CurrentUser\MY store
+                var addArgs = $"http add sslcert ipport=0.0.0.0:{port} certhash={thumbprint} appid={{00000000-0000-0000-0000-000000000000}}";
+                var result = RunNetsh(addArgs);
+                
+                Log($"[WebRTC] Certificate binding result: {result.Trim()}");
+                
+                if (result.Contains("successfully") || result.Contains("SSL Certificate successfully added"))
+                {
+                    Log($"[WebRTC] Certificate bound to port {port}");
+                    return true;
+                }
+                
+                // Check if already bound
+                if (result.Contains("Cannot create a file") || result.Contains("already exists"))
+                {
+                    Log($"[WebRTC] Certificate already bound to port {port}");
+                    return true;
+                }
+                
+                // Error 1312 means the certificate private key isn't accessible
+                if (result.Contains("1312"))
+                {
+                    Log($"[WebRTC] Error 1312: Certificate private key not accessible.");
+                    Log($"[WebRTC] Try running as Administrator, or regenerate the certificate.");
+                    Log($"[WebRTC] You can also manually install the certificate:");
+                    Log($"[WebRTC]   1. Open certmgr.msc");
+                    Log($"[WebRTC]   2. Import the certificate from: {HttpsHelper.GetCertificatePath()}");
+                    Log($"[WebRTC]   3. Place in 'Personal' store");
+                    return false;
+                }
+
+                // Error 5 means access denied
+                if (result.Contains("Error: 5") || result.Contains("Access is denied"))
+                {
+                    Log($"[WebRTC] Access denied. Run as Administrator once to bind the certificate.");
+                    return false;
+                }
+                
+                return false;
+            }
+            catch (Exception ex)
+            {
+                Log($"[WebRTC] Certificate binding error: {ex.Message}");
+                return false;
+            }
+        }
+
+        private string RunNetsh(string args)
+        {
+            try
+            {
+                var psi = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "netsh",
+                    Arguments = args,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                };
+                
+                using var process = System.Diagnostics.Process.Start(psi);
+                var output = process.StandardOutput.ReadToEnd();
+                var error = process.StandardError.ReadToEnd();
+                process.WaitForExit(5000);
+                
+                return output + error;
+            }
+            catch (Exception ex)
+            {
+                return $"Error: {ex.Message}";
+            }
         }
 
         public async Task StopAsync()
         {
             UnsubscribeFromEvents();
             try { _cts?.Cancel(); } catch { }
-            try { _listener?.Stop(); } catch { }
+            try { _httpListener?.Stop(); } catch { }
+            try { _httpsListener?.Stop(); } catch { }
             
             foreach (var client in _clients.Values)
                 try { client.Dispose(); } catch { }
             _clients.Clear();
             
-            try { if (_acceptTask != null) await Task.WhenAny(_acceptTask, Task.Delay(1000)); } catch { }
+            try { if (_httpAcceptTask != null) await Task.WhenAny(_httpAcceptTask, Task.Delay(1000)); } catch { }
+            try { if (_httpsAcceptTask != null) await Task.WhenAny(_httpsAcceptTask, Task.Delay(1000)); } catch { }
             try { _cts?.Dispose(); } catch { }
         }
 
@@ -152,6 +482,14 @@ namespace Kinectv1.Voice
                 VoiceRecognizer.OnTranscription += OnTranscription;
                 OllamaService.OnResponseChunk += OnChunk;
                 OllamaService.OnResponseReceived += OnResponse;
+                
+                // Subscribe to TTS audio for web playback
+                Tts.TtsService.OnTtsAudioChunk += OnTtsAudioChunk;
+                Tts.TtsService.OnTtsCancelled += OnTtsCancelled;
+                
+                // Track TTS speaking state
+                Tts.TtsService.OnTtsSpeakingStarted += OnTtsSpeakingStarted;
+                Tts.TtsService.OnTtsSpeakingFinished += OnTtsSpeakingFinished;
             }
             catch { }
         }
@@ -164,8 +502,45 @@ namespace Kinectv1.Voice
                 VoiceRecognizer.OnTranscription -= OnTranscription;
                 OllamaService.OnResponseChunk -= OnChunk;
                 OllamaService.OnResponseReceived -= OnResponse;
+                
+                Tts.TtsService.OnTtsAudioChunk -= OnTtsAudioChunk;
+                Tts.TtsService.OnTtsCancelled -= OnTtsCancelled;
+                Tts.TtsService.OnTtsSpeakingStarted -= OnTtsSpeakingStarted;
+                Tts.TtsService.OnTtsSpeakingFinished -= OnTtsSpeakingFinished;
             }
             catch { }
+        }
+
+        /// <summary>
+        /// Called when TTS starts speaking - mark for audio suppression.
+        /// </summary>
+        private void OnTtsSpeakingStarted()
+        {
+            _ttsSpeaking = true;
+            _ttsEndTime = DateTime.MinValue; // Clear end time
+            Log("[WebRTC] TTS speaking started");
+        }
+
+        /// <summary>
+        /// Called when TTS finishes speaking - start suppression cooldown.
+        /// </summary>
+        private void OnTtsSpeakingFinished()
+        {
+            _ttsSpeaking = false;
+            _ttsEndTime = DateTime.UtcNow;
+            Log("[WebRTC] TTS speaking finished");
+        }
+
+        /// <summary>
+        /// Notify web clients to stop TTS playback (barge-in).
+        /// </summary>
+        private void OnTtsCancelled()
+        {
+            if (GetCurrentMode() != 3 && !IsWebRtcActive) return;
+            _ttsSpeaking = false;
+            _ttsEndTime = DateTime.UtcNow;
+            Broadcast(new { type = "tts_stop" });
+            Log("[WebRTC] TTS cancelled (barge-in)");
         }
 
         // Only relay if WebRTC mode is active
@@ -184,16 +559,62 @@ namespace Kinectv1.Voice
         private string _buffer = "";
         private void OnChunk(string chunk)
         {
-            if (GetCurrentMode() != 3 && !_webRtcActive) return; // WebRtcVoice = 3
+            if (GetCurrentMode() != 3 && !IsWebRtcActive) return; // WebRtcVoice = 3
             _buffer += chunk;
             Broadcast(new { type = "response_chunk", text = _buffer });
         }
 
         private void OnResponse(string response)
         {
-            if (GetCurrentMode() != 3 && !_webRtcActive) return; // WebRtcVoice = 3
+            if (GetCurrentMode() != 3 && !IsWebRtcActive) return; // WebRtcVoice = 3
             _buffer = "";
             Broadcast(new { type = "response", text = response });
+        }
+
+        /// <summary>
+        /// Send TTS audio chunk to web clients for playback.
+        /// Only sends when WebRTC mode is active or text was entered from web UI.
+        /// </summary>
+        private void OnTtsAudioChunk(byte[] pcmData, int sampleRate)
+        {
+            // Mark TTS as active when we receive audio
+            _ttsSpeaking = true;
+            _lastTtsAudioTime = DateTime.UtcNow;
+            
+            // Mode check - allow audio in WebRTC mode (3) OR when WebRTC active (web text input)
+            var currentMode = GetCurrentMode();
+            var isActive = IsWebRtcActive;
+            
+            // DEBUG: Log once per utterance
+            var clientCount = _clients.Count;
+            Log($"[WebRTC] OnTtsAudioChunk: mode={currentMode}, isActive={isActive}, clients={clientCount}, bytes={pcmData?.Length ?? 0}");
+            
+            if (currentMode != 3 && !isActive)
+            {
+                // Not in WebRTC mode and not WebRTC-sourced input - skip
+                Log($"[WebRTC] TTS audio skipped: mode={currentMode} != 3, isActive={isActive}");
+                return;
+            }
+            
+            if (pcmData == null || pcmData.Length == 0) return;
+            
+            if (clientCount == 0)
+            {
+                Log("[WebRTC] TTS audio skipped: no connected clients");
+                return;
+            }
+            
+            try
+            {
+                // Convert to base64 for transmission
+                var base64 = Convert.ToBase64String(pcmData);
+                Log($"[WebRTC] Broadcasting TTS audio: {pcmData.Length} bytes ({base64.Length} b64) to {clientCount} clients");
+                Broadcast(new { type = "tts_audio", data = base64, sampleRate });
+            }
+            catch (Exception ex)
+            {
+                Log($"[WebRTC] TTS audio broadcast error: {ex.Message}");
+            }
         }
 
         private void Broadcast(object data)
@@ -201,23 +622,70 @@ namespace Kinectv1.Voice
             var json = JsonConvert.SerializeObject(data);
             var bytes = Encoding.UTF8.GetBytes(json);
             
-            foreach (var ws in _clients.Values)
+            // Send to each client with proper locking to prevent concurrent SendAsync
+            foreach (var kvp in _clients.ToArray())
             {
+                var ws = kvp.Value;
+                var clientId = kvp.Key;
                 if (ws.State == WebSocketState.Open)
                 {
-                    try { _ = ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None); }
-                    catch { }
+                    // Get or create lock for this client
+                    var sendLock = _clientSendLocks.GetOrAdd(clientId, _ => new SemaphoreSlim(1, 1));
+                    
+                    // Fire and forget with proper synchronization
+                    _ = Task.Run(async () =>
+                    {
+                        bool acquired = false;
+                        try 
+                        { 
+                            // Try to acquire lock with timeout - skip if busy
+                            acquired = await sendLock.WaitAsync(100);
+                            if (!acquired)
+                            {
+                                // Client is busy, skip this message
+                                return;
+                            }
+                            
+                            if (ws.State != WebSocketState.Open) return;
+                            
+                            using var cts = new CancellationTokenSource(500); // 500ms timeout
+                            await ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, cts.Token);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            // Send timeout - client may be slow
+                        }
+                        catch (WebSocketException)
+                        {
+                            // Client disconnected, will be cleaned up on next receive
+                        }
+                        catch (ObjectDisposedException)
+                        {
+                            // WebSocket already disposed
+                        }
+                        catch (Exception ex)
+                        {
+                            Log($"[WebRTC] Send error to {clientId}: {ex.Message}");
+                        }
+                        finally
+                        {
+                            if (acquired)
+                            {
+                                try { sendLock.Release(); } catch { }
+                            }
+                        }
+                    });
                 }
             }
         }
 
-        private async void AcceptLoop(CancellationToken ct)
+        private async void AcceptLoop(HttpListener listener, string protocol, CancellationToken ct)
         {
-            while (!ct.IsCancellationRequested && _listener?.IsListening == true)
+            while (!ct.IsCancellationRequested && listener?.IsListening == true)
             {
                 try
                 {
-                    var ctx = await _listener.GetContextAsync();
+                    var ctx = await listener.GetContextAsync();
                     _ = HandleRequest(ctx, ct);
                 }
                 catch (HttpListenerException) when (ct.IsCancellationRequested) { break; }
@@ -309,13 +777,19 @@ namespace Kinectv1.Voice
             var ws = wsCtx.WebSocket;
             var id = $"c{Interlocked.Increment(ref _clientId)}";
             _clients[id] = ws;
+            _clientSendLocks[id] = new SemaphoreSlim(1, 1);
             
             Log($"[WebRTC] Client connected: {id}");
 
-            // Send initial status
+            // Send initial status including barge-in setting
             try
             {
-                var status = JsonConvert.SerializeObject(new { type = "status", mode = GetCurrentMode() });
+                var bargeInEnabled = App.SettingsProvider?.Current?.Asr?.BargeInEnabled ?? false;
+                var status = JsonConvert.SerializeObject(new { 
+                    type = "status", 
+                    mode = GetCurrentMode(),
+                    bargeInEnabled = bargeInEnabled
+                });
                 await ws.SendAsync(new ArraySegment<byte>(Encoding.UTF8.GetBytes(status)), WebSocketMessageType.Text, true, ct);
             }
             catch { }
@@ -338,6 +812,10 @@ namespace Kinectv1.Voice
             finally
             {
                 _clients.TryRemove(id, out _);
+                if (_clientSendLocks.TryRemove(id, out var sendLock))
+                {
+                    try { sendLock.Dispose(); } catch { }
+                }
                 try { ws.Dispose(); } catch { }
                 Log($"[WebRTC] Client disconnected: {id}");
             }
@@ -352,17 +830,40 @@ namespace Kinectv1.Voice
 
                 switch (type)
                 {
+                    case "diag":
+                        try
+                        {
+                            string kind = (string)msg.kind;
+                            int count = (int?)msg.count ?? 0;
+                            Log($"[WebRTC][diag] client={ws?.GetHashCode()} kind={kind} count={count}");
+                        }
+                        catch { }
+                        break;
+
                     case "text":
                         string text = (string)msg.text;
                         if (!string.IsNullOrWhiteSpace(text))
                         {
                             Log($"[WebRTC] Text message received: {text.Substring(0, Math.Min(50, text.Length))}...");
                             
-                            // Mark as WebRTC-sourced
+                            // Check if Ollama is enabled
+                            var ollamaEnabled = OllamaService.IsEnabled();
+                            Log($"[WebRTC] OllamaService.IsEnabled() = {ollamaEnabled}");
+                            
+                            if (!ollamaEnabled)
+                            {
+                                Log("[WebRTC] LLM is disabled - check Ollama settings (enabled checkbox and model)");
+                                Broadcast(new { type = "response", text = "[LLM is disabled - enable Ollama in Settings]" });
+                                break;
+                            }
+                            
+                            // Mark as WebRTC-sourced and extend the window for TTS
                             _webRtcActive = true;
+                            ExtendWebRtcActive(60); // 60 seconds should cover most responses
                             
                             // Determine speaker
                             var speaker = App.SettingsProvider?.Current?.Ollama?.ForcedSpeakerId ?? "User";
+                            Log($"[WebRTC] Using speaker: {speaker}");
                             
                             // Notify desktop UI of the text input
                             try { OnWebTextInput?.Invoke(speaker, text); } catch { }
@@ -375,14 +876,78 @@ namespace Kinectv1.Voice
                             {
                                 try
                                 {
+                                    Log($"[WebRTC] Dispatching to LLM: speaker={speaker}, text={text.Substring(0, Math.Min(30, text.Length))}...");
                                     await OllamaService.DispatchAsync(speaker, text);
+                                    Log("[WebRTC] LLM dispatch completed");
                                 }
                                 catch (Exception ex)
                                 {
                                     Log($"[WebRTC] LLM dispatch error: {ex.Message}");
+                                    Broadcast(new { type = "response", text = $"[Error: {ex.Message}]" });
                                 }
-                                finally { _webRtcActive = false; }
+                                finally 
+                                { 
+                                    _webRtcActive = false; 
+                                }
                             });
+                        }
+                        break;
+
+                    case "audio":
+                        // Handle audio from web client (base64 PCM)
+                        string audioData = (string)msg.data;
+                        int sampleRate = (int?)msg.sampleRate ?? 16000;
+                        if (!string.IsNullOrEmpty(audioData))
+                        {
+                            _audioFramesReceived++;
+                            
+                            // Mark WebRTC as active when receiving audio from web client
+                            // This ensures TTS responses go back to the web client
+                            _webRtcActive = true;
+                            ExtendWebRtcActive(30); // Keep active for 30 seconds after last audio
+                            
+                            // Log periodically
+                            var now = DateTime.UtcNow;
+                            if ((now - _lastAudioLogTime).TotalSeconds >= 10)
+                            {
+                                var suppressed = _audioFramesSuppressed;
+                                var received = _audioFramesReceived;
+                                Log($"[WebRTC] Audio stats: received={received}, suppressed={suppressed}, ttsSpeaking={_ttsSpeaking}, bargeIn={App.SettingsProvider?.Current?.Asr?.BargeInEnabled ?? true}");
+                                _audioFramesReceived = 0;
+                                _audioFramesSuppressed = 0;
+                                _lastAudioLogTime = now;
+                            }
+                            
+                            // Check suppression AFTER logging so we can see what's happening
+                            if (ShouldSuppressAudio())
+                            {
+                                _audioFramesSuppressed++;
+                                break;
+                            }
+                            
+                            try
+                            {
+                                // Decode base64 to PCM bytes
+                                var pcmBytes = Convert.FromBase64String(audioData);
+                                var pcm16 = new short[pcmBytes.Length / 2];
+                                Buffer.BlockCopy(pcmBytes, 0, pcm16, 0, pcmBytes.Length);
+                                
+                                // Create audio frame and fire event
+                                var frame = new AudioFrame(
+                                    Pcm16: pcm16,
+                                    SampleRate: sampleRate,
+                                    Channels: 1,
+                                    TimestampTicks: DateTime.UtcNow.Ticks,
+                                    SourceId: "webrtc-client"
+                                );
+                                
+                                // Fire to WebRTC transport's inbound audio handler
+                                OnWebAudioReceived?.Invoke(frame);
+                            }
+                            catch (Exception ex)
+                            {
+                                Log($"[WebRTC] Audio decode error: {ex.Message}");
+                            }
                         }
                         break;
 
@@ -627,7 +1192,7 @@ namespace Kinectv1.Voice
     <div class=""modes"">
         <button class=""mode mic"" data-mode=""0"" onclick=""setMode(0)"">?? Mic</button>
         <button class=""mode discord"" data-mode=""1"" onclick=""setMode(1)"">?? Discord</button>
-        <button class=""mode webrtc"" data-mode=""2"" onclick=""setMode(2)"">?? WebRTC</button>
+        <button class=""mode webrtc"" data-mode=""3"" onclick=""setMode(3)"">?? WebRTC</button>
     </div>
     <div class=""chat"" id=""chat"">
         <div class=""empty"" id=""empty"">No messages yet</div>
@@ -655,6 +1220,11 @@ let audioCtx = null;
 let mode = 0;
 let voiceOn = false;
 
+// TTS playback state
+let ttsAudioCtx = null;
+let ttsNextTime = 0;
+let ttsSpeaking = false;
+
 const chat = document.getElementById('chat');
 const empty = document.getElementById('empty');
 const input = document.getElementById('input');
@@ -674,8 +1244,8 @@ function updateMode(m) {
     document.querySelectorAll('.mode').forEach(btn => {
         btn.classList.toggle('active', parseInt(btn.dataset.mode) === m);
     });
-    voiceBtn.disabled = m !== 2;
-    if (m !== 2 && voiceOn) stopVoice();
+    voiceBtn.disabled = m !== 3; // WebRTC mode is 3
+    if (m !== 3 && voiceOn) stopVoice();
 }
 
 async function setMode(m) {
@@ -728,6 +1298,69 @@ function finalizeResponse() {
     streamEl = null;
 }
 
+function playTtsAudio(base64Data, srcRate) {
+    srcRate = srcRate || 24000;
+    ttsSpeaking = true;
+    
+    if (!ttsAudioCtx) {
+        var AC = window.AudioContext || window.webkitAudioContext;
+        ttsAudioCtx = new AC();
+    }
+    
+    if (ttsAudioCtx.state === 'suspended') {
+        ttsAudioCtx.resume();
+    }
+    
+    try {
+        var raw = atob(base64Data);
+        var bytes = new Uint8Array(raw.length);
+        for (var i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+        var pcm16 = new Int16Array(bytes.buffer);
+        var floats = new Float32Array(pcm16.length);
+        for (var j = 0; j < pcm16.length; j++) floats[j] = pcm16[j] / 32768.0;
+        
+        var ctxRate = ttsAudioCtx.sampleRate;
+        var buffer;
+        if (Math.abs(ctxRate - srcRate) < 100) {
+            buffer = ttsAudioCtx.createBuffer(1, floats.length, ctxRate);
+            buffer.copyToChannel(floats, 0);
+        } else {
+            var ratio = ctxRate / srcRate;
+            var newLen = Math.round(floats.length * ratio);
+            buffer = ttsAudioCtx.createBuffer(1, newLen, ctxRate);
+            var out = buffer.getChannelData(0);
+            for (var k = 0; k < newLen; k++) {
+                var srcPos = k / ratio;
+                var idx0 = Math.floor(srcPos);
+                var idx1 = Math.min(idx0 + 1, floats.length - 1);
+                var frac = srcPos - idx0;
+                out[k] = floats[idx0] * (1 - frac) + floats[idx1] * frac;
+            }
+        }
+        var source = ttsAudioCtx.createBufferSource();
+        source.buffer = buffer;
+        source.connect(ttsAudioCtx.destination);
+        source.onended = function() {
+            if (ttsNextTime <= ttsAudioCtx.currentTime + 0.05) {
+                ttsSpeaking = false;
+            }
+        };
+        
+        var now = ttsAudioCtx.currentTime;
+        if (ttsNextTime < now + 0.01) ttsNextTime = now + 0.01;
+        source.start(ttsNextTime);
+        ttsNextTime += buffer.duration;
+    } catch (e) {
+        console.error('TTS playback error:', e);
+        ttsSpeaking = false;
+    }
+}
+
+function stopTtsPlayback() {
+    ttsNextTime = 0;
+    ttsSpeaking = false;
+}
+
 function send() {
     const text = input.value.trim();
     if (!text) return;
@@ -735,11 +1368,12 @@ function send() {
     addMsg(text, 'user');
     if (ws?.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'text', text }));
+        showTyping();
     }
 }
 
 async function toggleVoice() {
-    if (mode !== 2) return;
+    if (mode !== 3) return; // WebRTC mode is 3
     voiceOn ? stopVoice() : await startVoice();
 }
 
@@ -748,12 +1382,11 @@ async function startVoice() {
         stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
         voiceOn = true;
         voiceBtn.classList.add('active');
+        startCapture();
         startLevel();
-        if (ws?.readyState === WebSocket.OPEN) {
-            await createPC();
-        }
     } catch (e) {
         console.error('Mic error:', e);
+        addMsg('Mic error: ' + e.message, 'ai');
     }
 }
 
@@ -763,56 +1396,69 @@ function stopVoice() {
     level.style.width = '0%';
     if (audioCtx) { audioCtx.close().catch(() => {}); audioCtx = null; }
     if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
-    if (pc) { pc.close(); pc = null; }
+}
+
+function startCapture() {
+    if (!stream) return;
+    var AC = window.AudioContext || window.webkitAudioContext;
+    audioCtx = new AC();
+    var source = audioCtx.createMediaStreamSource(stream);
+    var processor = audioCtx.createScriptProcessor(4096, 1, 1);
+    var sampleRate = audioCtx.sampleRate;
+    
+    processor.onaudioprocess = function(e) {
+        if (!voiceOn || !ws || ws.readyState !== 1) return;
+        
+        var inputData = e.inputBuffer.getChannelData(0);
+        
+        // Resample to 16kHz
+        var ratio = sampleRate / 16000;
+        var newLen = Math.round(inputData.length / ratio);
+        var resampled = new Float32Array(newLen);
+        for (var i = 0; i < newLen; i++) {
+            var srcIdx = i * ratio;
+            var i0 = Math.floor(srcIdx);
+            var i1 = Math.min(i0 + 1, inputData.length - 1);
+            var frac = srcIdx - i0;
+            resampled[i] = inputData[i0] * (1 - frac) + inputData[i1] * frac;
+        }
+        
+        // Convert to PCM16
+        var pcm = new Int16Array(resampled.length);
+        for (var j = 0; j < resampled.length; j++) {
+            var s = Math.max(-1, Math.min(1, resampled[j]));
+            pcm[j] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+        }
+        
+        // Base64 encode
+        var bytes = new Uint8Array(pcm.buffer);
+        var bin = '';
+        for (var k = 0; k < bytes.length; k++) bin += String.fromCharCode(bytes[k]);
+        
+        ws.send(JSON.stringify({ type: 'audio', data: btoa(bin), sampleRate: 16000 }));
+    };
+    
+    source.connect(processor);
+    processor.connect(audioCtx.destination);
 }
 
 function startLevel() {
     if (!stream) return;
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    const src = audioCtx.createMediaStreamSource(stream);
-    const analyser = audioCtx.createAnalyser();
+    var AC = window.AudioContext || window.webkitAudioContext;
+    var ctx = new AC();
+    var src = ctx.createMediaStreamSource(stream);
+    var analyser = ctx.createAnalyser();
     analyser.fftSize = 256;
     src.connect(analyser);
-    const data = new Uint8Array(analyser.frequencyBinCount);
+    var data = new Uint8Array(analyser.frequencyBinCount);
     function update() {
-        if (!voiceOn) return;
+        if (!voiceOn) { ctx.close(); return; }
         analyser.getByteFrequencyData(data);
-        const avg = data.reduce((a, b) => a + b, 0) / data.length;
+        var avg = data.reduce((a, b) => a + b, 0) / data.length;
         level.style.width = Math.min(100, (avg / 128) * 100) + '%';
         requestAnimationFrame(update);
     }
     update();
-}
-
-async function createPC() {
-    pc = new RTCPeerConnection({ iceServers: [] });
-    stream.getTracks().forEach(t => pc.addTrack(t, stream));
-    pc.ontrack = e => { audio.srcObject = e.streams[0]; audio.play().catch(() => {}); };
-    pc.onicecandidate = e => {
-        if (e.candidate && ws?.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'ice', candidate: e.candidate }));
-        }
-    };
-    pc.onconnectionstatechange = () => {
-        if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
-            stopVoice();
-        }
-    };
-    const offer = await pc.createOffer({ offerToReceiveAudio: true });
-    let sdp = offer.sdp;
-    const lines = sdp.split('\r\n');
-    for (let i = 0; i < lines.length; i++) {
-        if (lines[i].startsWith('m=audio')) {
-            const p = lines[i].split(' ');
-            const pts = p.slice(3);
-            const idx = pts.indexOf('0');
-            if (idx > 0) { pts.splice(idx, 1); pts.unshift('0'); lines[i] = p.slice(0, 3).concat(pts).join(' '); }
-            break;
-        }
-    }
-    sdp = lines.join('\r\n');
-    await pc.setLocalDescription({ type: 'offer', sdp });
-    ws.send(JSON.stringify({ type: 'offer', sdp }));
 }
 
 function connect() {
@@ -820,7 +1466,6 @@ function connect() {
     ws = new WebSocket(proto + '//' + location.host + '/');
     ws.onopen = () => {
         setStatus('Connected', 'on');
-        if (voiceOn && stream && mode === 2) createPC();
     };
     ws.onmessage = async e => {
         const msg = JSON.parse(e.data);
@@ -840,19 +1485,16 @@ function connect() {
                 if (!streamEl) addMsg(msg.text, 'ai');
                 finalizeResponse();
                 break;
-            case 'answer':
-                if (pc) await pc.setRemoteDescription(new RTCSessionDescription(msg));
+            case 'tts_audio':
+                if (msg.data) playTtsAudio(msg.data, msg.sampleRate);
                 break;
-            case 'ice':
-                if (pc && msg.candidate) {
-                    try { await pc.addIceCandidate(new RTCIceCandidate(msg.candidate)); } catch (e) {}
-                }
+            case 'tts_stop':
+                stopTtsPlayback();
                 break;
         }
     };
     ws.onclose = () => {
         setStatus('Disconnected', '');
-        stopVoice();
         setTimeout(connect, 2000);
     };
     ws.onerror = () => setStatus('Error', '');

@@ -37,6 +37,19 @@ namespace Kinectv1.Tts
         public static event Action OnTtsSpeakingStarted;
         public static event Action OnTtsSpeakingFinished;
         public static event Action<string> OnTtsError;
+        
+        /// <summary>
+        /// Fired when a chunk of TTS audio is ready for playback.
+        /// Used by WebRTC signaling server to send audio to web clients.
+        /// Parameters: (pcmData, sampleRate)
+        /// </summary>
+        public static event Action<byte[], int> OnTtsAudioChunk;
+        
+        /// <summary>
+        /// Fired when TTS playback is cancelled (barge-in).
+        /// Used to notify web clients to stop playback.
+        /// </summary>
+        public static event Action OnTtsCancelled;
 
         // NEW: per-utterance cancellation for local playback (barge-in)
         private static readonly object _speakLock = new object();
@@ -170,6 +183,7 @@ namespace Kinectv1.Tts
                 async Task QueueFloatAudioAsync(float[] arr)
                 {
                     if (arr == null || arr.Length == 0) return;
+                    anyQueued = true;
                     const int chunkSamples = 1024; // Reduced from 2048 for faster first-byte (~42ms at 24kHz)
                     int pos = 0;
                     var pcmChunk = new byte[chunkSamples * 2];
@@ -193,7 +207,16 @@ namespace Kinectv1.Tts
                             pcmChunk[bpLocal++] = (byte)((s16 >> 8) & 0xFF);
                         }
                         provider.AddSamples(pcmChunk, 0, neededBytes);
-                        anyQueued = true;
+                        
+                        // Fire event for web clients (send the actual bytes used)
+                        try
+                        {
+                            var chunkCopy = new byte[neededBytes];
+                            Array.Copy(pcmChunk, 0, chunkCopy, 0, neededBytes);
+                            OnTtsAudioChunk?.Invoke(chunkCopy, SampleRate);
+                        }
+                        catch { }
+                        
                         pos += take;
                     }
                 }
@@ -352,7 +375,10 @@ namespace Kinectv1.Tts
         /// Sentences are spoken in order as they are queued.
         /// Call this from OnResponseSentenceReady event handler.
         /// </summary>
-        public static void QueueSentenceForStreaming(string sentence, string speakerName = null)
+        /// <param name="sentence">The sentence to synthesize and play</param>
+        /// <param name="speakerName">Voice to use (null for default)</param>
+        /// <param name="webRtcOnly">If true, only send audio to web clients via OnTtsAudioChunk (no local playback)</param>
+        public static void QueueSentenceForStreaming(string sentence, string speakerName = null, bool webRtcOnly = false)
         {
             if (string.IsNullOrWhiteSpace(sentence)) return;
             if (!IsEnabled()) return;
@@ -362,7 +388,7 @@ namespace Kinectv1.Tts
                 int currentGen = _streamingGeneration;
                 
                 _streamingSentenceQueue.Enqueue(sentence);
-                Console.WriteLine($"[TTS] Queued sentence for streaming (gen={currentGen}): {sentence.Length} chars");
+                Console.WriteLine($"[TTS] Queued sentence for streaming (gen={currentGen}, webRtcOnly={webRtcOnly}): {sentence.Length} chars");
 
                 // Start streaming playback if:
                 // 1. No loop is currently active, OR
@@ -391,14 +417,14 @@ namespace Kinectv1.Tts
                     var gen = currentGen;
                     _isStreamingPlaybackActive = true;
                     
-                    Console.WriteLine($"[TTS] Starting new streaming playback loop (gen={gen})");
+                    Console.WriteLine($"[TTS] Starting new streaming playback loop (gen={gen}, webRtcOnly={webRtcOnly})");
                     
                     // Fire-and-forget the streaming playback task
                     _ = Task.Run(async () =>
                     {
                         try
                         {
-                            await StreamingPlaybackLoopAsync(_currentStreamingSpeaker, cts.Token, gen).ConfigureAwait(false);
+                            await StreamingPlaybackLoopAsync(_currentStreamingSpeaker, cts.Token, gen, webRtcOnly).ConfigureAwait(false);
                         }
                         catch (OperationCanceledException) { }
                         catch (Exception ex)
@@ -457,6 +483,9 @@ namespace Kinectv1.Tts
                 try { ctsToCancel.Cancel(); } catch { }
                 Console.WriteLine($"[TTS] Streaming playback cancelled (barge-in), new generation={newGen}");
             }
+            
+            // Notify web clients to stop playback
+            try { OnTtsCancelled?.Invoke(); } catch { }
         }
 
         /// <summary>
@@ -467,9 +496,13 @@ namespace Kinectv1.Tts
         /// <summary>
         /// Main streaming playback loop that processes sentences from the queue.
         /// </summary>
-        private static async Task StreamingPlaybackLoopAsync(string speakerName, CancellationToken ct, int generation)
+        /// <param name="speakerName">Voice to use</param>
+        /// <param name="ct">Cancellation token</param>
+        /// <param name="generation">Generation counter for invalidation</param>
+        /// <param name="webRtcOnly">If true, only send audio to web clients (no local playback)</param>
+        private static async Task StreamingPlaybackLoopAsync(string speakerName, CancellationToken ct, int generation, bool webRtcOnly = false)
         {
-            Console.WriteLine($"[TTS] Streaming playback loop started (gen={generation})");
+            Console.WriteLine($"[TTS] Streaming playback loop started (gen={generation}, webRtcOnly={webRtcOnly})");
             
             // Check if generation changed (we were cancelled before starting)
             lock (_streamingLock)
@@ -509,38 +542,50 @@ namespace Kinectv1.Tts
             double? configuredVol = null; try { configuredVol = snap.LocalVolume; } catch { }
             float volume = (float)Math.Max(0.0, configuredVol.HasValue ? configuredVol.Value : 1.0);
 
-            // Setup shared audio playback - use lock to ensure only one active at a time
-            BufferedWaveProvider provider;
-            WaveOutEvent waveOut;
+            // Setup local audio playback ONLY if not webRtcOnly mode
+            BufferedWaveProvider provider = null;
+            WaveOutEvent waveOut = null;
+            TaskCompletionSource<bool> playbackStoppedTcs = null;
             
-            lock (_audioOutputLock)
+            if (!webRtcOnly)
             {
-                // Stop and dispose any existing audio output
-                try { _sharedWaveOut?.Stop(); } catch { }
-                try { _sharedProvider?.ClearBuffer(); } catch { }
-                try { _sharedWaveOut?.Dispose(); } catch { }
-                
-                // Create new shared audio output
-                var waveFormat = new WaveFormat(SampleRate, 16, 1);
-                _sharedProvider = new BufferedWaveProvider(waveFormat)
+                lock (_audioOutputLock)
                 {
-                    DiscardOnBufferOverflow = false,
-                    BufferDuration = TimeSpan.FromSeconds(30)
-                };
-                provider = _sharedProvider;
-                
-                _sharedWaveOut = new WaveOutEvent { DesiredLatency = 100 };
-                waveOut = _sharedWaveOut;
-                
-                try { waveOut.Init(provider); }
-                catch (Exception ex)
-                {
-                    OnTtsError?.Invoke("Audio init failed: " + ex.Message);
-                    Console.WriteLine($"[TTS] Streaming playback aborted - audio init failed: {ex.Message}");
-                    _sharedWaveOut = null;
-                    _sharedProvider = null;
-                    return;
+                    // Stop and dispose any existing audio output
+                    try { _sharedWaveOut?.Stop(); } catch { }
+                    try { _sharedProvider?.ClearBuffer(); } catch { }
+                    try { _sharedWaveOut?.Dispose(); } catch { }
+                    
+                    // Create new shared audio output
+                    var waveFormat = new WaveFormat(SampleRate, 16, 1);
+                    _sharedProvider = new BufferedWaveProvider(waveFormat)
+                    {
+                        DiscardOnBufferOverflow = false,
+                        BufferDuration = TimeSpan.FromSeconds(30)
+                    };
+                    provider = _sharedProvider;
+                    
+                    _sharedWaveOut = new WaveOutEvent { DesiredLatency = 100 };
+                    waveOut = _sharedWaveOut;
+                    
+                    try { waveOut.Init(provider); }
+                    catch (Exception ex)
+                    {
+                        OnTtsError?.Invoke("Audio init failed: " + ex.Message);
+                        Console.WriteLine($"[TTS] Streaming playback aborted - audio init failed: {ex.Message}");
+                        _sharedWaveOut = null;
+                        _sharedProvider = null;
+                        return;
+                    }
                 }
+                
+                playbackStoppedTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                waveOut.PlaybackStopped += (s, e) => playbackStoppedTcs.TrySetResult(true);
+                waveOut.Play();
+            }
+            else
+            {
+                Console.WriteLine("[TTS] WebRTC-only mode - no local audio playback");
             }
 
             bool speakingStartedFired = false;
@@ -548,11 +593,7 @@ namespace Kinectv1.Tts
 
             try
             {
-                var playbackStoppedTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-                waveOut.PlaybackStopped += (s, e) => playbackStoppedTcs.TrySetResult(true);
-                waveOut.Play();
-
-                // Helper to queue float audio with backpressure
+                // Helper to queue float audio with backpressure (or just fire events for WebRTC-only)
                 async Task QueueFloatAudioAsync(float[] arr)
                 {
                     if (arr == null || arr.Length == 0) return;
@@ -568,16 +609,28 @@ namespace Kinectv1.Tts
                         
                         int take = Math.Min(chunkSamples, arr.Length - pos);
                         int neededBytes = take * 2;
-                        while (!ct.IsCancellationRequested && provider.BufferedBytes > provider.BufferLength - neededBytes)
+                        
+                        // Only apply backpressure if we have local playback
+                        if (!webRtcOnly && provider != null)
                         {
-                            // Check generation during backpressure wait
-                            lock (_streamingLock) { currentGen = _streamingGeneration; }
-                            if (currentGen != generation) return;
-                            await Task.Delay(10).ConfigureAwait(false);
+                            while (!ct.IsCancellationRequested && provider.BufferedBytes > provider.BufferLength - neededBytes)
+                            {
+                                // Check generation during backpressure wait
+                                lock (_streamingLock) { currentGen = _streamingGeneration; }
+                                if (currentGen != generation) return;
+                                await Task.Delay(10).ConfigureAwait(false);
+                            }
                         }
+                        else if (webRtcOnly)
+                        {
+                            // For WebRTC-only, add a small delay to pace the audio sending
+                            // This prevents overwhelming the WebSocket connection
+                            await Task.Delay(5).ConfigureAwait(false);
+                        }
+                        
                         if (ct.IsCancellationRequested) break;
                         
-                        // Final generation check before adding samples
+                        // Final generation check before processing
                         lock (_streamingLock) { currentGen = _streamingGeneration; }
                         if (currentGen != generation) break;
                         
@@ -590,7 +643,22 @@ namespace Kinectv1.Tts
                             pcmChunk[bpLocal++] = (byte)(s16 & 0xFF);
                             pcmChunk[bpLocal++] = (byte)((s16 >> 8) & 0xFF);
                         }
-                        provider.AddSamples(pcmChunk, 0, neededBytes);
+                        
+                        // Add to local playback buffer if not WebRTC-only
+                        if (!webRtcOnly && provider != null)
+                        {
+                            provider.AddSamples(pcmChunk, 0, neededBytes);
+                        }
+                        
+                        // Fire event for web clients (always, for both modes)
+                        try
+                        {
+                            var chunkCopy = new byte[neededBytes];
+                            Array.Copy(pcmChunk, 0, chunkCopy, 0, neededBytes);
+                            OnTtsAudioChunk?.Invoke(chunkCopy, SampleRate);
+                        }
+                        catch { }
+                        
                         pos += take;
                     }
                 }
@@ -680,7 +748,7 @@ namespace Kinectv1.Tts
                         bool llmStillStreaming = false;
                         try { llmStillStreaming = OllamaService.IsLlmStreaming; } catch { }
                         
-                        bool hasBufferedAudio = provider.BufferedBytes > 0;
+                        bool hasBufferedAudio = !webRtcOnly && provider != null && provider.BufferedBytes > 0;
                         
                         // Use longer timeout if LLM is still generating
                         int effectiveMaxPolls;
@@ -725,9 +793,9 @@ namespace Kinectv1.Tts
                     Console.WriteLine($"[TTS] Streaming stopped - cancelled={ct.IsCancellationRequested}, genChanged={generationChanged}");
                     // Don't touch the shared audio output here - it may already be in use by a new generation
                 }
-                else
+                else if (!webRtcOnly && provider != null && waveOut != null)
                 {
-                    // Wait for buffered audio to drain (normal completion)
+                    // Wait for buffered audio to drain (normal completion) - only for local playback
                     while (provider.BufferedBytes > 0)
                     {
                         // Keep checking if we got pre-empted during drain
@@ -753,7 +821,10 @@ namespace Kinectv1.Tts
                             }
                         }
                     }
-                    try { await Task.WhenAny(playbackStoppedTcs.Task, Task.Delay(200)).ConfigureAwait(false); } catch { }
+                    if (playbackStoppedTcs != null)
+                    {
+                        try { await Task.WhenAny(playbackStoppedTcs.Task, Task.Delay(200)).ConfigureAwait(false); } catch { }
+                    }
                 }
 
                 Console.WriteLine($"[TTS] Streaming playback complete (gen={generation}): {totalSentencesProcessed} sentences, cancelled={ct.IsCancellationRequested}, genChanged={generationChanged}");
@@ -774,23 +845,26 @@ namespace Kinectv1.Tts
                     try { OnTtsSpeakingFinished?.Invoke(); } catch { }
                 }
                 
-                // Only clean up if we're still the owner of the shared audio
-                lock (_audioOutputLock)
+                // Only clean up if we're still the owner of the shared audio (and not WebRTC-only)
+                if (!webRtcOnly && waveOut != null)
                 {
-                    if (_sharedWaveOut == waveOut)
+                    lock (_audioOutputLock)
                     {
-                        // Check if another generation has started
-                        bool stillOwner;
-                        lock (_streamingLock) { stillOwner = _streamingGeneration == generation; }
-                        
-                        if (stillOwner)
+                        if (_sharedWaveOut == waveOut)
                         {
-                            try { waveOut.Stop(); } catch { }
-                            try { waveOut.Dispose(); } catch { }
-                            _sharedWaveOut = null;
-                            _sharedProvider = null;
+                            // Check if another generation has started
+                            bool stillOwner;
+                            lock (_streamingLock) { stillOwner = _streamingGeneration == generation; }
+                            
+                            if (stillOwner)
+                            {
+                                try { waveOut.Stop(); } catch { }
+                                try { waveOut.Dispose(); } catch { }
+                                _sharedWaveOut = null;
+                                _sharedProvider = null;
+                            }
+                            // If not still owner, leave the audio device for the new generation
                         }
-                        // If not still owner, leave the audio device for the new generation
                     }
                 }
                 

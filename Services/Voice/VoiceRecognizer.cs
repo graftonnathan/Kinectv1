@@ -470,10 +470,23 @@ namespace Kinectv1
                 bool isExternal = source.IsExternal();
                 bool accepted = rec.AcceptWaveform(pcm16leMono, bytes);
 
+                // Diagnostics only (avoid console spam in hot path)
+                if (source == AudioSourceType.WebRtc && _diagEnabled)
+                {
+                    VRLog("VOSK", $"AcceptWaveform({bytes} bytes) = {accepted}");
+                }
+
                 if (accepted)
                 {
                     var json = rec.Result();
                     var text = ExtractText(json);
+
+                    // Diagnostics only (the json can be large and this is very chatty)
+                    if (source == AudioSourceType.WebRtc && _diagEnabled)
+                    {
+                        VRLog("VOSK", $"Result='{text}' json={(json?.Length > 100 ? json.Substring(0, 100) + "..." : json)}");
+                    }
+
                     if (!string.IsNullOrWhiteSpace(text))
                     {
                         var t = text.Trim();
@@ -481,6 +494,9 @@ namespace Kinectv1
 
                         if (isExternal)
                         {
+                            if (_diagEnabled && source == AudioSourceType.WebRtc)
+                                VRLog("FINAL", $"External final: '{t}'");
+
                             try { OnTranscription?.Invoke(t); } catch { }
                             MaybeBargeIn(t);
                         }
@@ -503,6 +519,12 @@ namespace Kinectv1
                 {
                     var pjson = rec.PartialResult();
                     var ptext = ExtractPartialText(pjson);
+
+                    // Diagnostics only (partials are extremely chatty)
+                    if (source == AudioSourceType.WebRtc && _diagEnabled && !string.IsNullOrWhiteSpace(ptext))
+                    {
+                        VRLog("PARTIAL", ptext);
+                    }
 
                     if (!string.IsNullOrWhiteSpace(ptext))
                     {

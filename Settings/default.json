@@ -87,8 +87,10 @@
     "token": ""
   },
   "webrtc": {
-    "enabled": false,
-    "port": 8787
+    "enabled": true,
+    "port": 8787,
+    "httpsEnabled": true,
+    "httpsPort": 8788
   },
   "ui": {
     "darkMode": true

@@ -35,8 +35,11 @@ namespace Kinectv1.UI.Settings
 
                 EnabledCheckBox.IsChecked = cfg.Enabled;
                 PortTextBox.Text = cfg.Port.ToString();
+                HttpsEnabledCheckBox.IsChecked = cfg.HttpsEnabled;
+                HttpsPortTextBox.Text = cfg.HttpsPort.ToString();
 
-                UpdateJoinUrl(cfg.Port);
+                UpdateJoinUrl(cfg.Port, cfg.HttpsEnabled, cfg.HttpsPort);
+                UpdateCertInfoVisibility(cfg.HttpsEnabled);
                 
                 // Show web content path
                 WebFolderPathText.Text = WebRtcSignalingServer.GetWebContentPath();
@@ -44,6 +47,10 @@ namespace Kinectv1.UI.Settings
                 // Subscribe to connection status changes
                 WebRtcSpeakerTracker.OnConnectionStatusChanged += OnConnectionStatusChanged;
                 WebRtcSpeakerTracker.OnSpeakerActivity += OnSpeakerActivity;
+                
+                // Wire up HTTPS checkbox change
+                HttpsEnabledCheckBox.Checked += (s, args) => UpdateCertInfoVisibility(true);
+                HttpsEnabledCheckBox.Unchecked += (s, args) => UpdateCertInfoVisibility(false);
                 
                 // Initial refresh
                 RefreshConnectionStatus();
@@ -207,16 +214,47 @@ namespace Kinectv1.UI.Settings
             }
         }
 
-        private void UpdateJoinUrl(int port)
+        private void UpdateJoinUrl(int httpPort, bool httpsEnabled, int httpsPort)
         {
             try
             {
                 var ip = GetLocalIPAddress();
-                JoinUrlTextBox.Text = $"http://{ip}:{port}/";
+                if (httpsEnabled)
+                {
+                    JoinUrlTextBox.Text = $"https://{ip}:{httpsPort}/";
+                }
+                else
+                {
+                    JoinUrlTextBox.Text = $"http://{ip}:{httpPort}/";
+                }
             }
             catch
             {
-                JoinUrlTextBox.Text = $"http://localhost:{port}/";
+                JoinUrlTextBox.Text = $"http://localhost:{httpPort}/";
+            }
+        }
+
+        private void UpdateCertInfoVisibility(bool httpsEnabled)
+        {
+            if (CertInfoPanel != null)
+            {
+                CertInfoPanel.Visibility = httpsEnabled ? Visibility.Visible : Visibility.Collapsed;
+            }
+        }
+
+        private void RegenerateCertButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                HttpsHelper.DeleteCertificate();
+                var cert = HttpsHelper.GetOrCreateCertificate();
+                StatusText.Text = $"Certificate regenerated. Thumbprint: {cert.Thumbprint.Substring(0, 8)}...";
+                StatusText.Foreground = new SolidColorBrush(Color.FromRgb(0x10, 0x7C, 0x10));
+            }
+            catch (Exception ex)
+            {
+                StatusText.Text = $"Certificate error: {ex.Message}";
+                StatusText.Foreground = new SolidColorBrush(Color.FromRgb(0xE7, 0x4C, 0x3C));
             }
         }
 
@@ -264,18 +302,30 @@ namespace Kinectv1.UI.Settings
                 var cur = _svc?.Current ?? throw new InvalidOperationException("Settings unavailable");
 
                 var port = int.TryParse(PortTextBox.Text, out var p) && p > 0 && p < 65536 ? p : cur.WebRtc.Port;
+                var httpsPort = int.TryParse(HttpsPortTextBox.Text, out var hp) && hp > 0 && hp < 65536 ? hp : cur.WebRtc.HttpsPort;
+                var httpsEnabled = HttpsEnabledCheckBox.IsChecked ?? false;
 
                 var next = new WebRtcSettings(
                     Enabled: EnabledCheckBox.IsChecked ?? false,
-                    Port: port
+                    Port: port,
+                    HttpsEnabled: httpsEnabled,
+                    HttpsPort: httpsPort
                 );
 
                 var updated = cur with { WebRtc = next };
                 SettingsService.ValidateOrThrow(updated);
                 _svc.Save(updated);
 
-                UpdateJoinUrl(port);
-                StatusText.Text = "Saved";
+                UpdateJoinUrl(port, httpsEnabled, httpsPort);
+                
+                if (httpsEnabled)
+                {
+                    StatusText.Text = "Saved. Restart app to apply HTTPS. Run as Admin first time.";
+                }
+                else
+                {
+                    StatusText.Text = "Saved";
+                }
                 StatusText.Foreground = new SolidColorBrush(Color.FromRgb(0x10, 0x7C, 0x10));
             }
             catch (Exception ex)

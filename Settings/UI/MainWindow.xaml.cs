@@ -810,7 +810,6 @@ namespace Kinectv1
         {
             if (_isClosing || string.IsNullOrWhiteSpace(sentence)) return;
 
-            // Mark that we're actively streaming TTS
             _lastStreamingTtsActive = DateTime.UtcNow;
 
             try
@@ -821,17 +820,19 @@ namespace Kinectv1
 
                 var voice = App.SettingsProvider?.Current?.Tts?.Speaker;
 
-                // Determine routing based on active input mode (per CONDITIONAL_TTS_OUTPUT_ROUTING.md)
-                // Local mic and WebRTC modes play on local speakers
-                // Discord mode plays in Discord voice channel
-                var speakLocal = _isMicrophoneInputEnabled || _isWebRtcInputEnabled;
+                var speakLocal = _isMicrophoneInputEnabled;
+                var speakWebRtc = _isWebRtcInputEnabled;
                 var speakDiscord = _isDiscordInputEnabled && Kinectv1.Discord.DiscordNetBotManager.IsInVoiceChannel;
 
-                Console.WriteLine($"[TTS Stream] Sentence ready ({sentence.Length} chars), local={speakLocal}, discord={speakDiscord}");
+                // Avoid log spam; routing is visible in UI and WebRTC diagnostics.
 
                 if (speakLocal)
                 {
-                    TtsService.QueueSentenceForStreaming(sentence, voice);
+                    TtsService.QueueSentenceForStreaming(sentence, voice, webRtcOnly: false);
+                }
+                else if (speakWebRtc)
+                {
+                    TtsService.QueueSentenceForStreaming(sentence, voice, webRtcOnly: true);
                 }
 
                 if (speakDiscord)
@@ -872,24 +873,15 @@ namespace Kinectv1
                 }
                 catch { }
 
-                // TTS is handled via OnOllamaResponseSentenceReady for streaming.
-                // DO NOT fall back to full-response TTS - this causes the "repeat" bug.
-                // If streaming was used, sentences were already queued.
-                // If streaming was cancelled (barge-in), we don't want to play the old response.
-
-                // Only use fallback if streaming was NEVER active for this response
-                // (e.g., non-streaming mode or immediate error)
                 var timeSinceStreaming = (DateTime.UtcNow - _lastStreamingTtsActive).TotalMilliseconds;
-                bool streamingWasUsed = timeSinceStreaming < 30000; // 30 second window - if any streaming happened recently
+                bool streamingWasUsed = timeSinceStreaming < 30000;
 
                 if (streamingWasUsed)
                 {
-                    // Streaming was used - don't play full response again
-                    Console.WriteLine($"[TTS] Skipping full response fallback - streaming was used ({timeSinceStreaming:F0}ms ago)");
+                    // Avoid spam: this is expected in streaming mode.
                     return;
                 }
 
-                // Streaming was never used (non-streaming path or very old response)
                 if (!TtsService.IsStreamingPlaybackActive)
                 {
                     var ttsEnabled = false;
@@ -898,25 +890,29 @@ namespace Kinectv1
 
                     var voice = App.SettingsProvider?.Current?.Tts?.Speaker;
 
-                    // Determine routing based on active input mode (per CONDITIONAL_TTS_OUTPUT_ROUTING.md)
-                    var speakLocal = _isMicrophoneInputEnabled || _isWebRtcInputEnabled;
+                    var speakLocal = _isMicrophoneInputEnabled;
+                    var speakWebRtc = _isWebRtcInputEnabled;
                     var speakDiscord = _isDiscordInputEnabled && Kinectv1.Discord.DiscordNetBotManager.IsInVoiceChannel;
-
-                    Console.WriteLine($"[TTS] Using full response (streaming not used), local={speakLocal}, discord={speakDiscord}");
 
                     if (speakLocal)
                     {
                         _ = Task.Run(async () =>
                         {
-                            try { await TtsService.SpeakWithPreemptionAsync(response, voice); } catch (Exception ex) { Console.WriteLine($"TTS speak error: {ex.Message}"); }
+                            try { await TtsService.SpeakWithPreemptionAsync(response, voice); }
+                            catch (Exception ex) { Console.WriteLine($"TTS speak error: {ex.Message}"); }
                         });
+                    }
+                    else if (speakWebRtc)
+                    {
+                        TtsService.QueueSentenceForStreaming(response, voice, webRtcOnly: true);
                     }
 
                     if (speakDiscord)
                     {
                         _ = Task.Run(async () =>
                         {
-                            try { await Kinectv1.Discord.DiscordNetBotManager.SendTtsToDiscordAsync(response, voice); } catch (Exception ex) { Console.WriteLine($"Discord TTS error: {ex.Message}"); }
+                            try { await Kinectv1.Discord.DiscordNetBotManager.SendTtsToDiscordAsync(response, voice); }
+                            catch (Exception ex) { Console.WriteLine($"Discord TTS error: {ex.Message}"); }
                         });
                     }
                 }
@@ -926,85 +922,14 @@ namespace Kinectv1
                 Console.WriteLine($"OnOllamaResponseReceived error: {ex.Message}");
             }
         }
-        private void OnOllamaError(string error)
-        {
-            try
-            {
-                Console.WriteLine(string.IsNullOrWhiteSpace(error) ? "Ollama error" : error);
-            }
-            catch { }
-        }
-        private void OnTtsSpeakingStarted() { }
-        private void OnTtsSpeakingFinished() { }
-        private void OnTtsError(string error) { }
-        private void OnDiscordBotStatusChanged(string status) { }
-        private void OnDiscordVoiceMessageReceived(string speaker, String message) { }
-        private void OnDiscordBotError(string error) { }
-        private void InitializeAudioInputControls()
-        {
-            try
-            {
-                var modeJson = App.SettingsProvider?.Current?.App?.InputMode;
-                var mode = modeJson.HasValue ? (AudioInMode)modeJson.Value : AudioInMode.LocalMic;
-
-                var sttModelPath = App.SettingsProvider?.Current?.Stt?.ModelPath ?? string.Empty;
-                VoiceRecognizer.Start(sttModelPath);
-
-                EnsureWebRtcWiring();
-                
-                // Always start the WebRTC web server (for UI access), regardless of input mode
-                StartWebRtcServerAlways();
-
-                ApplyAudioMode(mode);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Init audio input controls failed: {ex.Message}");
-            }
-        }
-
-        private void EnsureWebRtcWiring()
-        {
-            if (_webRtcTransport != null) return;
-
-            var port = App.SettingsProvider?.Current?.WebRtc?.Port ?? 8787;
-            _webRtcTransport = new WebRtcAudioTransport(port);
-            _webRtcSttQueue = new DroppingAudioQueue<AudioFrame>(capacity: 100);
-
-            _webRtcTransport.OnLog += s => { try { Console.WriteLine(s); } catch { } };
-            _webRtcTransport.OnInboundAudio += OnWebRtcInboundAudio;
-            _webRtcTransport.OnStateChanged += state =>
-            {
-                Console.WriteLine($"[WebRTC] State changed: {state}");
-                if (state == VoiceTransportState.Connected)
-                {
-                    Dispatcher.BeginInvoke(new Action(() =>
-                    {
-                        try
-                        {
-                            var text = this.FindName("WebRtcRmsText") as TextBlock;
-                            if (text != null) text.Text = "Connected";
-                        }
-                        catch { }
-                    }));
-                }
-            };
-
-            // Subscribe to mode change requests from web UI
-            WebRtcSignalingServer.OnModeChangeRequested += OnWebUiModeChangeRequested;
-            
-            // Subscribe to text input from web UI
-            WebRtcSignalingServer.OnWebTextInput += OnWebUiTextInput;
-        }
 
         private void OnWebUiModeChangeRequested(AudioInMode mode)
         {
-            // Called from web UI - must dispatch to UI thread
             Dispatcher.BeginInvoke(new Action(() =>
             {
                 try
                 {
-                    Console.WriteLine($"[WebUI] Mode change requested: {mode}");
+                    // This can fire frequently if the page reconnects; keep quiet unless debugging.
                     PersistAudioMode(mode);
                     ApplyAudioMode(mode);
                 }
@@ -1017,23 +942,19 @@ namespace Kinectv1
 
         private void OnWebUiTextInput(string speaker, string text)
         {
-            // Called from web UI - must dispatch to UI thread
             Dispatcher.BeginInvoke(new Action(() =>
             {
                 try
                 {
-                    Console.WriteLine($"[WebUI] Text input from {speaker}: {text.Substring(0, Math.Min(50, text.Length))}...");
-                    
-                    // Update transcription label to show the input
+                    // Avoid console spam on every WebUI keystroke/message.
+
                     if (TranscriptionLabel != null)
                     {
                         TranscriptionLabel.Content = text;
                     }
-                    
-                    // Show speaker
+
                     try { ShowSpeakerResolvedForOllama(speaker, 1.0f, "webui"); } catch { }
-                    
-                    // Update status
+
                     if (OllamaStatusText != null)
                     {
                         OllamaStatusText.Text = "🤖 Ollama: Processing (from WebUI)...";
@@ -1340,7 +1261,10 @@ namespace Kinectv1
             catch { }
 
             // Only feed STT when WebRTC mode is active
-            if (!_isWebRtcInputEnabled) return;
+            if (!_isWebRtcInputEnabled)
+            {
+                return;
+            }
 
             _webRtcSttQueue?.Enqueue(frame);
         }
@@ -1367,12 +1291,10 @@ namespace Kinectv1
                 _isDiscordInputEnabled = (mode == AudioInMode.DiscordVoice);
                 _isWebRtcInputEnabled = (mode == AudioInMode.WebRtcVoice);
 
-                Console.WriteLine($"[AudioMode] Applying mode={mode}, mic={_isMicrophoneInputEnabled}, discord={_isDiscordInputEnabled}, webrtc={_isWebRtcInputEnabled}");
+                // Avoid spam: mode changes already update UI.
 
-                // Broadcast mode change to web clients
                 try { WebRtcSignalingServer.BroadcastModeChange((int)mode); } catch { }
 
-                // Update active source label and meter color
                 if (ActiveSourceLabel != null && RmsBar != null)
                 {
                     if (_isMicrophoneInputEnabled)
@@ -1392,12 +1314,10 @@ namespace Kinectv1
                     }
                 }
 
-                // Reset smoothed RMS when switching sources
                 _smoothedRms = 0f;
                 _lastMicPct = -1;
                 _lastMicBucket = -1;
 
-                // Reflect in UI (single-selection behavior)
                 if (MicInputEnabledCheckBox != null)
                     MicInputEnabledCheckBox.IsChecked = _isMicrophoneInputEnabled;
                 if (DiscordInputEnabledCheckBox != null)
@@ -1409,13 +1329,11 @@ namespace Kinectv1
                 }
                 catch { }
 
-                // Enforce disconnect-on-switch policy
                 if (_isDiscordInputEnabled)
                 {
                     try { VoiceRecognizer.SetMicrophoneInputEnabled(false); } catch { }
                     try { VoiceRecognizer.SetWebRtcInputEnabled(false); } catch { }
                     try { TtsService.CancelCurrentLocalTts(); } catch { }
-                    Console.WriteLine("[AudioMode] Mic forcibly disabled (Discord mode)");
                 }
                 else if (_isWebRtcInputEnabled)
                 {
@@ -1429,7 +1347,12 @@ namespace Kinectv1
                         var svc = App.SettingsProvider; var curr = svc?.Current;
                         if (svc != null && curr != null)
                         {
-                            var nextWebRtc = new WebRtcSettings(Enabled: true, Port: curr.WebRtc.Port);
+                            var nextWebRtc = new WebRtcSettings(
+                                Enabled: true,
+                                Port: curr.WebRtc.Port,
+                                HttpsEnabled: curr.WebRtc.HttpsEnabled,
+                                HttpsPort: curr.WebRtc.HttpsPort
+                            );
                             var next = curr with { WebRtc = nextWebRtc };
                             svc.Save(next);
                         }
@@ -1438,19 +1361,13 @@ namespace Kinectv1
 
                     if (_webRtcCts == null || _webRtcCts.IsCancellationRequested)
                     {
-                        Console.WriteLine("[WebRTC] Server not running, starting now");
                         StartWebRtcServerAlways();
-                    }
-                    else
-                    {
-                        Console.WriteLine("[WebRTC] Voice processing enabled (server already running)");
                     }
                 }
                 else
                 {
                     _ = Task.Run(async () => { try { await DiscordNetBotManager.LeaveAllVoiceAsync(); } catch { } });
                     try { VoiceRecognizer.SetMicrophoneInputEnabled(true); } catch { }
-                    Console.WriteLine("[AudioMode] Mic enabled (LocalMic mode)");
                 }
 
                 if (!_isDiscordInputEnabled && !_isWebRtcInputEnabled)
@@ -1493,6 +1410,8 @@ namespace Kinectv1
         {
             int frames = 0;
             DateTime lastLog = DateTime.UtcNow;
+            int totalSamplesProcessed = 0;
+            float peakRms = 0f;
 
             while (!ct.IsCancellationRequested)
             {
@@ -1510,35 +1429,51 @@ namespace Kinectv1
                     var ch = frame.Channels;
 
                     byte[] pcm16k;
-                    if (sr == 16000 && ch == 1)
+                    
+                    // Handle mono input at various sample rates
+                    if (ch == 1)
                     {
-                        pcm16k = ShortsToBytes(pcm);
-                    }
-                    else if (sr == 8000 && ch == 1)
-                    {
-                        var upsampled = Upsample8kTo16k(pcm);
-                        pcm16k = ShortsToBytes(upsampled);
-                    }
-                    else
-                    {
-                        var floats = new float[pcm.Length];
-                        for (int i = 0; i < pcm.Length; i++) floats[i] = pcm[i] / 32768.0f;
-
-                        float[] res;
-                        if (sr == 48000)
+                        if (sr == 16000)
                         {
-                            if (ch == 1) res = AudioUtils.ResampleMono48kTo16k(floats, floats.Length, "webrtc");
-                            else res = AudioUtils.ResampleStereo48kTo16kMono(floats, floats.Length, "webrtc");
+                            // Already at target rate
+                            pcm16k = ShortsToBytes(pcm);
+                        }
+                        else if (sr == 8000)
+                        {
+                            // Upsample 8kHz -> 16kHz
+                            var upsampled = Upsample8kTo16k(pcm);
+                            pcm16k = ShortsToBytes(upsampled);
                         }
                         else
                         {
-                            res = Array.Empty<float>();
+                            // Generic resample any rate -> 16kHz
+                            var resampled = ResampleMono(pcm, sr, 16000);
+                            pcm16k = ShortsToBytes(resampled);
                         }
-                        pcm16k = FloatsToPcm16Bytes(res);
+                    }
+                    else
+                    {
+                        // Stereo: mix to mono then resample
+                        var mono = MixToMono(pcm);
+                        if (sr == 16000)
+                        {
+                            pcm16k = ShortsToBytes(mono);
+                        }
+                        else
+                        {
+                            var resampled = ResampleMono(mono, sr, 16000);
+                            pcm16k = ShortsToBytes(resampled);
+                        }
                     }
 
                     if (pcm16k != null && pcm16k.Length > 0)
                     {
+                        totalSamplesProcessed += pcm16k.Length / 2;
+                        
+                        // Compute RMS for diagnostics
+                        float rms = NormalizedAudioFrame.ComputeRms(pcm16k, pcm16k.Length);
+                        if (rms > peakRms) peakRms = rms;
+                        
                         var normalizedFrame = Kinectv1.Voice.NormalizedAudioFrame.Create(
                             pcm16k, pcm16k.Length,
                             Kinectv1.Voice.AudioSourceType.WebRtc,
@@ -1551,16 +1486,58 @@ namespace Kinectv1
                 var now = DateTime.UtcNow;
                 if ((now - lastLog).TotalSeconds >= 1)
                 {
-                    try
-                    {
-                        var (depth, dropped, totalDropped, depthMs) = _webRtcSttQueue?.GetStats(16000, 320) ?? (0, 0, 0, 0);
-                        Console.WriteLine($"[WebRTC][stt] fps={frames} q={depth} ({depthMs:F0}ms) dropped={dropped}");
-                    }
-                    catch { }
+                    // Keep the expensive diag log out of normal runs.
                     frames = 0;
+                    totalSamplesProcessed = 0;
+                    peakRms = 0f;
                     lastLog = now;
                 }
             }
+        }
+
+        /// <summary>
+        /// Mix stereo PCM16 to mono by averaging L+R channels.
+        /// </summary>
+        private static short[] MixToMono(short[] stereo)
+        {
+            if (stereo == null || stereo.Length == 0) return Array.Empty<short>();
+            var mono = new short[stereo.Length / 2];
+            for (int i = 0; i < mono.Length; i++)
+            {
+                int left = stereo[i * 2];
+                int right = stereo[i * 2 + 1];
+                mono[i] = (short)((left + right) / 2);
+            }
+            return mono;
+        }
+
+        /// <summary>
+        /// Resample mono PCM16 from srcRate to dstRate using linear interpolation.
+        /// </summary>
+        private static short[] ResampleMono(short[] input, int srcRate, int dstRate)
+        {
+            if (input == null || input.Length == 0 || srcRate <= 0 || dstRate <= 0) 
+                return Array.Empty<short>();
+            
+            if (srcRate == dstRate) return input;
+
+            double ratio = (double)srcRate / dstRate;
+            int outputLength = (int)(input.Length / ratio);
+            if (outputLength <= 0) return Array.Empty<short>();
+
+            var output = new short[outputLength];
+            for (int i = 0; i < outputLength; i++)
+            {
+                double srcIndex = i * ratio;
+                int idx0 = (int)srcIndex;
+                int idx1 = Math.Min(idx0 + 1, input.Length - 1);
+                double frac = srcIndex - idx0;
+                
+                // Linear interpolation
+                double sample = input[idx0] * (1.0 - frac) + input[idx1] * frac;
+                output[i] = (short)Math.Max(-32768, Math.Min(32767, sample));
+            }
+            return output;
         }
 
         private static short[] Upsample8kTo16k(short[] input)
@@ -1600,6 +1577,76 @@ namespace Kinectv1
                 bytes[i * 2 + 1] = (byte)((s >> 8) & 0xFF);
             }
             return bytes;
+        }
+
+        // --- Minimal event handlers (avoid console spam by default) ---
+        private void OnOllamaError(string error)
+        {
+            if (string.IsNullOrWhiteSpace(error)) return;
+            try { Console.WriteLine(error); } catch { }
+        }
+
+        private void OnTtsSpeakingStarted() { }
+        private void OnTtsSpeakingFinished() { }
+        private void OnTtsError(string error)
+        {
+            if (string.IsNullOrWhiteSpace(error)) return;
+            try { Console.WriteLine($"[TTS] {error}"); } catch { }
+        }
+
+        private void OnDiscordBotStatusChanged(string status)
+        {
+            if (string.IsNullOrWhiteSpace(status)) return;
+            try { Console.WriteLine(status); } catch { }
+        }
+
+        private void OnDiscordVoiceMessageReceived(string speaker, string message) { }
+
+        private void OnDiscordBotError(string error)
+        {
+            if (string.IsNullOrWhiteSpace(error)) return;
+            try { Console.WriteLine(error); } catch { }
+        }
+
+        private void InitializeAudioInputControls()
+        {
+            try
+            {
+                var modeJson = App.SettingsProvider?.Current?.App?.InputMode;
+                var mode = modeJson.HasValue ? (AudioInMode)modeJson.Value : AudioInMode.LocalMic;
+
+                var sttModelPath = App.SettingsProvider?.Current?.Stt?.ModelPath ?? string.Empty;
+                VoiceRecognizer.Start(sttModelPath);
+
+                EnsureWebRtcWiring();
+                StartWebRtcServerAlways();
+
+                ApplyAudioMode(mode);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Init audio input controls failed: {ex.Message}");
+            }
+        }
+
+        private void EnsureWebRtcWiring()
+        {
+            if (_webRtcTransport != null) return;
+
+            var port = App.SettingsProvider?.Current?.WebRtc?.Port ?? 8787;
+            _webRtcTransport = new WebRtcAudioTransport(port);
+            _webRtcSttQueue = new DroppingAudioQueue<AudioFrame>(capacity: 100);
+
+            _webRtcTransport.OnLog += s => { try { Console.WriteLine(s); } catch { } };
+            _webRtcTransport.OnInboundAudio += OnWebRtcInboundAudio;
+            _webRtcTransport.OnStateChanged += state =>
+            {
+                try { Console.WriteLine($"[WebRTC] State changed: {state}"); } catch { }
+            };
+
+            WebRtcSignalingServer.OnModeChangeRequested += OnWebUiModeChangeRequested;
+            WebRtcSignalingServer.OnWebTextInput += OnWebUiTextInput;
+            WebRtcSignalingServer.OnWebAudioReceived += OnWebRtcInboundAudio;
         }
     }
 }
