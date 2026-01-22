@@ -158,7 +158,10 @@ New info to integrate:
 
             var settings = _getSettings();
             int hotLimit = settings.HotContextTokenLimit;
-            int totalTokens = messages.Sum(m => TokenEstimator.EstimateTokens(m.Content));
+
+            // IMPORTANT: token counting must match how the prompt/history and UI estimate it.
+            // (role + optional speaker + content)
+            int totalTokens = EstimateHotContextTokens(messages);
 
             if (!forceArchiveAll && totalTokens <= hotLimit)
                 return messages;
@@ -179,7 +182,7 @@ New info to integrate:
                 int runningTokens = 0;
                 for (int i = messages.Count - 1; i >= 0; i--)
                 {
-                    int msgTokens = TokenEstimator.EstimateTokens(messages[i].Content);
+                    int msgTokens = EstimateMessageTokensForHotContext(messages[i]);
                     if (runningTokens + msgTokens <= targetTokens)
                     {
                         toKeep.Insert(0, messages[i]);
@@ -197,6 +200,29 @@ New info to integrate:
 
             await ArchiveMessagesAsync(toArchive, speaker, ct).ConfigureAwait(false);
             return toKeep;
+        }
+
+        private static int EstimateHotContextTokens(List<ConversationMessage> messages)
+        {
+            if (messages == null || messages.Count == 0) return 0;
+            int total = 0;
+            foreach (var m in messages)
+                total += EstimateMessageTokensForHotContext(m);
+            return total;
+        }
+
+        private static int EstimateMessageTokensForHotContext(ConversationMessage msg)
+        {
+            if (msg == null) return 0;
+            var role = msg.Role ?? "user";
+            var content = msg.Content ?? string.Empty;
+            var sp = msg.Speaker ?? string.Empty;
+
+            var formatted = string.Equals(role, "user", StringComparison.OrdinalIgnoreCase)
+                ? $"USER ({sp}): {content}"
+                : $"ASSISTANT: {content}";
+
+            return TokenEstimator.EstimateTokens(formatted);
         }
 
         public async Task<MemoryContext> BuildContextAsync(

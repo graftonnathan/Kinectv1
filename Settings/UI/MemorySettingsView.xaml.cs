@@ -231,22 +231,23 @@ namespace Kinectv1.UI.Settings
         private async void RenderToMemoryButton_Click(object sender, RoutedEventArgs e)
         {
             var cfg = _svc?.Current?.Ollama;
-            
-            // Get speaker - use forced speaker if set
-            var speaker = cfg?.ForceSpeakerOverrideEnabled == true && !string.IsNullOrWhiteSpace(cfg?.ForcedSpeakerId) 
-                ? cfg.ForcedSpeakerId 
-                : "UnknownSpeaker";
+            if (cfg == null)
+            {
+                StatusText.Text = "Settings unavailable";
+                return;
+            }
 
-            var (tokens, messages) = OllamaService.GetHotContextStats(speaker);
+            // NEW STORAGE: hot context is per system prompt and includes ALL speakers.
+            var (tokens, messages) = OllamaService.GetHotContextStatsAllSpeakers();
             if (messages == 0)
             {
-                StatusText.Text = $"No conversation history for '{speaker}'";
+                StatusText.Text = "No conversation history to archive";
                 return;
             }
 
             // Get current memory key
             string memoryKey = "default";
-            if (!string.IsNullOrWhiteSpace(cfg?.SystemPromptPath))
+            if (!string.IsNullOrWhiteSpace(cfg.SystemPromptPath))
             {
                 try { memoryKey = Path.GetFileNameWithoutExtension(cfg.SystemPromptPath)?.ToLowerInvariant() ?? "default"; }
                 catch { }
@@ -266,7 +267,8 @@ namespace Kinectv1.UI.Settings
                 RenderToMemoryButton.IsEnabled = false;
                 StatusText.Text = "Archiving...";
 
-                var (archived, tokensBefore) = await OllamaService.ForceArchiveToMemoryAsync(speaker);
+                // Speaker param is now informational only; archive is all-speakers for current prompt.
+                var (archived, tokensBefore) = await OllamaService.ForceArchiveToMemoryAsync("UnknownSpeaker");
 
                 if (archived > 0)
                 {

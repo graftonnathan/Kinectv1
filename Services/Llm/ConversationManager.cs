@@ -196,30 +196,6 @@ namespace Kinectv1
             catch { return (null, false, null); }
         }
 
-        private static IEnumerable<string> EnumerateConversationFilesAscending()
-        {
-            var info = GetConversationStorageInfo();
-            if (string.IsNullOrWhiteSpace(info.explicitFile)) yield break;
-            if (info.singleFile) { yield return info.explicitFile; yield break; }
-            if (!Directory.Exists(info.directory)) yield break;
-            // Base + numbered variants conversation.json, conversation_#.json
-            var files = Directory.GetFiles(info.directory, "conversation*.json");
-            int IndexOf(string f)
-            {
-                var name = Path.GetFileNameWithoutExtension(f) ?? string.Empty;
-                if (name.Equals("conversation", StringComparison.OrdinalIgnoreCase)) return 0;
-                var us = name.LastIndexOf('_');
-                if (us >= 0)
-                {
-                    var tail = us + 1 < name.Length ? name.Substring(us + 1) : string.Empty;
-                    int n; if (int.TryParse(tail, out n)) return n;
-                }
-                return 0;
-            }
-            foreach (var f in files.OrderBy(f => IndexOf(f))) yield return f;
-        }
-        private static IEnumerable<string> EnumerateConversationFilesDescending() => EnumerateConversationFilesAscending().Reverse();
-
         private static string GetConversationHistoryPathForMemoryKey(string memoryKey)
         {
             if (string.IsNullOrWhiteSpace(memoryKey)) memoryKey = "default";
@@ -583,127 +559,6 @@ namespace Kinectv1
             var key = GetCurrentMemoryKeySafe();
             var messages = GetConversationMessagesAllSpeakers(key);
             int tokens = GetConversationTokenCountAllSpeakers(key);
-            return (tokens, messages.Count);
-        }
-
-        private static string BuildHistoryBlock(string speaker)
-        {
-            if (!MemoryEnabled()) return string.Empty;
-            try
-            {
-                lock (_convLock)
-                {
-                      var collected = new List<ConversationMessage>();
-                      foreach (var file in EnumerateConversationFilesDescending())
-                      {
-                          try
-                          {
-                              if (!File.Exists(file)) continue;
-                              var txt = File.ReadAllText(file, Encoding.UTF8);
-                              if (string.IsNullOrWhiteSpace(txt)) continue;
-                              var jo = JObject.Parse(txt);
-                              var arr = jo[speaker] as JArray; if (arr == null || arr.Count == 0) continue;
-                              for (int i = arr.Count - 1; i >= 0; i--)
-                              {
-                                  var jm = arr[i] as JObject; if (jm == null) continue;
-                                  collected.Add(new ConversationMessage
-                                  {
-                                      Role = jm["Role"]?.Value<string>(),
-                                      Content = jm["Content"]?.Value<string>(),
-                                      Speaker = jm["Speaker"]?.Value<string>(),
-                                      Timestamp = jm["Timestamp"]?.Value<DateTime?>() ?? DateTime.MinValue
-                                  });
-                              }
-                          }
-                          catch { }
-                      }
-                      if (collected.Count == 0) return string.Empty;
-                      collected.Reverse();
-                      var sb = new StringBuilder();
-                      foreach (var m in collected)
-                          sb.AppendLine(string.Equals(m.Role, "user", StringComparison.OrdinalIgnoreCase) ? $"USER ({speaker}): {m.Content}" : $"ASSISTANT: {m.Content}");
-                      return sb.ToString();
-                  }
-              }
-              catch { return string.Empty; }
-          }
-
-        public static List<Llm.ConversationMessage> GetConversationMessagesPublic(string speaker, int? maxMessages = null)
-        {
-            var result = new List<Llm.ConversationMessage>();
-            if (!MemoryEnabled()) return result;
-
-            speaker = string.IsNullOrWhiteSpace(speaker) ? "UnknownSpeaker" : speaker.Trim();
-
-            try
-            {
-                lock (_convLock)
-                {
-                     foreach (var file in EnumerateConversationFilesDescending())
-                     {
-                         try
-                         {
-                             if (!File.Exists(file)) continue;
-                             var txt = File.ReadAllText(file, Encoding.UTF8);
-                             if (string.IsNullOrWhiteSpace(txt)) continue;
-                             var jo = JObject.Parse(txt);
-                             var arr = jo[speaker] as JArray;
-                             if (arr == null || arr.Count == 0) continue;
-
-                             for (int i = arr.Count - 1; i >= 0; i--)
-                             {
-                                 var jm = arr[i] as JObject;
-                                 if (jm == null) continue;
-
-                                 result.Add(new Llm.ConversationMessage
-                                 {
-                                     Role = jm["Role"]?.Value<string>() ?? "user",
-                                     Content = jm["Content"]?.Value<string>() ?? string.Empty,
-                                     Speaker = jm["Speaker"]?.Value<string>() ?? speaker,
-                                     Timestamp = jm["Timestamp"]?.Value<DateTime?>() ?? DateTime.MinValue
-                                 });
-                             }
-                         }
-                         catch { }
-                     }
-                 }
-             }
-             catch { }
-
-             // Reverse to chronological order (oldest first)
-             result.Reverse();
-             return result;
-        }
-
-        /// <summary>
-        /// Calculate total token count from conversation history JSON for a speaker.
-        /// Uses the same formatting as BuildHistoryBlock for accurate estimation.
-        /// </summary>
-        public static int GetConversationTokenCount(string speaker)
-        {
-            var messages = GetConversationMessagesPublic(speaker);
-            if (messages.Count == 0) return 0;
-
-            int totalTokens = 0;
-            foreach (var msg in messages)
-            {
-                // Estimate tokens for role prefix + content (matches how history is formatted)
-                var formatted = string.Equals(msg.Role, "user", StringComparison.OrdinalIgnoreCase)
-                    ? $"USER ({msg.Speaker}): {msg.Content}"
-                    : $"ASSISTANT: {msg.Content}";
-                totalTokens += TokenEstimator.EstimateTokens(formatted);
-            }
-
-            return totalTokens;
-        }
-
-        /// <summary>
-        /// Get the current hot context token count for display in UI.
-        /// </summary>
-        public static (int tokenCount, int messageCount) GetHotContextStats(string speaker)
-        {
-            var messages = GetConversationMessagesPublic(speaker);
-            int tokens = GetConversationTokenCount(speaker);
             return (tokens, messages.Count);
         }
         #endregion
@@ -1117,17 +972,16 @@ namespace Kinectv1
         }
 
         /// <summary>
-        /// Manually trigger memory archival for a speaker (for testing/UI).
+        /// Manually trigger memory archival (for UI/testing).
+        /// NEW STORAGE: archives ALL speakers for the current system prompt (memory key).
         /// Returns (messagesArchived, tokensBeforeArchive).
         /// </summary>
         public static async Task<(int archived, int tokensBefore)> ForceArchiveToMemoryAsync(string speaker, CancellationToken ct = default)
         {
             try
             {
-                var normalizedSpeaker = string.IsNullOrWhiteSpace(speaker) ? "UnknownSpeaker" : speaker.Trim();
-                
                 await EnsureMemoryInitializedAsync(ct).ConfigureAwait(false);
-                
+
                 var mm = GetMemoryManager();
                 if (!mm.IsEnabled)
                 {
@@ -1135,24 +989,25 @@ namespace Kinectv1
                     return (0, 0);
                 }
 
-                var messages = GetConversationMessagesPublic(normalizedSpeaker);
+                var key = GetCurrentMemoryKeySafe();
+                var messages = GetConversationMessagesAllSpeakers(key);
                 if (messages.Count == 0) return (0, 0);
 
-                int tokensBefore = GetConversationTokenCount(normalizedSpeaker);
-                
+                int tokensBefore = GetConversationTokenCountAllSpeakers(key);
+
                 try { OnMemoryArchiveStarted?.Invoke(); } catch { }
 
-                var remaining = await mm.ProcessOverflowAsync(messages, normalizedSpeaker, ct, forceArchiveAll: true).ConfigureAwait(false);
+                // Speaker parameter is informational only; archive is driven by messages list.
+                var remaining = await mm.ProcessOverflowAsync(messages, "UnknownSpeaker", ct, forceArchiveAll: true).ConfigureAwait(false);
 
                 int archivedCount = messages.Count - remaining.Count;
 
-                // Clear conversation history
-                await ClearConversationHistoryAsync(normalizedSpeaker, ct).ConfigureAwait(false);
+                // Replace hot context for this prompt with whatever remains (typically empty when forceArchiveAll=true).
+                await ReplaceConversationHistoryAllSpeakersForCurrentPromptAsync(remaining, ct).ConfigureAwait(false);
 
-                // Save
                 await mm.SaveAsync(ct).ConfigureAwait(false);
 
-                Console.WriteLine($"?? Force archived {archivedCount} messages ({tokensBefore} tokens)");
+                Console.WriteLine($"?? Force archived {archivedCount} messages ({tokensBefore} tokens) for memoryKey '{key}'");
                 try { OnMemoryArchiveCompleted?.Invoke(archivedCount, archivedCount); } catch { }
 
                 return (archivedCount, tokensBefore);
@@ -1163,46 +1018,6 @@ namespace Kinectv1
                 try { OnMemoryArchiveFailed?.Invoke(ex.Message); } catch { }
                 return (0, 0);
             }
-        }
-
-        /// <summary>
-        /// Archive all messages to vector store (bypasses overflow check).
-        /// </summary>
-        private static async Task<int> ArchiveAllMessagesAsync(MemoryManager mm, List<Llm.ConversationMessage> messages, string speaker, CancellationToken ct)
-        {
-            // Use reflection or make ProcessOverflowAsync accept force parameter
-            // For now, use the existing method but with empty "keep" list
-            var remaining = await mm.ProcessOverflowAsync(messages, speaker, ct).ConfigureAwait(false);
-            return messages.Count - remaining.Count;
-        }
-
-        /// <summary>
-        /// Clear all conversation history for a speaker.
-        /// </summary>
-        public static Task ClearConversationHistoryAsync(string speaker, CancellationToken ct = default)
-        {
-            return Task.Run(() =>
-            {
-                try
-                {
-                    lock (_convLock)
-                    {
-                        var info = GetConversationStorageInfo();
-                        if (string.IsNullOrWhiteSpace(info.explicitFile)) return;
-
-                        var file = info.explicitFile;
-                        if (!File.Exists(file)) return;
-
-                        var root = JObject.Parse(File.ReadAllText(file, Encoding.UTF8));
-                        root[speaker] = new JArray(); // Empty array
-                        File.WriteAllText(file, root.ToString(Formatting.Indented), Encoding.UTF8);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    LogErr($"Failed to clear conversation history: {ex.Message}");
-                }
-            }, ct);
         }
 
         /// <summary>
