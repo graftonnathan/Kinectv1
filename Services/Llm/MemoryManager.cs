@@ -723,13 +723,38 @@ New info to integrate:
 
         #region Helpers
 
+        // Resolve relative paths against the app base dir and its ancestors (so 'history/memory' works
+        // whether running from repo root, bin folder, or packaged output).
+        private static string ResolvePathUpwards(string raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) return null;
+            try
+            {
+                if (System.IO.Path.IsPathRooted(raw)) return System.IO.Path.GetFullPath(raw);
+
+                var baseDir = AppDomain.CurrentDomain.BaseDirectory;
+                var di = new System.IO.DirectoryInfo(baseDir);
+                for (int i = 0; i < 6 && di != null; i++)
+                {
+                    var candidate = System.IO.Path.Combine(di.FullName, raw);
+                    // If it already exists as a directory/file, prefer it.
+                    if (System.IO.Directory.Exists(candidate) || System.IO.File.Exists(candidate))
+                        return System.IO.Path.GetFullPath(candidate);
+                    di = di.Parent;
+                }
+
+                return System.IO.Path.GetFullPath(System.IO.Path.Combine(baseDir, raw));
+            }
+            catch { return raw; }
+        }
+
         private string ResolveBasePath(string basePath)
         {
             if (string.IsNullOrWhiteSpace(basePath))
                 return AppDomain.CurrentDomain.BaseDirectory;
-            if (System.IO.Path.IsPathRooted(basePath))
-                return basePath;
-            return System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, basePath);
+
+            var resolved = ResolvePathUpwards(basePath);
+            return string.IsNullOrWhiteSpace(resolved) ? AppDomain.CurrentDomain.BaseDirectory : resolved;
         }
 
         #endregion

@@ -104,9 +104,8 @@ namespace Kinectv1.Settings
         bool Enabled,
         string Model,
         bool MemoryEnabled,
-        [property: Range(0, int.MaxValue)] int MaxMessagesPerSpeaker,
-        [property: Range(0, int.MaxValue)] int MaxSystemMessages,
-        [property: Range(0, int.MaxValue)] int ConversationTimeoutMinutes,
+        // Conversation history persistence: cap by approximate tokens in conversation.json
+        [property: Range(0, int.MaxValue)] int ConversationMaxTokens,
         string ConversationHistoryPath,
         string SystemPromptPath,
         bool OutputThink, // when false, <think>..</think> is removed

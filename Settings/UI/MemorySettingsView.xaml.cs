@@ -143,68 +143,82 @@ namespace Kinectv1.UI.Settings
                 
                 CurrentMemoryKeyText.Text = memoryKey;
 
-                // Get hot context stats (use forced speaker if set, otherwise "default")
-                var speaker = cfg?.ForceSpeakerOverrideEnabled == true && !string.IsNullOrWhiteSpace(cfg?.ForcedSpeakerId) 
-                    ? cfg.ForcedSpeakerId 
-                    : "Nathan";
-                var (tokens, messages) = OllamaService.GetHotContextStats(speaker);
+                // Count hot context across ALL speakers in conversation.json.
+                var (tokens, messages) = OllamaService.GetHotContextStatsAllSpeakers();
 
-                HotContextTokensText.Text = $"{tokens:N0}";
-                MessagesCountText.Text = $"{messages}";
+                 HotContextTokensText.Text = $"{tokens:N0}";
+                 MessagesCountText.Text = $"{messages}";
 
-                // Update token display color based on limit
-                if (cfg != null && tokens > cfg.HotContextTokenLimit)
-                {
-                    HotContextTokensText.Foreground = new SolidColorBrush(Color.FromRgb(0xE7, 0x4C, 0x3C)); // Red
-                }
-                else if (cfg != null && tokens > cfg.HotContextTokenLimit * 0.8)
-                {
-                    HotContextTokensText.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x8C, 0x00)); // Orange
-                }
-                else
-                {
-                    HotContextTokensText.Foreground = new SolidColorBrush(Color.FromRgb(0x10, 0x7C, 0x10)); // Green
-                }
+                 // Update token display color based on limit
+                 if (cfg != null && tokens > cfg.HotContextTokenLimit)
+                 {
+                     HotContextTokensText.Foreground = new SolidColorBrush(Color.FromRgb(0xE7, 0x4C, 0x3C)); // Red
+                 }
+                 else if (cfg != null && tokens > cfg.HotContextTokenLimit * 0.8)
+                 {
+                     HotContextTokensText.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x8C, 0x00)); // Orange
+                 }
+                 else
+                 {
+                     HotContextTokensText.Foreground = new SolidColorBrush(Color.FromRgb(0x10, 0x7C, 0x10)); // Green
+                 }
 
-                // Try to get vector store chunk count for current memory key
-                try
-                {
-                    var vectorDbBasePath = cfg?.VectorDbPath;
-                    if (!string.IsNullOrWhiteSpace(vectorDbBasePath))
-                    {
-                        var basePath = Path.IsPathRooted(vectorDbBasePath) 
-                            ? vectorDbBasePath 
-                            : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, vectorDbBasePath);
+                 // Try to get vector store chunk count for current memory key
+                 try
+                 {
+                     var vectorDbBasePath = cfg?.VectorDbPath;
+                     if (!string.IsNullOrWhiteSpace(vectorDbBasePath))
+                     {
+                         // Match runtime resolution (similar to OllamaService history resolution):
+                         // allow relative paths like "history/memory" to resolve outside bin/.
+                         string basePath;
+                         if (Path.IsPathRooted(vectorDbBasePath))
+                         {
+                             basePath = vectorDbBasePath;
+                         }
+                         else
+                         {
+                             var di = new DirectoryInfo(AppDomain.CurrentDomain.BaseDirectory);
+                             basePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, vectorDbBasePath);
+                             for (int i = 0; i < 6 && di != null; i++)
+                             {
+                                 var candidate = Path.Combine(di.FullName, vectorDbBasePath);
+                                 if (Directory.Exists(candidate) || File.Exists(candidate)) { basePath = candidate; break; }
+                                 di = di.Parent;
+                             }
+                         }
 
-                        var fullPath = Path.Combine(basePath, memoryKey, "vectors.json");
+                         basePath = Path.GetFullPath(basePath);
 
-                        if (File.Exists(fullPath))
-                        {
-                            var json = File.ReadAllText(fullPath);
-                            var obj = JObject.Parse(json);
-                            var centroids = obj["Centroids"] as JArray;
-                            VectorChunksText.Text = $"{centroids?.Count ?? 0}";
-                        }
-                        else
-                        {
-                            VectorChunksText.Text = "0";
-                        }
-                    }
-                    else
-                    {
-                        VectorChunksText.Text = "--";
-                    }
-                }
-                catch
-                {
-                    VectorChunksText.Text = "--";
-                }
-            }
-            catch (Exception ex)
-            {
-                StatusText.Text = $"Stats error: {ex.Message}";
-            }
-        }
+                         var fullPath = Path.Combine(basePath, memoryKey, "vectors.json");
+
+                         if (File.Exists(fullPath))
+                         {
+                             var json = File.ReadAllText(fullPath);
+                             var obj = JObject.Parse(json);
+                             var centroids = obj["Centroids"] as JArray;
+                             VectorChunksText.Text = $"{centroids?.Count ?? 0}";
+                         }
+                         else
+                         {
+                             VectorChunksText.Text = "0";
+                         }
+                     }
+                     else
+                     {
+                         VectorChunksText.Text = "--";
+                     }
+                 }
+                 catch
+                 {
+                     VectorChunksText.Text = "--";
+                 }
+             }
+             catch (Exception ex)
+             {
+                 StatusText.Text = $"Stats error: {ex.Message}";
+             }
+         }
 
         private void RefreshStatsButton_Click(object sender, RoutedEventArgs e)
         {
@@ -221,7 +235,7 @@ namespace Kinectv1.UI.Settings
             // Get speaker - use forced speaker if set
             var speaker = cfg?.ForceSpeakerOverrideEnabled == true && !string.IsNullOrWhiteSpace(cfg?.ForcedSpeakerId) 
                 ? cfg.ForcedSpeakerId 
-                : "Nathan";
+                : "UnknownSpeaker";
 
             var (tokens, messages) = OllamaService.GetHotContextStats(speaker);
             if (messages == 0)

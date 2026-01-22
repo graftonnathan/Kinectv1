@@ -703,10 +703,41 @@ namespace Kinectv1.Voice
             {
                 var path = req.Url?.AbsolutePath ?? "/";
 
+                // Some clients/proxies don't set IsWebSocketRequest reliably for secure listeners.
+                // If the client hits '/ws', attempt upgrade explicitly.
+                if (path.Equals("/ws", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (req.IsWebSocketRequest)
+                    {
+                        await HandleWebSocket(ctx, ct);
+                        return;
+                    }
+
+                    // Not a websocket upgrade - return a small diagnostic payload.
+                    Serve(res, JsonConvert.SerializeObject(new
+                    {
+                        ok = true,
+                        ws = false,
+                        message = "Connect using WebSocket upgrade (wss/ws) to /ws",
+                        headers = new
+                        {
+                            connection = req.Headers["Connection"],
+                            upgrade = req.Headers["Upgrade"],
+                            origin = req.Headers["Origin"],
+                            host = req.Headers["Host"]
+                        }
+                    }), "application/json");
+                    return;
+                }
+
                 if (req.IsWebSocketRequest)
                 {
-                    await HandleWebSocket(ctx, ct);
-                    return;
+                    // Accept WS on root for backward compatibility
+                    if (path == "/")
+                    {
+                        await HandleWebSocket(ctx, ct);
+                        return;
+                    }
                 }
 
                 switch (path)
@@ -721,8 +752,11 @@ namespace Kinectv1.Voice
                         Serve(res, js, "application/javascript");
                         break;
                     case "/api/status":
-                        Serve(res, JsonConvert.SerializeObject(new { mode = GetCurrentMode() }), "application/json");
-                        break;
+                        {
+                            var bargeInEnabled = App.SettingsProvider?.Current?.Asr?.BargeInEnabled ?? false;
+                            Serve(res, JsonConvert.SerializeObject(new { mode = GetCurrentMode(), bargeInEnabled }), "application/json");
+                            break;
+                        }
                     case "/api/mode":
                         if (req.HttpMethod == "POST")
                             await HandleModeChange(req, res);
@@ -778,15 +812,16 @@ namespace Kinectv1.Voice
             var id = $"c{Interlocked.Increment(ref _clientId)}";
             _clients[id] = ws;
             _clientSendLocks[id] = new SemaphoreSlim(1, 1);
-            
+
             Log($"[WebRTC] Client connected: {id}");
 
             // Send initial status including barge-in setting
             try
             {
                 var bargeInEnabled = App.SettingsProvider?.Current?.Asr?.BargeInEnabled ?? false;
-                var status = JsonConvert.SerializeObject(new { 
-                    type = "status", 
+                var status = JsonConvert.SerializeObject(new
+                {
+                    type = "status",
                     mode = GetCurrentMode(),
                     bargeInEnabled = bargeInEnabled
                 });
@@ -794,18 +829,31 @@ namespace Kinectv1.Voice
             }
             catch { }
 
-            var buf = new byte[4096];
+            var buf = new byte[8192];
+            var sb = new StringBuilder();
+
             try
             {
                 while (ws.State == WebSocketState.Open && !ct.IsCancellationRequested)
                 {
-                    var result = await ws.ReceiveAsync(new ArraySegment<byte>(buf), ct);
-                    if (result.MessageType == WebSocketMessageType.Close) break;
-                    if (result.MessageType == WebSocketMessageType.Text)
+                    sb.Clear();
+                    WebSocketReceiveResult result;
+                    do
                     {
-                        var msg = Encoding.UTF8.GetString(buf, 0, result.Count);
-                        await ProcessMessage(ws, msg);
+                        result = await ws.ReceiveAsync(new ArraySegment<byte>(buf), ct);
+                        if (result.MessageType == WebSocketMessageType.Close) break;
+                        if (result.MessageType != WebSocketMessageType.Text) continue;
+
+                        sb.Append(Encoding.UTF8.GetString(buf, 0, result.Count));
                     }
+                    while (!result.EndOfMessage);
+
+                    if (result.MessageType == WebSocketMessageType.Close) break;
+                    if (result.MessageType != WebSocketMessageType.Text) continue;
+
+                    var msg = sb.ToString();
+                    if (!string.IsNullOrWhiteSpace(msg))
+                        await ProcessMessage(ws, msg);
                 }
             }
             catch { }
@@ -897,16 +945,15 @@ namespace Kinectv1.Voice
                         // Handle audio from web client (base64 PCM)
                         string audioData = (string)msg.data;
                         int sampleRate = (int?)msg.sampleRate ?? 16000;
+                        int prerollMs = 0;
+                        try { prerollMs = (int?)msg.prerollMs ?? 0; } catch { }
                         if (!string.IsNullOrEmpty(audioData))
                         {
                             _audioFramesReceived++;
-                            
-                            // Mark WebRTC as active when receiving audio from web client
-                            // This ensures TTS responses go back to the web client
+
                             _webRtcActive = true;
-                            ExtendWebRtcActive(30); // Keep active for 30 seconds after last audio
-                            
-                            // Log periodically
+                            ExtendWebRtcActive(30);
+
                             var now = DateTime.UtcNow;
                             if ((now - _lastAudioLogTime).TotalSeconds >= 10)
                             {
@@ -917,22 +964,38 @@ namespace Kinectv1.Voice
                                 _audioFramesSuppressed = 0;
                                 _lastAudioLogTime = now;
                             }
-                            
-                            // Check suppression AFTER logging so we can see what's happening
+
                             if (ShouldSuppressAudio())
                             {
                                 _audioFramesSuppressed++;
                                 break;
                             }
-                            
+
                             try
                             {
-                                // Decode base64 to PCM bytes
                                 var pcmBytes = Convert.FromBase64String(audioData);
+
+                                // If client included preroll, keep it for better word onsets but avoid replaying too much
+                                // by trimming most of the preroll from the front (keep a small head).
+                                if (prerollMs > 0 && sampleRate > 0)
+                                {
+                                    // Keep 40ms of preroll head max (just enough for onset), drop the rest
+                                    var keepMs = Math.Min(40, prerollMs);
+                                    var dropMs = Math.Max(0, prerollMs - keepMs);
+                                    var dropBytes = (int)Math.Round(sampleRate * (dropMs / 1000.0) * 2.0);
+                                    if (dropBytes > 0 && dropBytes < pcmBytes.Length)
+                                    {
+                                        var trimmed = new byte[pcmBytes.Length - dropBytes];
+                                        Buffer.BlockCopy(pcmBytes, dropBytes, trimmed, 0, trimmed.Length);
+                                        pcmBytes = trimmed;
+                                    }
+                                }
+
                                 var pcm16 = new short[pcmBytes.Length / 2];
                                 Buffer.BlockCopy(pcmBytes, 0, pcm16, 0, pcmBytes.Length);
-                                
-                                // Create audio frame and fire event
+
+                                try { var _ = msg.cap; } catch { }
+
                                 var frame = new AudioFrame(
                                     Pcm16: pcm16,
                                     SampleRate: sampleRate,
@@ -940,8 +1003,7 @@ namespace Kinectv1.Voice
                                     TimestampTicks: DateTime.UtcNow.Ticks,
                                     SourceId: "webrtc-client"
                                 );
-                                
-                                // Fire to WebRTC transport's inbound audio handler
+
                                 OnWebAudioReceived?.Invoke(frame);
                             }
                             catch (Exception ex)
@@ -1469,7 +1531,7 @@ function connect() {
     };
     ws.onmessage = async e => {
         const msg = JSON.parse(e.data);
-        switch (msg.type) {
+        switch msg.type {
             case 'status':
                 if (msg.mode !== undefined) updateMode(msg.mode);
                 break;

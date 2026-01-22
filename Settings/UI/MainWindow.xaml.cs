@@ -1429,7 +1429,7 @@ namespace Kinectv1
                     var ch = frame.Channels;
 
                     byte[] pcm16k;
-                    
+
                     // Handle mono input at various sample rates
                     if (ch == 1)
                     {
@@ -1468,14 +1468,28 @@ namespace Kinectv1
 
                     if (pcm16k != null && pcm16k.Length > 0)
                     {
-                        totalSamplesProcessed += pcm16k.Length / 2;
-                        
+                        // IMPORTANT: Keep speaker embedding input unmodified.
+                        // The speaker embedder relies on consistent windowing/normalization; mutating
+                        // the same buffer in-place can break its rolling window behavior.
+                        var pcmForVosk = new byte[pcm16k.Length];
+                        Buffer.BlockCopy(pcm16k, 0, pcmForVosk, 0, pcm16k.Length);
+
+                        // Conservative preprocessing for ASR robustness (far mic / low volume)
+                        // Runs on 16kHz mono PCM16 in-place.
+                        AudioPreprocessor.ProcessPcm16MonoInPlace(
+                            pcmForVosk,
+                            pcmForVosk.Length,
+                            sampleRate: 16000,
+                            sourceId: frame.SourceId ?? "webrtc");
+
+                        totalSamplesProcessed += pcmForVosk.Length / 2;
+
                         // Compute RMS for diagnostics
-                        float rms = NormalizedAudioFrame.ComputeRms(pcm16k, pcm16k.Length);
+                        float rms = NormalizedAudioFrame.ComputeRms(pcmForVosk, pcmForVosk.Length);
                         if (rms > peakRms) peakRms = rms;
-                        
+
                         var normalizedFrame = Kinectv1.Voice.NormalizedAudioFrame.Create(
-                            pcm16k, pcm16k.Length,
+                            pcmForVosk, pcmForVosk.Length,
                             Kinectv1.Voice.AudioSourceType.WebRtc,
                             frame.SourceId);
                         VoiceRecognizer.ProcessAudio(normalizedFrame);

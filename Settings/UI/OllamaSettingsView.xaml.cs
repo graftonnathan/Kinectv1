@@ -38,9 +38,7 @@ namespace Kinectv1.UI.Settings
                 ApiKeyTextBox.Text = cfg.ApiKey;
                 OllamaModelComboBox.Text = cfg.Model;
                 OllamaMemoryEnabledCheckBox.IsChecked = cfg.MemoryEnabled;
-                MaxMsgsPerSpeakerTextBox.Text = cfg.MaxMessagesPerSpeaker.ToString();
-                MaxSystemMsgsTextBox.Text = cfg.MaxSystemMessages.ToString();
-                ConversationTimeoutTextBox.Text = cfg.ConversationTimeoutMinutes.ToString();
+                ConversationMaxTokensTextBox.Text = cfg.ConversationMaxTokens.ToString();
                 HistoryPathTextBox.Text = cfg.ConversationHistoryPath;
                 SystemPromptPathTextBox.Text = cfg.SystemPromptPath;
                 OllamaOutputThinkCheckBox.IsChecked = cfg.OutputThink;
@@ -220,9 +218,7 @@ namespace Kinectv1.UI.Settings
                     Enabled: OllamaEnabledCheckBox.IsChecked ?? cur.Ollama.Enabled,
                     Model: OllamaModelComboBox.Text ?? cur.Ollama.Model,
                     MemoryEnabled: OllamaMemoryEnabledCheckBox.IsChecked ?? cur.Ollama.MemoryEnabled,
-                    MaxMessagesPerSpeaker: int.TryParse(MaxMsgsPerSpeakerTextBox.Text, out var mps) ? mps : cur.Ollama.MaxMessagesPerSpeaker,
-                    MaxSystemMessages: int.TryParse(MaxSystemMsgsTextBox.Text, out var msm) ? msm : cur.Ollama.MaxSystemMessages,
-                    ConversationTimeoutMinutes: int.TryParse(ConversationTimeoutTextBox.Text, out var ctm) ? ctm : cur.Ollama.ConversationTimeoutMinutes,
+                    ConversationMaxTokens: int.TryParse(ConversationMaxTokensTextBox.Text, out var cmt) ? cmt : cur.Ollama.ConversationMaxTokens,
                     ConversationHistoryPath: string.IsNullOrWhiteSpace(HistoryPathTextBox.Text) ? cur.Ollama.ConversationHistoryPath : HistoryPathTextBox.Text,
                     SystemPromptPath: string.IsNullOrWhiteSpace(SystemPromptPathTextBox.Text) ? cur.Ollama.SystemPromptPath : SystemPromptPathTextBox.Text,
                     OutputThink: OllamaOutputThinkCheckBox.IsChecked ?? cur.Ollama.OutputThink,

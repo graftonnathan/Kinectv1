@@ -107,6 +107,12 @@ namespace Kinectv1
         private static readonly StringBuilder _accumulatedText = new StringBuilder();
         private static string _lastPartialText = string.Empty;
 
+        // External-source (WebRTC/Discord) VAD-lite for instant barge-in
+        private static double _extBargeInRmsThreshold = 650.0; // 0-10000 scale (higher = less sensitive)
+        private static int _extBargeInDebounceFrames = 4;      // consecutive loud frames required (~80ms)
+        private static int _extBargeInLoudFrames = 0;
+        private static DateTime _extBargeInIgnoreUntilUtc = DateTime.MinValue;
+
         #endregion
 
         static VoiceRecognizer()
@@ -233,22 +239,53 @@ namespace Kinectv1
                     if (asr.VadDebounceTimeoutMs >= 10) _vadDebounceMs = asr.VadDebounceTimeoutMs;
                     if (asr.VadSilenceTimeoutMs >= 100) _vadSilenceMs = asr.VadSilenceTimeoutMs;
                 }
-                
+
+                // WebRTC/Discord are treated as external sources (no VAD gating), but we still want
+                // to stop TTS quickly on *voice onset* (barge-in) without waiting for Vosk text.
+                // Derive a conservative threshold from the mic VAD threshold, but clamp so ambient noise won't trigger.
+                _extBargeInRmsThreshold = Math.Max(600.0, _vadRmsThreshold * 2.4);
+                _extBargeInDebounceFrames = 4;
+
+                if (_vadSilenceMs < 1200) _vadSilenceMs = 1200;
+
                 Console.WriteLine($"[VAD] threshold={_vadRmsThreshold:F0} (normalized={_vadRmsThreshold/10000.0:F2}), debounce={_vadDebounceMs}ms, silence={_vadSilenceMs}ms");
             }
             catch (Exception ex) { VRLog("ERROR", $"LoadVadParamsFromSettings: {ex.Message}"); }
         }
 
-        private static string ResolveModelPath(string path)
+        private static void MaybeBargeInOnExternalVoice(float rms)
         {
             try
             {
-                if (string.IsNullOrWhiteSpace(path)) return null;
-                var expanded = Environment.ExpandEnvironmentVariables(path);
-                if (!Path.IsPathRooted(expanded)) expanded = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, expanded);
-                return Path.GetFullPath(expanded);
+                var asr = App.SettingsProvider?.Current?.Asr;
+                if (asr?.BargeInEnabled != true) return;
+                if (DateTime.UtcNow < _extBargeInIgnoreUntilUtc) return;
+                if (!TtsPlaybackController.HasActiveUtterance()) { _extBargeInLoudFrames = 0; return; }
+
+                if (rms >= _extBargeInRmsThreshold)
+                {
+                    _extBargeInLoudFrames++;
+                }
+                else
+                {
+                    _extBargeInLoudFrames = 0;
+                }
+
+                if (_extBargeInLoudFrames < _extBargeInDebounceFrames) return;
+
+                var now = DateTime.UtcNow;
+                if ((now - _lastBargeInCancel).TotalMilliseconds < 800) return;
+
+                _extBargeInLoudFrames = 0;
+                _lastBargeInCancel = now;
+                _extBargeInIgnoreUntilUtc = now.AddMilliseconds(600);
+
+                VRLog("BARGE", $"Cancel on external voice onset rms={rms:F0} thr={_extBargeInRmsThreshold:F0}");
+                TtsPlaybackController.CancelCurrent();
+                try { DiscordNetBotManager.CancelCurrentTts(); } catch { }
+                try { Tts.TtsService.MarkExternalCancel(); } catch { }
             }
-            catch { return path; }
+            catch { }
         }
 
         private static void StartMicCapture()
@@ -410,9 +447,12 @@ namespace Kinectv1
             }
             catch { }
 
-            // External sources skip VAD, feed all audio to Vosk
+            // External sources skip VAD gating, but can still trigger immediate barge-in on voice onset
             if (frame.Source.IsExternal())
             {
+                if (frame.Source == AudioSourceType.WebRtc)
+                    MaybeBargeInOnExternalVoice(frame.Rms);
+
                 try { SpeakerEmbedder.AddPcm16(frame.Pcm16, frame.Length); } catch { }
                 FeedRecognizer(frame.Pcm16, frame.Length, frame.Source);
                 return;
@@ -695,6 +735,19 @@ namespace Kinectv1
                     VRLog("LOOP", "Audio processor end");
                 }
             }, ct);
+        }
+
+        private static string ResolveModelPath(string path)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(path)) return null;
+                var expanded = Environment.ExpandEnvironmentVariables(path);
+                if (!Path.IsPathRooted(expanded))
+                    expanded = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, expanded);
+                return Path.GetFullPath(expanded);
+            }
+            catch { return path; }
         }
 
         #endregion

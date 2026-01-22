@@ -7,7 +7,6 @@
              d:DesignHeight="400" d:DesignWidth="600"
              FontFamily="Segoe UI Emoji, Segoe UI Symbol, Segoe UI">
     <UserControl.Resources>
-        <!-- Dark theme brushes (local fallback) -->
         <SolidColorBrush x:Key="WindowBackground" Color="#FF1E1E1E"/>
         <SolidColorBrush x:Key="SurfaceBackground" Color="#FF2D2D30"/>
         <SolidColorBrush x:Key="SurfaceBackgroundLight" Color="#FF3F3F46"/>
@@ -17,7 +16,6 @@
         <SolidColorBrush x:Key="AccentBlue" Color="#FF0078D4"/>
         <SolidColorBrush x:Key="AccentGreen" Color="#FF107C10"/>
 
-        <!-- Buttons / Inputs -->
         <Style x:Key="ThemedButtonStyle" TargetType="Button">
             <Setter Property="Background" Value="{DynamicResource SurfaceBackground}"/>
             <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
@@ -36,7 +34,7 @@
             <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
         </Style>
 
-        <!-- FULL dark-themed ComboBox template (inline, self-contained) -->
+        <!-- Dark-themed ComboBox template so dropdown background/text colors match the rest of the UI -->
         <Style x:Key="ThemedComboBoxStyle" TargetType="ComboBox">
             <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
             <Setter Property="Background" Value="{DynamicResource SurfaceBackground}"/>
@@ -51,7 +49,6 @@
                     <ControlTemplate TargetType="ComboBox">
                         <Grid>
                             <ToggleButton Name="ToggleButton"
-                                          Grid.Column="2"
                                           Focusable="false"
                                           IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
                                           ClickMode="Press"
@@ -68,15 +65,19 @@
                                                       Content="{TemplateBinding SelectionBoxItem}"
                                                       ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
                                                       ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}"
-                                                      VerticalAlignment="Center" HorizontalAlignment="Left">
+                                                      VerticalAlignment="Center"
+                                                      HorizontalAlignment="Left">
                                         <ContentPresenter.Resources>
                                             <Style TargetType="TextBlock">
                                                 <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
                                             </Style>
                                         </ContentPresenter.Resources>
                                     </ContentPresenter>
-                                    <Path Grid.Column="1" HorizontalAlignment="Center" VerticalAlignment="Center"
-                                          Data="M 0 0 L 4 4 L 8 0 Z" Fill="{DynamicResource TextPrimary}"/>
+                                    <Path Grid.Column="1"
+                                          HorizontalAlignment="Center"
+                                          VerticalAlignment="Center"
+                                          Data="M 0 0 L 4 4 L 8 0 Z"
+                                          Fill="{DynamicResource TextPrimary}"/>
                                 </Grid>
                             </ToggleButton>
 
@@ -88,7 +89,9 @@
                                    PopupAnimation="Slide">
                                 <Grid Name="DropDown" SnapsToDevicePixels="True"
                                       MinWidth="{TemplateBinding ActualWidth}" MaxHeight="200">
-                                    <Border Name="DropDownBorder" CornerRadius="4" BorderThickness="1"
+                                    <Border Name="DropDownBorder"
+                                            CornerRadius="4"
+                                            BorderThickness="1"
                                             Background="{DynamicResource SurfaceBackground}"
                                             BorderBrush="{DynamicResource BorderBrush}"/>
                                     <ScrollViewer Margin="4,6,4,6" SnapsToDevicePixels="True">
@@ -143,7 +146,6 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <!-- Header (remove emoji to avoid '??') -->
         <TextBlock Foreground="{DynamicResource TextPrimary}" FontSize="16" FontWeight="SemiBold" Text="Ollama Settings"/>
 
         <StackPanel Grid.Row="1" Margin="0,10,0,0">
@@ -156,7 +158,6 @@
                 <CheckBox x:Name="OllamaEnabledCheckBox" Grid.Column="1" Style="{StaticResource ThemedCheckBoxStyle}"/>
             </Grid>
 
-            <!-- Provider selection row -->
             <Grid Margin="0,0,0,8">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="220"/>
@@ -169,7 +170,6 @@
                 </ComboBox>
             </Grid>
 
-            <!-- Provider Base URLs -->
             <Grid Margin="0,0,0,8">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="220"/>
@@ -178,6 +178,7 @@
                 <TextBlock Text="Ollama Base URL" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
                 <TextBox x:Name="BaseUrlTextBox" Grid.Column="1" Style="{StaticResource ThemedTextBoxStyle}"/>
             </Grid>
+
             <Grid Margin="0,0,0,8">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="220"/>
@@ -186,6 +187,7 @@
                 <TextBlock Text="LM Studio Base URL" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
                 <TextBox x:Name="LmStudioBaseUrlTextBox" Grid.Column="1" Style="{StaticResource ThemedTextBoxStyle}"/>
             </Grid>
+
             <Grid Margin="0,0,0,8">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="220"/>
@@ -195,14 +197,13 @@
                 <TextBox x:Name="ApiKeyTextBox" Grid.Column="1" Style="{StaticResource ThemedTextBoxStyle}"/>
             </Grid>
 
-            <!-- Model selection row: editable ComboBox + Refresh -->
             <Grid Margin="0,0,0,8">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="220"/>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
-                <TextBlock Text="Model (e.g., gemma3:4b)" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
+                <TextBlock Text="Model" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
                 <ComboBox x:Name="OllamaModelComboBox" Grid.Column="1" IsEditable="False" Style="{StaticResource ThemedComboBoxStyle}"/>
                 <Button x:Name="RefreshModelsButton" Grid.Column="2" Width="70" Margin="8,0,0,0"
                         Style="{StaticResource ThemedButtonStyle}" Click="RefreshModelsButton_Click" Content="Refresh"/>
@@ -222,26 +223,8 @@
                     <ColumnDefinition Width="220"/>
                     <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
-                <TextBlock Text="Max Messages Per Speaker (1-100)" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
-                <TextBox x:Name="MaxMsgsPerSpeakerTextBox" Grid.Column="1" Style="{StaticResource ThemedTextBoxStyle}"/>
-            </Grid>
-
-            <Grid Margin="0,0,0,8">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="220"/>
-                    <ColumnDefinition Width="*"/>
-                </Grid.ColumnDefinitions>
-                <TextBlock Text="Max System Messages (1-10)" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
-                <TextBox x:Name="MaxSystemMsgsTextBox" Grid.Column="1" Style="{StaticResource ThemedTextBoxStyle}"/>
-            </Grid>
-
-            <Grid Margin="0,0,0,8">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="220"/>
-                    <ColumnDefinition Width="*"/>
-                </Grid.ColumnDefinitions>
-                <TextBlock Text="Conversation Timeout (minutes, 1-1440)" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
-                <TextBox x:Name="ConversationTimeoutTextBox" Grid.Column="1" Style="{StaticResource ThemedTextBoxStyle}"/>
+                <TextBlock Text="Conversation Max Tokens" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
+                <TextBox x:Name="ConversationMaxTokensTextBox" Grid.Column="1" Style="{StaticResource ThemedTextBoxStyle}"/>
             </Grid>
 
             <Grid Margin="0,0,0,8">
@@ -252,8 +235,7 @@
                 </Grid.ColumnDefinitions>
                 <TextBlock Text="Conversation History Path" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
                 <TextBox x:Name="HistoryPathTextBox" Grid.Column="1" Style="{StaticResource ThemedTextBoxStyle}"/>
-                <Button Grid.Column="2" Margin="8,0,0,0" Style="{StaticResource ThemedButtonStyle}"
-                        Click="BrowseHistoryPathButton_Click" Content="Browse..."/>
+                <Button Grid.Column="2" Margin="8,0,0,0" Style="{StaticResource ThemedButtonStyle}" Click="BrowseHistoryPathButton_Click" Content="Browse..."/>
             </Grid>
 
             <Grid Margin="0,0,0,8">
@@ -264,10 +246,9 @@
                 </Grid.ColumnDefinitions>
                 <TextBlock Text="System Prompt Path" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
                 <TextBox x:Name="SystemPromptPathTextBox" Grid.Column="1" Style="{StaticResource ThemedTextBoxStyle}"/>
-                <Button Grid.Column="2" Content="Browse..." Margin="8,0,0,0" Style="{StaticResource ThemedButtonStyle}" Click="BrowseSystemPromptButton_Click"/>
+                <Button Grid.Column="2" Margin="8,0,0,0" Style="{StaticResource ThemedButtonStyle}" Click="BrowseSystemPromptButton_Click" Content="Browse..."/>
             </Grid>
 
-            <!-- AI Assistant: Output think policy -->
             <Grid Margin="0,0,0,8">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="220"/>
@@ -277,7 +258,6 @@
                 <CheckBox x:Name="OllamaOutputThinkCheckBox" Grid.Column="1" Style="{StaticResource ThemedCheckBoxStyle}"/>
             </Grid>
 
-            <!-- Conversation Speaker -->
             <Grid Margin="0,0,0,8">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="220"/>
@@ -289,6 +269,7 @@
                     <RadioButton x:Name="OllamaSpeakerForceRadio" Content="Force speaker ID" GroupName="ConversationSpeakerOverride"/>
                 </StackPanel>
             </Grid>
+
             <Grid Margin="0,0,0,8">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="220"/>

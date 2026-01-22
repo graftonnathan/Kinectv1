@@ -427,10 +427,8 @@ namespace Kinectv1.Settings
                 if (string.IsNullOrWhiteSpace(s.Ollama.Model))
                     throw new InvalidDataException("ollama.model required when ollama.enabled");
             }
-            if (s.Ollama.MaxMessagesPerSpeaker < 0 || s.Ollama.MaxSystemMessages < 0)
-                throw new InvalidDataException("ollama max message counts must be >= 0");
-            if (s.Ollama.ConversationTimeoutMinutes < 0)
-                throw new InvalidDataException("ollama.conversationTimeoutMinutes must be >= 0");
+            if (s.Ollama.ConversationMaxTokens < 0)
+                throw new InvalidDataException("ollama.conversationMaxTokens must be >= 0");
 
             if (s.Discord == null)
                 throw new InvalidDataException("discord section missing");

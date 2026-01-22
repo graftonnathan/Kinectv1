@@ -21,7 +21,22 @@ var audioUnlocked = false;
 var ttsSpeaking = false;
 var ttsEndTime = 0;
 var ttsLastAudioAt = 0;
-var TTS_MIC_SUPPRESS_MS = 400;
+// Increased suppression to reduce self-hearing on speakerphone / iOS.
+// Keep this small so barge-in remains responsive.
+var TTS_MIC_SUPPRESS_MS = 200;
+
+// During TTS playback, do NOT fully suppress mic (would break barge-in).
+var BARGE_IN_TTS_LEAK_GATE_ENABLED = false;
+
+// Adaptive gate: track ambient RMS when TTS is not playing, then gate only frames far above that.
+// (Disabled when BARGE_IN_TTS_LEAK_GATE_ENABLED is false.)
+var TTS_LEAK_RMS_GATE = 0.22; // absolute fallback
+var _ambientRms = 0.02;
+var _ambientRmsLastAt = 0;
+var AMBIENT_RMS_UPDATE_MS = 120;
+var AMBIENT_RMS_ALPHA = 0.08;
+var TTS_LEAK_MULTIPLIER = 3.5;
+var TTS_LEAK_GATE_MAX = 0.32;
 
 // Barge-in support
 var bargeInEnabled = true; // updated from server status
@@ -40,6 +55,16 @@ var isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
 var needsIOSWorkaround = isIOS || (isSafari && navigator.maxTouchPoints > 0);
 
 var chat, empty, input, level, dot, statusText, micBtn, thumb, sendBtn;
+
+function estimateRmsFloat(buf) {
+    if (!buf || buf.length <= 0) return 0;
+    var sum = 0;
+    for (var i = 0; i < buf.length; i++) {
+        var v = buf[i];
+        sum += v * v;
+    }
+    return Math.sqrt(sum / buf.length);
+}
 
 function shouldSuppressMic() {
     if (!bargeInEnabled) return false;
@@ -295,6 +320,10 @@ function flushTtsBufferToAudioEl(force) {
     ttsPlayInProgress = true;
     ttsStartedThisUtterance = true;
 
+    // Treat as "speaking" during playback so mic capture can suppress reliably.
+    ttsSpeaking = true;
+    ttsLastAudioAt = Date.now();
+
     // Clear buffer now so any new chunks become the next segment.
     resetTtsBuffer();
 
@@ -307,13 +336,19 @@ function flushTtsBufferToAudioEl(force) {
     ttsAudioEl.onended = function () {
         ttsPlayInProgress = false;
         ttsEndTime = Date.now();
+        ttsLastAudioAt = ttsEndTime;
 
         // If we accumulated enough for another segment while playing, start it.
         flushTtsBufferToAudioEl(false);
 
         // If nothing buffered and we've been idle, mark not speaking.
         if (ttsPcmTotalBytes === 0 && (Date.now() - ttsLastChunkAt) > TTS_FINALIZE_GAP_MS) {
-            ttsSpeaking = false;
+            // Delay clearing speaking a bit to hide iOS tail blips / decoding artifacts.
+            setTimeout(function () {
+                if (ttsPcmTotalBytes === 0 && !ttsPlayInProgress) {
+                    ttsSpeaking = false;
+                }
+            }, Math.max(0, TTS_MIC_SUPPRESS_MS - 200));
         }
     };
 }
@@ -435,10 +470,53 @@ function resampleTo16k(inputData, inputSampleRate) {
     return result;
 }
 
+// --- WebRTC mic pre-roll to avoid clipped word starts ---
+var PREROLL_MS = 250;
+var prerollPcmBytes = [];
+var prerollTotalBytes = 0;
+
+// Disable client-side preroll merging by default for iPhone speakerphone.
+// The server already does its own frame handling; merging here can duplicate audio and
+// degrade STT (echo-like smearing) on iOS.
+var PREROLL_ENABLED = false;
+
+function resetPreroll() {
+    prerollPcmBytes = [];
+    prerollTotalBytes = 0;
+}
+
+function pushPreroll(pcmBytes, maxBytes) {
+    if (!PREROLL_ENABLED) return;
+    if (!pcmBytes || pcmBytes.length <= 0) return;
+    prerollPcmBytes.push(pcmBytes);
+    prerollTotalBytes += pcmBytes.length;
+    while (prerollTotalBytes > maxBytes && prerollPcmBytes.length) {
+        var first = prerollPcmBytes.shift();
+        prerollTotalBytes -= first.length;
+    }
+}
+
+function concatPrerollWithCurrent(currentBytes) {
+    if (!PREROLL_ENABLED) return currentBytes;
+    if (!currentBytes || currentBytes.length <= 0) return currentBytes;
+    if (!prerollPcmBytes.length) return currentBytes;
+
+    var out = new Uint8Array(prerollTotalBytes + currentBytes.length);
+    var off = 0;
+    for (var i = 0; i < prerollPcmBytes.length; i++) {
+        out.set(prerollPcmBytes[i], off);
+        off += prerollPcmBytes[i].length;
+    }
+    out.set(currentBytes, off);
+    return out;
+}
+
 function startCapture() {
     if (!stream) return;
     var AC = window.AudioContext || window.webkitAudioContext;
     try { audioCtx = new AC(); } catch (e) { addMsg('AudioContext error: ' + e.message, 'ai'); return; }
+
+    resetPreroll();
 
     var actualSampleRate = audioCtx.sampleRate;
     captureSource = audioCtx.createMediaStreamSource(stream);
@@ -447,7 +525,8 @@ function startCapture() {
     captureGain = audioCtx.createGain();
     captureGain.gain.value = 0;
 
-    var bufferSize = 4096;
+    // Lower buffer size reduces latency (helps word onsets)
+    var bufferSize = 2048;
     captureProcessor = audioCtx.createScriptProcessor(bufferSize, 1, 1);
 
     captureProcessor.onaudioprocess = function (e) {
@@ -456,20 +535,53 @@ function startCapture() {
         if (shouldSuppressMic()) return;
 
         var inputData = e.inputBuffer.getChannelData(0);
-        var resampled = resampleTo16k(inputData, actualSampleRate);
 
-        var pcm = new Int16Array(resampled.length);
-        for (var i = 0; i < resampled.length; i++) {
-            var s = Math.max(-1, Math.min(1, resampled[i]));
+        // Update ambient RMS estimate (best-effort, used only if gating is enabled).
+        var nowMs = Date.now();
+        if (!_ambientRmsLastAt || (nowMs - _ambientRmsLastAt) >= AMBIENT_RMS_UPDATE_MS) {
+            var a = estimateRmsFloat(inputData);
+            _ambientRms = (1.0 - AMBIENT_RMS_ALPHA) * _ambientRms + AMBIENT_RMS_ALPHA * a;
+            _ambientRmsLastAt = nowMs;
+        }
+
+        // Optional: TTS leakage gate (disabled by default because it can interfere with barge-in).
+        if (BARGE_IN_TTS_LEAK_GATE_ENABLED && ttsSpeaking) {
+            var rms = estimateRmsFloat(inputData);
+            var thr = Math.min(TTS_LEAK_GATE_MAX, Math.Max(TTS_LEAK_RMS_GATE, _ambientRms * TTS_LEAK_MULTIPLIER));
+            if (rms >= thr) return;
+        }
+
+        // Convert to PCM16 at capture/device rate.
+        // Let the server do resampling + ASR-friendly preprocessing.
+        var pcm = new Int16Array(inputData.length);
+        for (var i = 0; i < inputData.length; i++) {
+            var s = Math.max(-1, Math.min(1, inputData[i]));
             pcm[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
         }
 
         var bytes = new Uint8Array(pcm.buffer);
+
+        // Keep ~PREROLL_MS of prior audio to avoid clipped word starts.
+        var prerollMaxBytes = Math.floor((actualSampleRate * (PREROLL_MS / 1000)) * 2);
+        var combined = concatPrerollWithCurrent(bytes);
+        pushPreroll(bytes.slice ? bytes.slice(0) : new Uint8Array(bytes), prerollMaxBytes);
+
+        // Base64 encode (combined)
         var bin = '';
-        for (var j = 0; j < bytes.length; j++) bin += String.fromCharCode(bytes[j]);
+        for (var j = 0; j < combined.length; j++) bin += String.fromCharCode(combined[j]);
 
         try {
-            ws.send(JSON.stringify({ type: 'audio', data: btoa(bin), sampleRate: 16000 }));
+            ws.send(JSON.stringify({
+                type: 'audio',
+                data: btoa(bin),
+                sampleRate: actualSampleRate,
+                cap: {
+                    echoCancellation: CAPTURE_ECHO_CANCELLATION,
+                    noiseSuppression: CAPTURE_NOISE_SUPPRESSION,
+                    autoGainControl: CAPTURE_AUTO_GAIN
+                },
+                prerollMs: PREROLL_MS
+            }));
         } catch (err) {
             console.error('[Audio] Send error:', err);
         }
@@ -504,12 +616,37 @@ function startLevel() {
     tick();
 }
 
+var statusPollTimer = null;
+
+function startStatusPoll() {
+    if (statusPollTimer) return;
+    statusPollTimer = setInterval(function () {
+        fetch('/api/status', { cache: 'no-store' })
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (j) {
+                if (!j) return;
+                if (j.mode !== undefined) updateMode(j.mode);
+                if (j.bargeInEnabled !== undefined) bargeInEnabled = j.bargeInEnabled;
+            })
+            .catch(function () { });
+    }, 1000);
+}
+
+function stopStatusPoll() {
+    if (!statusPollTimer) return;
+    clearInterval(statusPollTimer);
+    statusPollTimer = null;
+}
+
 function connect() {
     var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    ws = new WebSocket(proto + '//' + location.host + '/');
+    ws = new WebSocket(proto + '//' + location.host + '/ws?ts=' + Date.now());
+
+    startStatusPoll();
 
     ws.onopen = function () {
         setStatus('Connected', 'on');
+        stopStatusPoll();
 
         // If we have pending TTS chunks from before unlock, try to play them once connected.
         if (pendingTtsChunks.length && audioUnlocked) {
@@ -550,11 +687,15 @@ function connect() {
 
     ws.onclose = function () {
         setStatus('Disconnected', '');
+        // keep status polling so app->web mode still updates
+        startStatusPoll();
         setTimeout(connect, 2000);
     };
 
     ws.onerror = function () {
         setStatus('Error', '');
+        // keep status polling so app->web mode still updates
+        startStatusPoll();
     };
 }
 
@@ -587,17 +728,41 @@ function onMicClick() {
 function startVoice() {
     cleanupCapture();
 
+    if (!ws || ws.readyState !== 1) {
+        addMsg('⚠️ Not connected. Please wait for Connected status, then try mic again.', 'ai');
+        return;
+    }
+
     addMsg('Requesting microphone access...', 'ai');
 
+    var done = false;
     var timeoutId = setTimeout(function () {
-        addMsg('⏱️ Mic request timed out. Try: Settings > Safari > Camera & Microphone > Allow', 'ai');
+        if (done) return;
+        // iOS Safari can hang when advanced constraints are present; retry with plain audio.
+        try {
+            navigator.mediaDevices.getUserMedia({ audio: true, video: false }).then(function (s2) {
+                if (done) { try { s2.getTracks().forEach(function (t) { t.stop(); }); } catch (e) { } return; }
+                done = true;
+                stream = s2;
+                voiceOn = true;
+                if (micBtn) micBtn.classList.add('on');
+                addMsg('✅ Microphone active - speak now!', 'ai');
+                startCapture();
+                startLevel();
+                startKeepalive();
+            }).catch(function () {
+                addMsg('⏱️ Mic request timed out. Try: Settings > Safari > Camera & Microphone > Allow', 'ai');
+            });
+        } catch (e) {
+            addMsg('⏱️ Mic request timed out. Try: Settings > Safari > Camera & Microphone > Allow', 'ai');
+        }
     }, 5000);
 
     var constraints = {
         audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true
+            echoCancellation: CAPTURE_ECHO_CANCELLATION,
+            noiseSuppression: CAPTURE_NOISE_SUPPRESSION,
+            autoGainControl: CAPTURE_AUTO_GAIN
         },
         video: false
     };
@@ -612,6 +777,8 @@ function startVoice() {
     }
 
     promise.then(function (s) {
+        if (done) { try { s.getTracks().forEach(function (t) { t.stop(); }); } catch (e) { } return; }
+        done = true;
         clearTimeout(timeoutId);
         stream = s;
         voiceOn = true;
@@ -621,6 +788,7 @@ function startVoice() {
         startLevel();
         startKeepalive();
     }).catch(function (e) {
+        done = true;
         clearTimeout(timeoutId);
         var msg = e.message || e.name || 'Unknown error';
 
@@ -661,6 +829,20 @@ function startKeepalive() {
         }
     }, 5000);
 }
+
+// Capture constraint defaults (avoid undefined globals)
+var CAPTURE_ECHO_CANCELLATION = true;
+var CAPTURE_NOISE_SUPPRESSION = true;
+var CAPTURE_AUTO_GAIN = true;
+
+// Allow querystring override: ?raw=1 disables the processing constraints
+try {
+    if (location && location.search && location.search.indexOf('raw=1') >= 0) {
+        CAPTURE_ECHO_CANCELLATION = false;
+        CAPTURE_NOISE_SUPPRESSION = false;
+        CAPTURE_AUTO_GAIN = false;
+    }
+} catch (e) { }
 
 function init() {
     chat = document.getElementById('chat');
