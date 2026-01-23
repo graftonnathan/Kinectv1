@@ -1170,6 +1170,11 @@ namespace Kinectv1.Tts
                 i++; scanned++;
             }
             if (i <= 0 || i >= audio.Length) return audio;
+            
+            // Leave a small amount of leading silence to avoid hard attack
+            int leadPad = Math.Min(i, (int)(SampleRate * 0.015)); // 15ms pad
+            i = Math.Max(0, i - leadPad);
+            
             int keep = audio.Length - i;
             var trimmed = new float[keep];
             Array.Copy(audio, i, trimmed, 0, keep);
@@ -1178,7 +1183,9 @@ namespace Kinectv1.Tts
         private static float[] TrimTrailing(float[] audio, float thr, int leaveMs, int maxMs)
         {
             if (audio == null || audio.Length == 0 || thr <= 0 || maxMs <= 0) return audio;
-            int leave = (int)Math.Round(SampleRate * (leaveMs / 1000.0));
+            
+            // Increase minimum leave amount to avoid cutting off word endings
+            int leave = (int)Math.Round(SampleRate * (Math.Max(leaveMs, 80) / 1000.0)); // At least 80ms
             int maxTrim = (int)Math.Round(SampleRate * (maxMs / 1000.0));
             int i = audio.Length - 1; int trimmed = 0; int lastKeep = audio.Length - 1;
             while (i >= 0 && trimmed < maxTrim)

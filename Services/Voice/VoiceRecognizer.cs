@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Threading;
@@ -9,6 +10,7 @@ using Vosk;
 using Kinectv1.Discord;
 using Kinectv1.Settings;
 using Kinectv1.Voice;
+using Kinectv1.Services.Debug;
 
 namespace Kinectv1
 {
@@ -21,40 +23,56 @@ namespace Kinectv1
         #region Diagnostics
 
         private static bool _diagEnabled = false;
+        private static bool _rmsLoggingEnabled = false;
+        private static DateTime _lastRmsLog = DateTime.MinValue;
+        private static float _peakRmsForLog = 0f;
+        private static int _framesSinceRmsLog = 0;
+        
         public static void EnableDiagnostics(bool on) => _diagEnabled = on;
+        
+        public static void EnableRmsLogging(bool on)
+        {
+            _rmsLoggingEnabled = on;
+            if (on)
+            {
+                Console.WriteLine($"[VAD] RMS logging enabled. Current threshold={_vadRmsThreshold:F0}, low={_vadRmsThresholdLow:F0}");
+            }
+        }
         
         private static void VRLog(string tag, string msg)
         {
             if (!_diagEnabled) return;
             try { Console.WriteLine($"[VR][{tag}] {msg}"); } catch { }
         }
+        
+        private static void LogRmsIfEnabled(float rms, AudioSourceType source)
+        {
+            if (!_rmsLoggingEnabled) return;
+            
+            _framesSinceRmsLog++;
+            if (rms > _peakRmsForLog) _peakRmsForLog = rms;
+            
+            var now = DateTime.UtcNow;
+            if ((now - _lastRmsLog).TotalSeconds >= 1.0)
+            {
+                var vadStatus = _speechActive ? "ACTIVE" : "silent";
+                Console.WriteLine($"[RMS] source={source} peak={_peakRmsForLog:F0} frames={_framesSinceRmsLog} vad={vadStatus} thr={_vadRmsThreshold:F0}");
+                _peakRmsForLog = 0f;
+                _framesSinceRmsLog = 0;
+                _lastRmsLog = now;
+            }
+        }
 
         #endregion
 
         #region Events
 
-        /// <summary>Final transcription result.</summary>
         public static event Action<string> OnTranscription;
-        
-        /// <summary>Partial transcription (in-progress).</summary>
         public static event Action<string> OnPartialTranscription;
-        
-        /// <summary>RMS level from local microphone (0-10000 scale).</summary>
         public static event Action<float> OnRmsLevel;
-        
-        /// <summary>
-        /// RMS level from Discord audio (0-10000 scale).
-        /// NOTE: Public Action (not event) for backward compatibility with DiscordNetBotManager.
-        /// </summary>
         public static Action<float> OnDiscordRmsLevel;
-        
-        /// <summary>RMS level from WebRTC audio (0-10000 scale).</summary>
         public static event Action<float> OnWebRtcRmsLevel;
-        
-        /// <summary>Speaker resolved for Ollama dispatch.</summary>
         public static event Action<string, float, string> OnSpeakerResolvedForOllama;
-        
-        /// <summary>Voice embedding computed.</summary>
         public static event Action<float[]> OnVoiceEmbedding;
 
         #endregion
@@ -68,30 +86,28 @@ namespace Kinectv1
         private static bool _discordEnabled;
         private static bool _webRtcEnabled;
 
-        // Vosk state
         private static Model _sttModel;
         private static VoskRecognizer _recognizer;
+        private static readonly object _voskLock = new object(); // Lock for all Vosk operations
         private static string _modelPath;
         private const int SampleRate = 16000;
 
-        // Unified audio queue
         private static readonly ConcurrentQueue<NormalizedAudioFrame> _audioQueue = new();
         private static CancellationTokenSource _procCts;
         private static Task _procTask;
         private static volatile bool _processing;
 
-        // VAD parameters
         private static int _vadDebounceMs = 30;
         private static int _vadSilenceMs = 800;
         private static bool _speechActive;
         private static double _vadRmsThreshold = 200.0;
+        private static bool _vadBypass = false;
 
-        // Frame-based VAD tracking
         private static int _consecutiveSilentFrames = 0;
         private static int _consecutiveLoudFrames = 0;
         private const int FRAME_DURATION_MS = 20;
+        private static double _vadRmsThresholdLow = 150.0;
 
-        // Pre-roll buffer
         private const int FRAME_MS = 20;
         private const int PREROLL_MS = 600;
         private const int PREROLL_FRAMES = PREROLL_MS / FRAME_MS;
@@ -100,302 +116,239 @@ namespace Kinectv1
         private static int _preRollCount = 0;
         private static int _preRollIndex = 0;
 
-        // Barge-in debounce
         private static DateTime _lastBargeInCancel = DateTime.MinValue;
-
-        // Accumulated transcription
         private static readonly StringBuilder _accumulatedText = new StringBuilder();
         private static string _lastPartialText = string.Empty;
 
-        // External-source (WebRTC/Discord) VAD-lite for instant barge-in
-        private static double _extBargeInRmsThreshold = 650.0; // 0-10000 scale (higher = less sensitive)
-        private static int _extBargeInDebounceFrames = 4;      // consecutive loud frames required (~80ms)
+        private static double _extBargeInRmsThreshold = 650.0;
+        private static int _extBargeInDebounceFrames = 4;
         private static int _extBargeInLoudFrames = 0;
         private static DateTime _extBargeInIgnoreUntilUtc = DateTime.MinValue;
 
-        #endregion
+        // WebRTC accumulated text and silence-based flush
+        private static readonly object _webRtcLock = new object();
+        private static readonly StringBuilder _webRtcAccumulatedText = new StringBuilder();
+        private static DateTime _webRtcLastVoskResultTime = DateTime.MinValue;
+        private static int _webRtcSilenceFlushMs = 1200;
+        private static bool _webRtcHasPendingText = false;
+        private static string _webRtcLastPartialText = string.Empty; // Track last partial to detect actual changes
 
-        static VoiceRecognizer()
-        {
-            SpeakerEmbedder.OnEmbedding += e => { try { OnVoiceEmbedding?.Invoke(e); } catch { } };
-        }
+        // Track the last audio source for speaker boundary detection
+        private static volatile AudioSourceType _lastFrameSource = AudioSourceType.LocalMic;
+        public static AudioSourceType LastFrameSource => _lastFrameSource;
 
-        #region Public API
-
-        /// <summary>
-        /// Start the voice recognizer with the specified Vosk model path.
-        /// </summary>
-        public static void Start(string modelPath)
-        {
-            var fromSettings = App.SettingsProvider?.Current?.Stt?.ModelPath;
-            var path = string.IsNullOrWhiteSpace(modelPath) ? fromSettings : modelPath;
-            LoadVadParamsFromSettings();
-            TryInitializeVosk(path);
-            SetWebRtcInputEnabled(false);
-            EnsureAudioProcessor();
-            if (_micEnabled) StartMicCapture();
-            _ready = true;
-            VRLog("START", $"Ready mic={_micEnabled} discord={_discordEnabled} webrtc={_webRtcEnabled}");
-        }
-
-        /// <summary>Reload VAD and model settings.</summary>
-        public static void ReloadFromSettings()
-        {
-            LoadVadParamsFromSettings();
-            TryInitializeVosk(App.SettingsProvider?.Current?.Stt?.ModelPath);
-        }
-
-        /// <summary>Enable or disable local microphone input.</summary>
-        public static void SetMicrophoneInputEnabled(bool enabled)
-        {
-            _micEnabled = enabled;
-            Console.WriteLine(enabled ? "[Mic] Enabled" : "[Mic] Disabled");
-            lock (_lock)
-            {
-                if (enabled) { if (_waveIn == null) StartMicCapture(); }
-                else StopMicCapture();
-            }
-        }
-
-        /// <summary>Enable or disable Discord audio input.</summary>
-        public static void SetDiscordInputEnabled(bool enabled) => _discordEnabled = enabled;
-
-        /// <summary>Enable or disable WebRTC audio input.</summary>
-        public static void SetWebRtcInputEnabled(bool enabled)
-        {
-            _webRtcEnabled = enabled;
-            VRLog("WEBRTC", enabled ? "Enabled" : "Disabled");
-        }
-
-        public static bool IsReady() => _ready;
-        public static bool IsMicrophoneInputEnabled() => _micEnabled;
-        public static bool IsDiscordInputEnabled() => _discordEnabled;
-        public static bool IsWebRtcInputEnabled() => _webRtcEnabled;
-
-        /// <summary>
-        /// Process audio using the normalized frame format.
-        /// This is the preferred entry point for all audio sources.
-        /// </summary>
-        public static void ProcessAudio(NormalizedAudioFrame frame)
-        {
-            if (frame.Length <= 0) return;
-            _audioQueue.Enqueue(frame);
-            EnsureAudioProcessor();
-        }
-
-        /// <summary>Get audio queue statistics.</summary>
-        public static (int queueSize, bool isProcessing) GetExternalAudioStats() => (_audioQueue.Count, _processing);
+        // WebRTC pre-roll, tail delay, and feed buffering for better transcription quality
+        private const int WebRtcPreRollMs = 250;
+        private const int WebRtcTailDelayMs = 180;   // helps trailing consonants
+        private const int WebRtcFeedBlockMs = 200;   // buffer frames into larger blocks for Vosk
+        private static readonly object _webRtcPcmLock = new();
+        private static readonly List<byte> _webRtcPreRollPcm = new();
+        private static readonly List<byte> _webRtcFeedBuffer = new();
+        private static int _webrtcBoundaryArmed = 0;
 
         #endregion
 
-        #region Private Implementation
+        private static bool _speakerEmbedderHooked = false;
 
-        private static void TryInitializeVosk(string configuredPath)
+        private static void EnsureSpeakerEmbedderHooked()
+        {
+            if (_speakerEmbedderHooked) return;
+            _speakerEmbedderHooked = true;
+            SpeakerEmbedder.OnEmbedding += OnSpeakerEmbeddingReceived;
+        }
+
+        private static void OnSpeakerEmbeddingReceived(float[] embedding)
+        {
+            if (embedding == null || embedding.Length == 0) return;
+
+            // Forward embedding to UI/enrollment
+            try { OnVoiceEmbedding?.Invoke(embedding); } catch { }
+        }
+
+        private static void FlushWebRtcAccumulatedText(string reason)
         {
             try
             {
-                var resolved = ResolveModelPath(configuredPath);
-                if (string.IsNullOrWhiteSpace(resolved) || !Directory.Exists(resolved))
+                // First, capture and clear the accumulated state to prevent race conditions
+                string accumulatedText;
+                string lastPartial;
+                lock (_webRtcLock)
                 {
-                    Console.WriteLine($"[VoiceRecognizer] Vosk model not found: '{resolved}'");
-                    return;
+                    accumulatedText = _webRtcAccumulatedText.ToString().Trim();
+                    lastPartial = _webRtcLastPartialText?.Trim() ?? string.Empty;
+                    
+                    // Clear state immediately to prevent double emission
+                    _webRtcAccumulatedText.Clear();
+                    _webRtcHasPendingText = false;
+                    _webRtcLastPartialText = string.Empty;
                 }
-                if (_sttModel != null && string.Equals(_modelPath, resolved, StringComparison.OrdinalIgnoreCase)) return;
+                
+                // Get final result from Vosk with proper locking
+                string finalText = null;
+                lock (_voskLock)
+                {
+                    var rec = _recognizer;
+                    if (rec == null) return;
+                    
+                    var json = rec.FinalResult();
+                    finalText = ExtractText(json);
+                }
 
-                try { _recognizer?.Dispose(); } catch { }
-                try { _sttModel?.Dispose(); } catch { }
-                _recognizer = null; _sttModel = null;
-
-                Vosk.Vosk.SetLogLevel(0);
-                _sttModel = new Model(resolved);
-                _recognizer = new VoskRecognizer(_sttModel, SampleRate);
-                _recognizer.SetMaxAlternatives(0);
-                _recognizer.SetWords(false);
-                _modelPath = resolved;
-                Console.WriteLine($"[VoiceRecognizer] Vosk model loaded: {resolved}");
+                // Determine the best text to emit:
+                // 1. Prefer Vosk's FinalResult if it has content
+                // 2. Fall back to accumulated text if FinalResult is empty
+                // 3. Fall back to last partial as last resort
+                string textToEmit = null;
+                
+                if (!string.IsNullOrWhiteSpace(finalText))
+                {
+                    textToEmit = finalText.Trim();
+                }
+                else if (!string.IsNullOrWhiteSpace(accumulatedText))
+                {
+                    textToEmit = accumulatedText;
+                }
+                else if (!string.IsNullOrWhiteSpace(lastPartial))
+                {
+                    textToEmit = lastPartial;
+                }
+                
+                // Emit if we have meaningful text
+                if (!string.IsNullOrWhiteSpace(textToEmit) && !textToEmit.Equals("the", StringComparison.OrdinalIgnoreCase))
+                {
+                    VRLog("WEBRTC", $"Emitting transcription ({reason}): '{(textToEmit.Length > 50 ? textToEmit.Substring(0, 50) + "..." : textToEmit)}'");
+                    try { OnTranscription?.Invoke(textToEmit); } catch { }
+                }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[VoiceRecognizer] Failed to load Vosk model: {ex.Message}");
-                try { _recognizer?.Dispose(); } catch { }
-                try { _sttModel?.Dispose(); } catch { }
-                _recognizer = null; _sttModel = null; _modelPath = null;
+                VRLog("ERROR", $"FlushWebRtcAccumulatedText: {ex.Message}");
             }
         }
 
-        private static void LoadVadParamsFromSettings()
+        private static void MaybeFlushWebRtcOnSilence()
         {
-            try
+            if (!_webRtcEnabled) return;
+            if (_webRtcSilenceFlushMs <= 0) return; // 0 = disabled, emit immediately on each result
+            
+            // Check if we have pending text and enough time has passed since last speech
+            bool shouldConsiderFlush;
+            lock (_webRtcLock)
             {
-                var snap = App.SettingsProvider?.Current;
-                if (snap == null) return;
+                // Flush if we have either:
+                //  1) accumulated finalized text OR
+                //  2) meaningful partial activity (common in WebRTC streams)
+                shouldConsiderFlush =
+                    (_webRtcAccumulatedText.Length > 0) ||
+                    (!string.IsNullOrWhiteSpace(_webRtcLastPartialText)) ||
+                    (_webRtcHasPendingText);
 
-                var vt = snap.Audio?.VoiceThreshold;
-                if (vt.HasValue) _vadRmsThreshold = Math.Max(0, Math.Min(1.0, vt.Value)) * 10000.0;
+                if (!shouldConsiderFlush) return;
+                if (_webRtcLastVoskResultTime == DateTime.MinValue) return;
+            }
 
-                var asr = snap.Asr;
-                if (asr != null)
+            var now = DateTime.UtcNow;
+            var timeSinceLastResult = (now - _webRtcLastVoskResultTime).TotalMilliseconds;
+
+            if (timeSinceLastResult >= _webRtcSilenceFlushMs)
+            {
+                lock (_webRtcLock)
                 {
-                    if (asr.VadDebounceTimeoutMs >= 10) _vadDebounceMs = asr.VadDebounceTimeoutMs;
-                    if (asr.VadSilenceTimeoutMs >= 100) _vadSilenceMs = asr.VadSilenceTimeoutMs;
-                }
-
-                // WebRTC/Discord are treated as external sources (no VAD gating), but we still want
-                // to stop TTS quickly on *voice onset* (barge-in) without waiting for Vosk text.
-                // Derive a conservative threshold from the mic VAD threshold, but clamp so ambient noise won't trigger.
-                _extBargeInRmsThreshold = Math.Max(600.0, _vadRmsThreshold * 2.4);
-                _extBargeInDebounceFrames = 4;
-
-                if (_vadSilenceMs < 1200) _vadSilenceMs = 1200;
-
-                Console.WriteLine($"[VAD] threshold={_vadRmsThreshold:F0} (normalized={_vadRmsThreshold/10000.0:F2}), debounce={_vadDebounceMs}ms, silence={_vadSilenceMs}ms");
-            }
-            catch (Exception ex) { VRLog("ERROR", $"LoadVadParamsFromSettings: {ex.Message}"); }
-        }
-
-        private static void MaybeBargeInOnExternalVoice(float rms)
-        {
-            try
-            {
-                var asr = App.SettingsProvider?.Current?.Asr;
-                if (asr?.BargeInEnabled != true) return;
-                if (DateTime.UtcNow < _extBargeInIgnoreUntilUtc) return;
-                if (!TtsPlaybackController.HasActiveUtterance()) { _extBargeInLoudFrames = 0; return; }
-
-                if (rms >= _extBargeInRmsThreshold)
-                {
-                    _extBargeInLoudFrames++;
-                }
-                else
-                {
-                    _extBargeInLoudFrames = 0;
-                }
-
-                if (_extBargeInLoudFrames < _extBargeInDebounceFrames) return;
-
-                var now = DateTime.UtcNow;
-                if ((now - _lastBargeInCancel).TotalMilliseconds < 800) return;
-
-                _extBargeInLoudFrames = 0;
-                _lastBargeInCancel = now;
-                _extBargeInIgnoreUntilUtc = now.AddMilliseconds(600);
-
-                VRLog("BARGE", $"Cancel on external voice onset rms={rms:F0} thr={_extBargeInRmsThreshold:F0}");
-                TtsPlaybackController.CancelCurrent();
-                try { DiscordNetBotManager.CancelCurrentTts(); } catch { }
-                try { Tts.TtsService.MarkExternalCancel(); } catch { }
-            }
-            catch { }
-        }
-
-        private static void StartMicCapture()
-        {
-            try
-            {
-                var inputDevice = AudioDeviceManager.GetConfiguredInputDevice();
-                _waveIn = new WaveInEvent
-                {
-                    DeviceNumber = inputDevice?.DeviceNumber ?? 0,
-                    WaveFormat = new WaveFormat(SampleRate, 16, 1),
-                    BufferMilliseconds = FRAME_MS,
-                    NumberOfBuffers = 3
-                };
-                _waveIn.DataAvailable += OnWaveInData;
-                _waveIn.StartRecording();
-                Console.WriteLine($"[Mic] Started capture: {SampleRate}Hz, {FRAME_MS}ms frames");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[VoiceRecognizer] Mic capture start failed: {ex.Message}");
-                StopMicCapture();
-            }
-        }
-
-        private static void StopMicCapture()
-        {
-            try
-            {
-                if (_waveIn != null)
-                {
-                    _waveIn.DataAvailable -= OnWaveInData;
-                    try { _waveIn.StopRecording(); } catch { }
-                    try { _waveIn.Dispose(); } catch { }
-                    _waveIn = null;
-                }
-            }
-            catch { }
-        }
-
-        private static void OnWaveInData(object sender, WaveInEventArgs e)
-        {
-            var frame = NormalizedAudioFrame.Create(e.Buffer, e.BytesRecorded, AudioSourceType.LocalMic);
-            ProcessAudioInternal(frame);
-        }
-
-        private static void UpdateVadFromRms(float rms, int frameDurationMs)
-        {
-            int silenceFramesNeeded = _vadSilenceMs / Math.Max(1, frameDurationMs);
-            int debounceFramesNeeded = Math.Max(1, _vadDebounceMs / Math.Max(1, frameDurationMs));
-
-            if (rms >= _vadRmsThreshold)
-            {
-                _consecutiveSilentFrames = 0;
-                _consecutiveLoudFrames++;
-                if (!_speechActive && _consecutiveLoudFrames >= debounceFramesNeeded)
-                    _speechActive = true;
-            }
-            else
-            {
-                _consecutiveLoudFrames = 0;
-                _consecutiveSilentFrames++;
-                if (_speechActive && _consecutiveSilentFrames >= silenceFramesNeeded)
-                    _speechActive = false;
-            }
-        }
-
-        private static void StorePreRoll(byte[] src, int length)
-        {
-            if (length <= 0) return;
-            var buf = new byte[length];
-            Buffer.BlockCopy(src, 0, buf, 0, length);
-            _preRollFrames[_preRollIndex] = buf;
-            _preRollLengths[_preRollIndex] = length;
-            _preRollIndex = (_preRollIndex + 1) % PREROLL_FRAMES;
-            if (_preRollCount < PREROLL_FRAMES) _preRollCount++;
-        }
-
-        private static void ReplayPreRoll()
-        {
-            if (_preRollCount == 0) return;
-            int start = (_preRollIndex - _preRollCount + PREROLL_FRAMES) % PREROLL_FRAMES;
-            for (int i = 0; i < _preRollCount; i++)
-            {
-                int idx = (start + i) % PREROLL_FRAMES;
-                var frameData = _preRollFrames[idx];
-                int len = _preRollLengths[idx];
-                if (frameData != null && len > 0)
-                {
-                    FeedRecognizer(frameData, len, AudioSourceType.Preroll);
-                    try { SpeakerEmbedder.AddPcm16(frameData, len); } catch { }
+                    if (_webRtcAccumulatedText.Length > 0 || !string.IsNullOrWhiteSpace(_webRtcLastPartialText))
+                    {
+                        VRLog("WEBRTC", $"Silence timeout ({timeSinceLastResult:F0}ms >= {_webRtcSilenceFlushMs}ms), flushing text");
+                        FlushWebRtcAccumulatedText("silence");
+                    }
                 }
             }
         }
 
-        private static void ClearPreRoll()
+        private static void ResetWebRtcState()
         {
-            _preRollCount = 0;
-            _preRollIndex = 0;
+            lock (_webRtcLock)
+            {
+                _webRtcAccumulatedText.Clear();
+                _webRtcLastVoskResultTime = DateTime.MinValue;
+                _webRtcHasPendingText = false;
+                _webRtcLastPartialText = string.Empty;
+            }
+            lock (_webRtcPcmLock)
+            {
+                _webRtcPreRollPcm.Clear();
+                _webRtcFeedBuffer.Clear();
+            }
+            VRLog("WEBRTC", "State reset");
+        }
+
+        /// <summary>
+        /// Append WebRTC PCM to the pre-roll ring buffer (keeps last 250ms).
+        /// </summary>
+        private static void AppendWebRtcPreRoll(byte[] pcm16, int lengthBytes)
+        {
+            lock (_webRtcPcmLock)
+            {
+                // Add new data
+                for (int i = 0; i < lengthBytes; i++)
+                    _webRtcPreRollPcm.Add(pcm16[i]);
+
+                // Trim to max size (16kHz * 2 bytes = 32 bytes/ms)
+                int bytesPerMs = (SampleRate * 2) / 1000;
+                int maxBytes = WebRtcPreRollMs * bytesPerMs;
+
+                if (_webRtcPreRollPcm.Count > maxBytes)
+                {
+                    int remove = _webRtcPreRollPcm.Count - maxBytes;
+                    _webRtcPreRollPcm.RemoveRange(0, remove);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Buffer WebRTC frames into larger blocks before feeding Vosk.
+        /// This improves recognition quality by avoiding micro-frame timing issues.
+        /// </summary>
+        private static void ProcessWebRtcBuffered(byte[] pcm16, int lengthBytes)
+        {
+            // Always append to pre-roll for seeding after boundaries
+            AppendWebRtcPreRoll(pcm16, lengthBytes);
+
+            lock (_webRtcPcmLock)
+            {
+                // Add to feed buffer
+                for (int i = 0; i < lengthBytes; i++)
+                    _webRtcFeedBuffer.Add(pcm16[i]);
+
+                // Calculate block size (16kHz * 2 bytes = 32 bytes/ms)
+                int bytesPerMs = (SampleRate * 2) / 1000;
+                int blockBytes = WebRtcFeedBlockMs * bytesPerMs;
+
+                // Feed complete blocks to Vosk
+                while (_webRtcFeedBuffer.Count >= blockBytes)
+                {
+                    var block = new byte[blockBytes];
+                    _webRtcFeedBuffer.CopyTo(0, block, 0, blockBytes);
+                    _webRtcFeedBuffer.RemoveRange(0, blockBytes);
+
+                    FeedRecognizer(block, block.Length, AudioSourceType.WebRtc);
+                }
+            }
         }
 
         private static void FlushFinal()
         {
             try
             {
-                var rec = _recognizer;
-                if (rec == null) return;
+                string finalText = null;
+                
+                lock (_voskLock)
+                {
+                    var rec = _recognizer;
+                    if (rec == null) return;
 
-                var json = rec.FinalResult();
-                var finalText = ExtractText(json);
+                    var json = rec.FinalResult();
+                    finalText = ExtractText(json);
+                }
+                
                 if (!string.IsNullOrWhiteSpace(finalText))
                 {
                     if (_accumulatedText.Length > 0) _accumulatedText.Append(" ");
@@ -406,13 +359,8 @@ namespace Kinectv1
                 _accumulatedText.Clear();
                 _lastPartialText = string.Empty;
 
-                if (!string.IsNullOrWhiteSpace(fullText))
+                if (!string.IsNullOrWhiteSpace(fullText) && !fullText.Equals("the", StringComparison.OrdinalIgnoreCase))
                 {
-                    if (fullText.Equals("the", StringComparison.OrdinalIgnoreCase))
-                    {
-                        VRLog("SUPPRESS", "single-word final 'the'");
-                        return;
-                    }
                     try { OnTranscription?.Invoke(fullText); } catch { }
                     VRLog("FINAL", $"'{(fullText.Length > 80 ? fullText.Substring(0, 80) + "..." : fullText)}'");
                 }
@@ -425,44 +373,55 @@ namespace Kinectv1
         {
             if (frame.Length <= 0) return;
 
+            _lastFrameSource = frame.Source;
+
             int samples = frame.Length / 2;
             int frameDurationMs = (samples * 1000) / SampleRate;
             if (frameDurationMs < 1) frameDurationMs = FRAME_DURATION_MS;
 
-            // Route RMS to appropriate UI meter
+            try { DebugAudioCapture.CaptureRaw(frame.Pcm16, frame.Length); } catch { }
+            LogRmsIfEnabled(frame.Rms, frame.Source);
+
             try
             {
                 switch (frame.Source)
                 {
-                    case AudioSourceType.LocalMic:
-                        OnRmsLevel?.Invoke(frame.Rms);
-                        break;
-                    case AudioSourceType.Discord:
-                        OnDiscordRmsLevel?.Invoke(frame.Rms);
-                        break;
-                    case AudioSourceType.WebRtc:
-                        OnWebRtcRmsLevel?.Invoke(frame.Rms);
-                        break;
+                    case AudioSourceType.LocalMic: OnRmsLevel?.Invoke(frame.Rms); break;
+                    case AudioSourceType.Discord: OnDiscordRmsLevel?.Invoke(frame.Rms); break;
+                    case AudioSourceType.WebRtc: OnWebRtcRmsLevel?.Invoke(frame.Rms); break;
                 }
             }
             catch { }
 
-            // External sources skip VAD gating, but can still trigger immediate barge-in on voice onset
             if (frame.Source.IsExternal())
             {
                 if (frame.Source == AudioSourceType.WebRtc)
                     MaybeBargeInOnExternalVoice(frame.Rms);
 
                 try { SpeakerEmbedder.AddPcm16(frame.Pcm16, frame.Length); } catch { }
+                
+                // WebRTC: buffer frames into larger blocks for better Vosk performance
+                if (frame.Source == AudioSourceType.WebRtc)
+                {
+                    ProcessWebRtcBuffered(frame.Pcm16, frame.Length);
+                }
+                else
+                {
+                    FeedRecognizer(frame.Pcm16, frame.Length, frame.Source);
+                }
+                return;
+            }
+
+            if (_vadBypass)
+            {
+                try { SpeakerEmbedder.AddPcm16(frame.Pcm16, frame.Length); } catch { }
                 FeedRecognizer(frame.Pcm16, frame.Length, frame.Source);
                 return;
             }
 
-            // Local mic: VAD gating
             bool wasActive = _speechActive;
             UpdateVadFromRms(frame.Rms, frameDurationMs);
 
-            // Barge-in / suppression logic
             try
             {
                 var bargeInEnabled = App.SettingsProvider?.Current?.Asr?.BargeInEnabled ?? false;
@@ -504,39 +463,74 @@ namespace Kinectv1
         {
             try
             {
-                var rec = _recognizer;
-                if (rec == null) return;
-
                 bool isExternal = source.IsExternal();
-                bool accepted = rec.AcceptWaveform(pcm16leMono, bytes);
-
-                // Diagnostics only (avoid console spam in hot path)
-                if (source == AudioSourceType.WebRtc && _diagEnabled)
+                bool isWebRtc = source == AudioSourceType.WebRtc;
+                
+                bool accepted;
+                string json = null;
+                string pjson = null;
+                
+                // All Vosk operations under lock
+                lock (_voskLock)
                 {
-                    VRLog("VOSK", $"AcceptWaveform({bytes} bytes) = {accepted}");
+                    var rec = _recognizer;
+                    if (rec == null) return;
+
+                    accepted = rec.AcceptWaveform(pcm16leMono, bytes);
+
+                    if (accepted)
+                    {
+                        json = rec.Result();
+                    }
+                    else
+                    {
+                        pjson = rec.PartialResult();
+                    }
+                }
+
+                // Always check for silence flush on WebRTC frames (independent of Vosk results)
+                if (isWebRtc)
+                {
+                    MaybeFlushWebRtcOnSilence();
                 }
 
                 if (accepted)
                 {
-                    var json = rec.Result();
                     var text = ExtractText(json);
-
-                    // Diagnostics only (the json can be large and this is very chatty)
-                    if (source == AudioSourceType.WebRtc && _diagEnabled)
-                    {
-                        VRLog("VOSK", $"Result='{text}' json={(json?.Length > 100 ? json.Substring(0, 100) + "..." : json)}");
-                    }
 
                     if (!string.IsNullOrWhiteSpace(text))
                     {
                         var t = text.Trim();
                         if (t.Equals("the", StringComparison.OrdinalIgnoreCase) && t.Length <= 3) return;
 
-                        if (isExternal)
+                        if (isWebRtc)
                         {
-                            if (_diagEnabled && source == AudioSourceType.WebRtc)
-                                VRLog("FINAL", $"External final: '{t}'");
-
+                            // Only update timestamp when we have actual speech content
+                            _webRtcLastVoskResultTime = DateTime.UtcNow;
+                            
+                            // If silence flush is 0, emit immediately without accumulation
+                            if (_webRtcSilenceFlushMs <= 0)
+                            {
+                                try { OnTranscription?.Invoke(t); } catch { }
+                            }
+                            else
+                            {
+                                // Accumulate text - do NOT emit here, let silence timeout handle emission
+                                // This prevents double emission (once here, once on silence flush)
+                                lock (_webRtcLock)
+                                {
+                                    if (_webRtcAccumulatedText.Length > 0) _webRtcAccumulatedText.Append(" ");
+                                    _webRtcAccumulatedText.Append(t);
+                                    _webRtcHasPendingText = true;
+                                    // Clear last partial since we now have finalized text
+                                    _webRtcLastPartialText = string.Empty;
+                                }
+                            }
+                            
+                            MaybeBargeIn(t);
+                        }
+                        else if (isExternal)
+                        {
                             try { OnTranscription?.Invoke(t); } catch { }
                             MaybeBargeIn(t);
                         }
@@ -548,38 +542,84 @@ namespace Kinectv1
                         }
                     }
 
-                    var partial = isExternal ? string.Empty : _accumulatedText.ToString();
-                    if (!string.IsNullOrWhiteSpace(partial) && partial != _lastPartialText)
+                    // Send partial updates for UI feedback (but don't emit as final transcription)
+                    if (!isWebRtc)
                     {
-                        _lastPartialText = partial;
-                        try { OnPartialTranscription?.Invoke(partial); } catch { }
+                        var partial = isExternal ? string.Empty : _accumulatedText.ToString();
+                        if (!string.IsNullOrWhiteSpace(partial) && partial != _lastPartialText)
+                        {
+                            _lastPartialText = partial;
+                            try { OnPartialTranscription?.Invoke(partial); } catch { }
+                        }
+                    }
+                    else if (_webRtcSilenceFlushMs > 0)
+                    {
+                        // For WebRTC, send accumulated text as partial for UI feedback
+                        lock (_webRtcLock)
+                        {
+                            var webRtcPartial = _webRtcAccumulatedText.ToString();
+                            if (!string.IsNullOrWhiteSpace(webRtcPartial) && webRtcPartial != _lastPartialText)
+                            {
+                                _lastPartialText = webRtcPartial;
+                                try { OnPartialTranscription?.Invoke(webRtcPartial); } catch { }
+                            }
+                        }
                     }
                 }
                 else
                 {
-                    var pjson = rec.PartialResult();
                     var ptext = ExtractPartialText(pjson);
 
-                    // Diagnostics only (partials are extremely chatty)
-                    if (source == AudioSourceType.WebRtc && _diagEnabled && !string.IsNullOrWhiteSpace(ptext))
+                    // Only update WebRTC timestamp if partial text actually changed (real speech activity)
+                    if (isWebRtc && !string.IsNullOrWhiteSpace(ptext))
                     {
-                        VRLog("PARTIAL", ptext);
+                        var pt = ptext.Trim();
+                        lock (_webRtcLock)
+                        {
+                            // Only update timestamp if this is NEW partial content (real speech)
+                            if (!string.IsNullOrEmpty(pt) && pt != _webRtcLastPartialText)
+                            {
+                                _webRtcLastVoskResultTime = DateTime.UtcNow;
+                                _webRtcLastPartialText = pt;
+
+                                // IMPORTANT: allow silence flush even if we never got a full Result()
+                                _webRtcHasPendingText = true;
+                            }
+                        }
                     }
 
                     if (!string.IsNullOrWhiteSpace(ptext))
                     {
                         var pt = ptext.Trim();
 
-                        string combinedPartial = isExternal ? pt
-                            : (_accumulatedText.Length > 0 ? _accumulatedText.ToString() + " " + pt : pt);
-
-                        if (combinedPartial != _lastPartialText)
+                        if (isWebRtc && _webRtcSilenceFlushMs > 0)
                         {
-                            _lastPartialText = combinedPartial;
-                            try { OnPartialTranscription?.Invoke(combinedPartial); } catch { }
+                            lock (_webRtcLock)
+                            {
+                                // Show accumulated + current partial for UI feedback
+                                var combined = _webRtcAccumulatedText.Length > 0 
+                                    ? _webRtcAccumulatedText.ToString() + " " + pt 
+                                    : pt;
+                                if (combined != _lastPartialText)
+                                {
+                                    _lastPartialText = combined;
+                                    try { OnPartialTranscription?.Invoke(combined); } catch { }
+                                }
+                            }
+                        }
+                        else if (!isWebRtc)
+                        {
+                            string combinedPartial = isExternal ? pt
+                                : (_accumulatedText.Length > 0 ? _accumulatedText.ToString() + " " + pt : pt);
+
+                            if (combinedPartial != _lastPartialText)
+                            {
+                                _lastPartialText = combinedPartial;
+                                try { OnPartialTranscription?.Invoke(combinedPartial); } catch { }
+                            }
                         }
 
-                        MaybeBargeIn(combinedPartial);
+                        MaybeBargeIn(pt);
                     }
                 }
             }
@@ -611,7 +651,6 @@ namespace Kinectv1
                 if ((now - _lastBargeInCancel).TotalMilliseconds < 1000) return;
 
                 _lastBargeInCancel = now;
-                VRLog("BARGE", $"Cancel on recognized='{(text.Length > 20 ? text.Substring(0, 20) + "..." : text)}'");
                 TtsPlaybackController.CancelCurrent();
                 try { DiscordNetBotManager.CancelCurrentTts(); } catch { }
                 try { Tts.TtsService.MarkExternalCancel(); } catch { }
@@ -693,12 +732,8 @@ namespace Kinectv1
                                 {
                                     switch (frame.Source)
                                     {
-                                        case AudioSourceType.Discord:
-                                            OnDiscordRmsLevel?.Invoke(frame.Rms);
-                                            break;
-                                        case AudioSourceType.WebRtc:
-                                            OnWebRtcRmsLevel?.Invoke(frame.Rms);
-                                            break;
+                                        case AudioSourceType.Discord: OnDiscordRmsLevel?.Invoke(frame.Rms); break;
+                                        case AudioSourceType.WebRtc: OnWebRtcRmsLevel?.Invoke(frame.Rms); break;
                                     }
                                     continue;
                                 }
@@ -713,11 +748,7 @@ namespace Kinectv1
                         else
                         {
                             spinWait.SpinOnce();
-                            
-                            if (spinWait.NextSpinWillYield)
-                            {
-                                Thread.Sleep(1);
-                            }
+                            if (spinWait.NextSpinWillYield) Thread.Sleep(1);
                         }
 
                         var now = DateTime.UtcNow;
@@ -748,6 +779,411 @@ namespace Kinectv1
                 return Path.GetFullPath(expanded);
             }
             catch { return path; }
+        }
+
+        public static void SetWebRtcInputEnabled(bool enabled)
+        {
+            var wasEnabled = _webRtcEnabled;
+            _webRtcEnabled = enabled;
+            VRLog("WEBRTC", enabled ? "Enabled" : "Disabled");
+            
+            // Notify TranscriptionService of WebRTC state change for speaker boundary detection
+            try { Services.Transcription.TranscriptionService.Instance.SetWebRtcActive(enabled); } catch { }
+            
+            if (enabled && !wasEnabled)
+            {
+                ResetWebRtcState();
+            }
+            else if (!enabled && wasEnabled)
+            {
+                // Flush any remaining text when disabling
+                lock (_webRtcLock)
+                {
+                    var remaining = _webRtcAccumulatedText.ToString().Trim();
+                    if (!string.IsNullOrWhiteSpace(remaining))
+                    {
+                        try { OnTranscription?.Invoke(remaining); } catch { }
+                    }
+                    _webRtcAccumulatedText.Clear();
+                }
+            }
+        }
+
+        #region Public API
+
+        public static void Start(string modelPath)
+        {
+            var fromSettings = App.SettingsProvider?.Current?.Stt?.ModelPath;
+            var path = string.IsNullOrWhiteSpace(modelPath) ? fromSettings : modelPath;
+            LoadVadParamsFromSettings();
+            TryInitializeVosk(path);
+            SetWebRtcInputEnabled(false);
+            EnsureAudioProcessor();
+            EnsureSpeakerEmbedderHooked();
+            if (_micEnabled) StartMicCapture();
+            _ready = true;
+            VRLog("START", $"Ready mic={_micEnabled} discord={_discordEnabled} webrtc={_webRtcEnabled}");
+        }
+
+        public static void ReloadFromSettings()
+        {
+            Console.WriteLine("[VoiceRecognizer] ReloadFromSettings called");
+            LoadVadParamsFromSettings();
+            TryInitializeVosk(App.SettingsProvider?.Current?.Stt?.ModelPath);
+        }
+
+        public static void SetMicrophoneInputEnabled(bool enabled)
+        {
+            _micEnabled = enabled;
+            Console.WriteLine(enabled ? "[Mic] Enabled" : "[Mic] Disabled");
+            lock (_lock)
+            {
+                if (enabled) { if (_waveIn == null) StartMicCapture(); }
+                else StopMicCapture();
+            }
+        }
+
+        public static void SetDiscordInputEnabled(bool enabled) => _discordEnabled = enabled;
+
+        public static void SetVadBypass(bool bypass)
+        {
+            _vadBypass = bypass;
+            Console.WriteLine(bypass ? "[VAD] BYPASS ENABLED" : "[VAD] Bypass disabled");
+        }
+
+        /// <summary>
+        /// Set the WebRTC silence flush timeout (how long to wait after silence before emitting text).
+        /// 0 = emit immediately on each Vosk result (no accumulation).
+        /// </summary>
+        public static void SetWebRtcSilenceFlushMs(int ms)
+        {
+            _webRtcSilenceFlushMs = Math.Max(0, Math.Min(2000, ms));
+            Console.WriteLine($"[WebRTC] Silence flush timeout set to {_webRtcSilenceFlushMs}ms");
+        }
+
+        public static bool IsVadBypassed() => _vadBypass;
+        public static bool IsReady() => _ready;
+        public static bool IsMicrophoneInputEnabled() => _micEnabled;
+        public static bool IsDiscordInputEnabled() => _discordEnabled;
+        public static bool IsWebRtcInputEnabled() => _webRtcEnabled;
+
+        /// <summary>
+        /// Force a WebRTC boundary: flush accumulated text and reset the recognizer.
+        /// Uses a tail delay to avoid chopping word endings.
+        /// This is useful for speaker change detection in WebRTC mode.
+        /// </summary>
+        public static void ForceWebRtcBoundary(string reason = "boundary")
+        {
+            if (!_webRtcEnabled) return;
+
+            // Only arm one boundary at a time
+            if (Interlocked.Exchange(ref _webrtcBoundaryArmed, 1) == 1)
+                return;
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    // Tail delay to let trailing consonants/words settle
+                    await Task.Delay(WebRtcTailDelayMs).ConfigureAwait(false);
+
+                    FlushWebRtcAccumulatedText(reason);
+                    ResetWebRtcRecognizer();
+                }
+                catch (Exception ex)
+                {
+                    VRLog("ERROR", $"ForceWebRtcBoundary: {ex.Message}");
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _webrtcBoundaryArmed, 0);
+                }
+            });
+        }
+
+        private static void ResetWebRtcRecognizer()
+        {
+            try
+            {
+                lock (_voskLock)
+                {
+                    if (_sttModel == null) return;
+
+                    try { _recognizer?.Dispose(); } catch { }
+
+                    _recognizer = new VoskRecognizer(_sttModel, SampleRate);
+                    _recognizer.SetMaxAlternatives(0);
+                    _recognizer.SetWords(false);
+                }
+
+                // Clear only WebRTC-related accumulators
+                lock (_webRtcLock)
+                {
+                    _webRtcAccumulatedText.Clear();
+                    _webRtcHasPendingText = false;
+                    _webRtcLastVoskResultTime = DateTime.MinValue;
+                    _webRtcLastPartialText = string.Empty;
+                }
+
+                // Clear the feed buffer but keep pre-roll for seeding
+                lock (_webRtcPcmLock)
+                {
+                    _webRtcFeedBuffer.Clear();
+                }
+
+                // Seed recognizer with pre-roll so we don't lose leading phonemes
+                byte[] seed;
+                lock (_webRtcPcmLock)
+                {
+                    seed = _webRtcPreRollPcm.ToArray();
+                }
+
+                if (seed.Length > 0)
+                {
+                    lock (_voskLock)
+                    {
+                        _recognizer?.AcceptWaveform(seed, seed.Length);
+                    }
+                    VRLog("WEBRTC", $"Recognizer reset, seeded with {seed.Length} bytes pre-roll");
+                }
+                else
+                {
+                    VRLog("WEBRTC", "Recognizer reset for boundary (no pre-roll)");
+                }
+            }
+            catch (Exception ex)
+            {
+                VRLog("ERROR", $"ResetWebRtcRecognizer: {ex.Message}");
+            }
+        }
+
+        public static void ProcessAudio(NormalizedAudioFrame frame)
+        {
+            if (frame.Length <= 0) return;
+            _audioQueue.Enqueue(frame);
+            EnsureAudioProcessor();
+        }
+
+        public static (int queueSize, bool isProcessing) GetExternalAudioStats() => (_audioQueue.Count, _processing);
+
+        #endregion
+
+        #region Private Implementation
+
+        private static void TryInitializeVosk(string configuredPath)
+        {
+            try
+            {
+                var resolved = ResolveModelPath(configuredPath);
+                if (string.IsNullOrWhiteSpace(resolved) || !Directory.Exists(resolved))
+                {
+                    Console.WriteLine($"[VoiceRecognizer] Vosk model not found: '{resolved}'");
+                    return;
+                }
+                
+                lock (_voskLock)
+                {
+                    if (_sttModel != null && string.Equals(_modelPath, resolved, StringComparison.OrdinalIgnoreCase)) return;
+
+                    try { _recognizer?.Dispose(); } catch { }
+                    try { _sttModel?.Dispose(); } catch { }
+                    _recognizer = null; _sttModel = null;
+
+                    Vosk.Vosk.SetLogLevel(0);
+                    _sttModel = new Model(resolved);
+                    _recognizer = new VoskRecognizer(_sttModel, SampleRate);
+                    _recognizer.SetMaxAlternatives(0);
+                    _recognizer.SetWords(false);
+                    _modelPath = resolved;
+                    Console.WriteLine($"[VoiceRecognizer] Vosk model loaded: {resolved}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[VoiceRecognizer] Failed to load Vosk model: {ex.Message}");
+                lock (_voskLock)
+                {
+                    try { _recognizer?.Dispose(); } catch { }
+                    try { _sttModel?.Dispose(); } catch { }
+                    _recognizer = null; _sttModel = null; _modelPath = null;
+                }
+            }
+        }
+
+        private static void LoadVadParamsFromSettings()
+        {
+            try
+            {
+                var snap = App.SettingsProvider?.Current;
+                if (snap == null) return;
+
+                var vt = snap.Audio?.VoiceThreshold;
+                if (vt.HasValue)
+                {
+                    _vadRmsThreshold = Math.Max(0, Math.Min(1.0, vt.Value)) * 10000.0;
+                    _vadRmsThresholdLow = _vadRmsThreshold * 0.4;
+                }
+
+                var asr = snap.Asr;
+                if (asr != null)
+                {
+                    if (asr.VadDebounceTimeoutMs >= 10) _vadDebounceMs = asr.VadDebounceTimeoutMs;
+                    if (asr.VadSilenceTimeoutMs >= 50)
+                    {
+                        _vadSilenceMs = asr.VadSilenceTimeoutMs;
+                    }
+                    Console.WriteLine($"[VAD] Loaded: silence={_vadSilenceMs}ms");
+                }
+
+                // Load WebRTC silence flush timeout from Debug settings
+                var debug = snap.Debug;
+                if (debug != null)
+                {
+                    _webRtcSilenceFlushMs = Math.Max(0, Math.Min(2000, debug.WebRtcSilenceFlushMs));
+                }
+                Console.WriteLine($"[WebRTC] Silence flush timeout: {_webRtcSilenceFlushMs}ms");
+
+                _extBargeInRmsThreshold = Math.Max(600.0, _vadRmsThreshold * 2.4);
+                _extBargeInDebounceFrames = 4;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[VAD] ERROR: {ex.Message}");
+            }
+        }
+
+        private static void MaybeBargeInOnExternalVoice(float rms)
+        {
+            try
+            {
+                var asr = App.SettingsProvider?.Current?.Asr;
+                if (asr?.BargeInEnabled != true) return;
+                if (DateTime.UtcNow < _extBargeInIgnoreUntilUtc) return;
+                if (!TtsPlaybackController.HasActiveUtterance()) { _extBargeInLoudFrames = 0; return; }
+
+                if (rms >= _extBargeInRmsThreshold) _extBargeInLoudFrames++;
+                else _extBargeInLoudFrames = 0;
+
+                if (_extBargeInLoudFrames < _extBargeInDebounceFrames) return;
+
+                var now = DateTime.UtcNow;
+                if ((now - _lastBargeInCancel).TotalMilliseconds < 800) return;
+
+                _extBargeInLoudFrames = 0;
+                _lastBargeInCancel = now;
+                _extBargeInIgnoreUntilUtc = now.AddMilliseconds(600);
+
+                TtsPlaybackController.CancelCurrent();
+                try { DiscordNetBotManager.CancelCurrentTts(); } catch { }
+                try { Tts.TtsService.MarkExternalCancel(); } catch { }
+            }
+            catch { }
+        }
+
+        private static void StartMicCapture()
+        {
+            try
+            {
+                var inputDevice = AudioDeviceManager.GetConfiguredInputDevice();
+                _waveIn = new WaveInEvent
+                {
+                    DeviceNumber = inputDevice?.DeviceNumber ?? 0,
+                    WaveFormat = new WaveFormat(SampleRate, 16, 1),
+                    BufferMilliseconds = FRAME_MS,
+                    NumberOfBuffers = 3
+                };
+                _waveIn.DataAvailable += OnWaveInData;
+                _waveIn.StartRecording();
+                Console.WriteLine($"[Mic] Started capture: {SampleRate}Hz, {FRAME_MS}ms frames");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[VoiceRecognizer] Mic capture start failed: {ex.Message}");
+                StopMicCapture();
+            }
+        }
+
+        private static void StopMicCapture()
+        {
+            try
+            {
+                if (_waveIn != null)
+                {
+                    _waveIn.DataAvailable -= OnWaveInData;
+                    try { _waveIn.StopRecording(); } catch { }
+                    try { _waveIn.Dispose(); } catch { }
+                    _waveIn = null;
+                }
+            }
+            catch { }
+        }
+
+        private static void OnWaveInData(object sender, WaveInEventArgs e)
+        {
+            var frame = NormalizedAudioFrame.Create(e.Buffer, e.BytesRecorded, AudioSourceType.LocalMic);
+            ProcessAudioInternal(frame);
+        }
+
+        private static void UpdateVadFromRms(float rms, int frameDurationMs)
+        {
+            int silenceFramesNeeded = _vadSilenceMs / Math.Max(1, frameDurationMs);
+            int debounceFramesNeeded = Math.Max(1, _vadDebounceMs / Math.Max(1, frameDurationMs));
+            double activeThreshold = _speechActive ? _vadRmsThresholdLow : _vadRmsThreshold;
+
+            if (rms >= activeThreshold)
+            {
+                _consecutiveSilentFrames = 0;
+                _consecutiveLoudFrames++;
+                if (!_speechActive && _consecutiveLoudFrames >= debounceFramesNeeded)
+                {
+                    _speechActive = true;
+                    VRLog("VAD", $"Speech STARTED");
+                }
+            }
+            else
+            {
+                _consecutiveLoudFrames = 0;
+                _consecutiveSilentFrames++;
+                if (_speechActive && _consecutiveSilentFrames >= silenceFramesNeeded)
+                {
+                    _speechActive = false;
+                    VRLog("VAD", $"Speech ENDED after {_consecutiveSilentFrames} silent frames");
+                }
+            }
+        }
+
+        private static void StorePreRoll(byte[] src, int length)
+        {
+            if (length <= 0) return;
+            var buf = new byte[length];
+            Buffer.BlockCopy(src, 0, buf, 0, length);
+            _preRollFrames[_preRollIndex] = buf;
+            _preRollLengths[_preRollIndex] = length;
+            _preRollIndex = (_preRollIndex + 1) % PREROLL_FRAMES;
+            if (_preRollCount < PREROLL_FRAMES) _preRollCount++;
+        }
+
+        private static void ReplayPreRoll()
+        {
+            if (_preRollCount == 0) return;
+            int start = (_preRollIndex - _preRollCount + PREROLL_FRAMES) % PREROLL_FRAMES;
+            for (int i = 0; i < _preRollCount; i++)
+            {
+                int idx = (start + i) % PREROLL_FRAMES;
+                var frameData = _preRollFrames[idx];
+                int len = _preRollLengths[idx];
+                if (frameData != null && len > 0)
+                {
+                    FeedRecognizer(frameData, len, AudioSourceType.Preroll);
+                    try { SpeakerEmbedder.AddPcm16(frameData, len); } catch { }
+                }
+            }
+        }
+
+        private static void ClearPreRoll()
+        {
+            _preRollCount = 0;
+            _preRollIndex = 0;
         }
 
         #endregion

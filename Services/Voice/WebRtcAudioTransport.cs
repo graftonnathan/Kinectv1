@@ -184,7 +184,9 @@ namespace Kinectv1.Voice
         public string GetJoinUrl()
         {
             var ip = GetLocalIPAddress();
-            if (_httpsEnabled)
+            
+            // Only return HTTPS URL if HTTPS actually started successfully
+            if (_httpsEnabled && _signalingServer?.HttpsActuallyStarted == true)
             {
                 return $"https://{ip}:{_httpsPort}/";
             }

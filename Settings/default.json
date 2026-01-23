@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "audio": {
-    "voiceThreshold": 0.02,
+    "voiceThreshold": 0.012,
     "bufferSize": 7,
     "speakerMatchMinScore": 0.6
   },
@@ -16,10 +16,10 @@
     "localVolume": 1.0,
     "discordVolume": 1.0,
     "speed": 1.05,
-    "trimThreshold": 0.003,
-    "trimLeaveMs": 6,
-    "trimMaxMs": 800,
-    "minClausePaddingMs": 10,
+    "trimThreshold": 0.002,
+    "trimLeaveMs": 80,
+    "trimMaxMs": 400,
+    "minClausePaddingMs": 25,
     "ipaServiceTimeoutMs": 1500,
     "ipaOneShotTimeoutMs": 1500
   },
@@ -28,8 +28,8 @@
     "voiceHighConfidenceThreshold": 0.8,
     "voiceConfidenceBufferSize": 3,
     "voiceConfidenceLoggingEnabled": false,
-    "vadSilenceTimeoutMs": 800,
-    "vadDebounceTimeoutMs": 30,
+    "vadSilenceTimeoutMs": 500,
+    "vadDebounceTimeoutMs": 50,
     "discordVadThreshold": 25.0,
     "bargeInEnabled": true
   },
@@ -92,5 +92,25 @@
   },
   "ui": {
     "darkMode": true
+  },
+  "transcription": {
+    "enabled": false,
+    "muteTts": true,
+    "logToFile": true,
+    "outputFolder": "transcriptions",
+    "generateSummary": true,
+    "summaryDelaySeconds": 60,
+    "diarizationSimilarityThreshold": 0.5
+  },
+  "debug": {
+    "audioCaptureEnabled": false,
+    "audioCaptureFolder": "debug_audio",
+    "webRtcEchoCancellation": false,
+    "webRtcNoiseSuppression": false,
+    "webRtcAutoGainControl": false,
+    "webRtcNormalizationEnabled": true,
+    "webRtcNormalizationTargetRms": 3000.0,
+    "webRtcNormalizationMaxGain": 8.0,
+    "webRtcSilenceFlushMs": 1200
   }
 }

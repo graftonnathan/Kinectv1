@@ -15,7 +15,9 @@ namespace Kinectv1.Settings
         [property: Required] AsrSettings Asr,
         [property: Required] SttSettings Stt,
         [property: Required] FaceSettings Face,
-        [property: Required] AppConfig App
+        [property: Required] AppConfig App,
+        [property: Required] TranscriptionSettings Transcription,
+        [property: Required] DebugSettings Debug
     );
 
     // Unified audio settings – removed legacy VadThreshold (RMS gating now derived from VoiceThreshold)
@@ -151,5 +153,31 @@ namespace Kinectv1.Settings
     // New: UI settings
     public sealed record UiSettings(
         bool DarkMode
+    );
+
+    // New: Transcription-only mode settings (mutes TTS, logs transcriptions)
+    public sealed record TranscriptionSettings(
+        bool Enabled,
+        bool MuteTts,
+        bool LogToFile,
+        string OutputFolder,
+        bool GenerateSummary,
+        [property: Range(5, 3600)] int SummaryDelaySeconds, // Time after last transcription before generating summary
+        [property: Range(0.0, 1.0)] double DiarizationSimilarityThreshold // 0=less strict (fewer speakers), 1=more strict (more speakers)
+    );
+
+    // New: Debug settings for diagnostics and troubleshooting
+    public sealed record DebugSettings(
+        bool AudioCaptureEnabled, // When true, capture audio just before it reaches Vosk STT
+        string AudioCaptureFolder, // Folder to store captured WAV audio clips
+        bool WebRtcEchoCancellation, // Enable browser echo cancellation
+        bool WebRtcNoiseSuppression, // Enable browser noise suppression
+        bool WebRtcAutoGainControl, // Enable browser auto gain control
+        // WebRTC audio normalization (server-side AGC for quiet mobile audio)
+        bool WebRtcNormalizationEnabled, // Enable server-side audio normalization for WebRTC input
+        [property: Range(500, 10000)] float WebRtcNormalizationTargetRms, // Target RMS level (0-32768 scale, ~3000 for speech)
+        [property: Range(1.0, 20.0)] float WebRtcNormalizationMaxGain, // Maximum gain to apply (prevents amplifying noise)
+        // WebRTC silence-based sentence flush timeout
+        [property: Range(0, 2000)] int WebRtcSilenceFlushMs // How long to wait after silence before emitting accumulated text (ms). 0 = emit immediately on each Vosk result
     );
 }

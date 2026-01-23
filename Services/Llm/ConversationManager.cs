@@ -565,14 +565,22 @@ namespace Kinectv1
 
         #region LLM Interaction
         public static bool IsEnabled() => Snap?.Ollama?.Enabled == true;
-        public static Task DispatchAsync(string speaker, string text) => SendPromptStreamingAsync(speaker, text);
+        
+        /// <summary>
+        /// Dispatch a prompt to the LLM with optional history tracking.
+        /// </summary>
+        /// <param name="speaker">Speaker identifier</param>
+        /// <param name="text">Text to send to LLM</param>
+        /// <param name="skipHistory">If true, skip conversation history and don't save this exchange</param>
+        public static Task DispatchAsync(string speaker, string text, bool skipHistory = false) 
+            => SendPromptStreamingAsync(speaker, text, skipHistory: skipHistory);
 
         /// <summary>
         /// Streaming version of SendPromptAsync that fires OnResponseSentenceReady 
         /// for each complete sentence as it arrives from the LLM.
         /// This allows TTS to start speaking before the full response is complete.
         /// </summary>
-        public static async Task SendPromptStreamingAsync(string speakerName, string transcription, CancellationToken ct = default)
+        public static async Task SendPromptStreamingAsync(string speakerName, string transcription, CancellationToken ct = default, bool skipHistory = false)
         {
             CancellationTokenSource linkedCts;
             lock (_streamingCtsLock)
@@ -607,33 +615,43 @@ namespace Kinectv1
                     system += toolRegistry.GenerateToolPrompt();
                 }
 
-                // Conversational history is scoped to the selected system prompt, not a single speaker.
-                // Include all speakers from that prompt's conversation.json so the assistant has context.
-                var history = BuildHistoryBlockAllSpeakersForCurrentPrompt();
-
-                // Build context from vector memory (warm summary + retrieved chunks)
+                // Skip history if requested (for system operations like summary generation)
+                string history = string.Empty;
                 string memoryContext = string.Empty;
-                var mm = GetMemoryManager();
-                if (mm.IsEnabled)
+                
+                if (!skipHistory)
                 {
-                    try
+                    // Conversational history is scoped to the selected system prompt, not a single speaker.
+                    // Include all speakers from that prompt's conversation.json so the assistant has context.
+                    history = BuildHistoryBlockAllSpeakersForCurrentPrompt();
+
+                    // Build context from vector memory (warm summary + retrieved chunks)
+                    var mm = GetMemoryManager();
+                    if (mm.IsEnabled)
                     {
-                        var context = await mm.BuildContextAsync(transcription, normalizedSpeaker, streamingCt).ConfigureAwait(false);
-                        memoryContext = mm.FormatContextForPrompt(context);
-                        if (!string.IsNullOrWhiteSpace(memoryContext))
+                        try
                         {
-                            Console.WriteLine($"?? Retrieved memory context: {TokenEstimator.EstimateTokens(memoryContext)} tokens");
+                            var context = await mm.BuildContextAsync(transcription, normalizedSpeaker, streamingCt).ConfigureAwait(false);
+                            memoryContext = mm.FormatContextForPrompt(context);
+                            if (!string.IsNullOrWhiteSpace(memoryContext))
+                            {
+                                Console.WriteLine($"?? Retrieved memory context: {TokenEstimator.EstimateTokens(memoryContext)} tokens");
+                            }
                         }
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"?? Memory context retrieval failed: {ex.Message}");
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"? Memory context retrieval failed: {ex.Message}");
+                        }
                     }
                 }
                 
                 var userPrompt = BuildUserPromptWithMemory(normalizedSpeaker, transcription, null, history, memoryContext);
                 try { OnPromptSent?.Invoke(userPrompt); } catch { }
-                AppendConversation(normalizedSpeaker, "user", transcription);
+                
+                if (!skipHistory)
+                {
+                    AppendConversation(normalizedSpeaker, "user", transcription);
+                }
                 
                 // Stream the response with tool support
                 var (finalResponse, toolsUsed) = await StreamResponseWithToolsAsync(system, userPrompt, normalizedSpeaker, streamingCt).ConfigureAwait(false);
@@ -646,16 +664,21 @@ namespace Kinectv1
                 
                 if (string.IsNullOrWhiteSpace(finalResponse)) finalResponse = "(no response)";
                 var cleanedFull = SanitizeAssistantText(finalResponse);
-                AppendConversation(normalizedSpeaker, "assistant", cleanedFull);
                 
-                // Check for memory overflow after appending the response
-                await CheckAndProcessMemoryOverflowAsync(normalizedSpeaker, streamingCt).ConfigureAwait(false);
-                
-                // Save memory manager state periodically
-                if (mm.IsEnabled)
+                if (!skipHistory)
                 {
-                    try { await mm.SaveAsync(streamingCt).ConfigureAwait(false); }
-                    catch { }
+                    AppendConversation(normalizedSpeaker, "assistant", cleanedFull);
+                
+                    // Check for memory overflow after appending the response
+                    await CheckAndProcessMemoryOverflowAsync(normalizedSpeaker, streamingCt).ConfigureAwait(false);
+                
+                    // Save memory manager state periodically
+                    var mm = GetMemoryManager();
+                    if (mm.IsEnabled)
+                    {
+                        try { await mm.SaveAsync(streamingCt).ConfigureAwait(false); }
+                        catch { }
+                    }
                 }
                 
                 try { OnResponseReceived?.Invoke(cleanedFull); } catch { }

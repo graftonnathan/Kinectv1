@@ -7,6 +7,7 @@ using System.IO;
 using Kinectv1.Settings;
 using System.Text; // Ensure we can set Console encodings
 using System.Runtime.InteropServices; // For SetConsoleCP
+using Kinectv1.Services.Debug;
 
 namespace Kinectv1
 {
@@ -163,7 +164,16 @@ namespace Kinectv1
 
         private void StartServices()
         {
-            // Placeholder for direct-start services if needed
+            // Initialize debug audio capture service
+            try
+            {
+                DebugAudioCapture.Initialize();
+                Console.WriteLine("🔧 Debug audio capture service initialized");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"⚠️ Debug audio capture init failed: {ex.Message}");
+            }
         }
 
         private void SetupGlobalExceptionHandlers()

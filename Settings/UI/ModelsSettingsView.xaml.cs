@@ -45,6 +45,19 @@ namespace Kinectv1.UI.Settings
             }
             catch { }
 
+            // Initialize VAD sliders from current settings snapshot
+            try
+            {
+                var asr = Kinectv1.App.SettingsProvider?.Current?.Asr;
+                if (asr != null)
+                {
+                    VadSilenceTimeoutSlider.Value = asr.VadSilenceTimeoutMs;
+                    VadDebounceTimeoutSlider.Value = asr.VadDebounceTimeoutMs;
+                    BargeInEnabledCheckBox.IsChecked = asr.BargeInEnabled;
+                }
+            }
+            catch { }
+
             // Show initial numeric values
             UpdateAllSliderValueText();
 
@@ -56,6 +69,10 @@ namespace Kinectv1.UI.Settings
             TtsTrimLeaveSlider.ValueChanged += (s, _) => { TtsTrimLeaveValueText.Text = string.Format("{0} ms", (int)TtsTrimLeaveSlider.Value); };
             TtsTrimMaxSlider.ValueChanged += (s, _) => { TtsTrimMaxValueText.Text = string.Format("{0} ms", (int)TtsTrimMaxSlider.Value); };
             TtsPaddingSlider.ValueChanged += (s, _) => { TtsPaddingValueText.Text = string.Format("{0} ms", (int)TtsPaddingSlider.Value); };
+            
+            // VAD slider value-changed handlers
+            VadSilenceTimeoutSlider.ValueChanged += (s, _) => { VadSilenceTimeoutValueText.Text = string.Format("{0} ms", (int)VadSilenceTimeoutSlider.Value); };
+            VadDebounceTimeoutSlider.ValueChanged += (s, _) => { VadDebounceTimeoutValueText.Text = string.Format("{0} ms", (int)VadDebounceTimeoutSlider.Value); };
         }
 
         private void UpdateAllSliderValueText()
@@ -69,6 +86,10 @@ namespace Kinectv1.UI.Settings
                 TtsTrimLeaveValueText.Text = string.Format("{0} ms", (int)TtsTrimLeaveSlider.Value);
                 TtsTrimMaxValueText.Text = string.Format("{0} ms", (int)TtsTrimMaxSlider.Value);
                 TtsPaddingValueText.Text = string.Format("{0} ms", (int)TtsPaddingSlider.Value);
+                
+                // VAD slider values
+                VadSilenceTimeoutValueText.Text = string.Format("{0} ms", (int)VadSilenceTimeoutSlider.Value);
+                VadDebounceTimeoutValueText.Text = string.Format("{0} ms", (int)VadDebounceTimeoutSlider.Value);
             }
             catch { }
         }

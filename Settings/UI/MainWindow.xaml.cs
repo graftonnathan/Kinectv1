@@ -1123,6 +1123,14 @@ namespace Kinectv1
 
         private void HandleFinalToLlm(string text)
         {
+            // Check if transcription mode is enabled
+            var transcriptionCfg = App.SettingsProvider?.Current?.Transcription;
+            bool transcriptionModeEnabled = transcriptionCfg?.Enabled ?? false;
+
+            // Capture the current voice embedding for diarization
+            float[] currentEmbedding = null;
+            try { currentEmbedding = _lastVoiceEmbedding != null ? (float[])_lastVoiceEmbedding.Clone() : null; } catch { }
+
             // Fire-and-forget on background thread to prevent UI freeze
             _ = Task.Run(async () =>
             {
@@ -1164,6 +1172,34 @@ namespace Kinectv1
                         }
                     }
                     catch { }
+
+                    // If transcription mode is enabled, log to TranscriptionService and skip LLM
+                    if (transcriptionModeEnabled)
+                    {
+                        try
+                        {
+                            var transcriptionService = Services.Transcription.TranscriptionService.Instance;
+                            
+                            // Auto-start session if not active and logToFile is enabled
+                            if (!transcriptionService.IsActive && (transcriptionCfg?.LogToFile ?? false))
+                            {
+                                transcriptionService.StartSession();
+                            }
+                            
+                            if (transcriptionService.IsActive)
+                            {
+                                // Pass embedding for diarization
+                                transcriptionService.AddTranscription(speaker, text, currentEmbedding);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"[Transcription] Failed to log: {ex.Message}");
+                        }
+                        
+                        // Skip LLM dispatch when in transcription mode
+                        return;
+                    }
 
                     await OllamaService.DispatchAsync(speaker, text);
                 }
@@ -1412,6 +1448,10 @@ namespace Kinectv1
             DateTime lastLog = DateTime.UtcNow;
             int totalSamplesProcessed = 0;
             float peakRms = 0f;
+            
+            // Track sample rate stats
+            int frames16k = 0;
+            int framesOther = 0;
 
             while (!ct.IsCancellationRequested)
             {
@@ -1427,6 +1467,10 @@ namespace Kinectv1
                     var pcm = frame.Pcm16;
                     var sr = frame.SampleRate;
                     var ch = frame.Channels;
+                    
+                    // Track sample rate distribution
+                    if (sr == 16000) frames16k++;
+                    else framesOther++;
 
                     byte[] pcm16k;
 
@@ -1435,34 +1479,31 @@ namespace Kinectv1
                     {
                         if (sr == 16000)
                         {
-                            // Already at target rate
+                            // Already at target rate - just convert
                             pcm16k = ShortsToBytes(pcm);
-                        }
-                        else if (sr == 8000)
-                        {
-                            // Upsample 8kHz -> 16kHz
-                            var upsampled = Upsample8kTo16k(pcm);
-                            pcm16k = ShortsToBytes(upsampled);
                         }
                         else
                         {
-                            // Generic resample any rate -> 16kHz
-                            var resampled = ResampleMono(pcm, sr, 16000);
-                            pcm16k = ShortsToBytes(resampled);
+                            // Resample using proper anti-aliasing (float domain)
+                            var floatMono = ShortsToFloats(pcm);
+                            var resampled = ResampleMonoWithFilter(floatMono, sr, 16000, frame.SourceId);
+                            pcm16k = FloatsToPcm16Bytes(resampled);
                         }
                     }
                     else
                     {
-                        // Stereo: mix to mono then resample
-                        var mono = MixToMono(pcm);
+                        // Stereo: mix to mono in float domain, then resample
+                        var floatStereo = ShortsToFloats(pcm);
+                        var floatMono = MixStereoToMonoFloat(floatStereo);
+                        
                         if (sr == 16000)
                         {
-                            pcm16k = ShortsToBytes(mono);
+                            pcm16k = FloatsToPcm16Bytes(floatMono);
                         }
                         else
                         {
-                            var resampled = ResampleMono(mono, sr, 16000);
-                            pcm16k = ShortsToBytes(resampled);
+                            var resampled = ResampleMonoWithFilter(floatMono, sr, 16000, frame.SourceId);
+                            pcm16k = FloatsToPcm16Bytes(resampled);
                         }
                     }
 
@@ -1474,17 +1515,13 @@ namespace Kinectv1
                         var pcmForVosk = new byte[pcm16k.Length];
                         Buffer.BlockCopy(pcm16k, 0, pcmForVosk, 0, pcm16k.Length);
 
-                        // Conservative preprocessing for ASR robustness (far mic / low volume)
-                        // Runs on 16kHz mono PCM16 in-place.
-                        AudioPreprocessor.ProcessPcm16MonoInPlace(
-                            pcmForVosk,
-                            pcmForVosk.Length,
-                            sampleRate: 16000,
-                            sourceId: frame.SourceId ?? "webrtc");
+                        // Apply audio normalization to boost quiet WebRTC audio for better Vosk recognition
+                        // This uses smooth AGC that won't cause artifacts
+                        float gainApplied = AudioUtils.NormalizePcm16InPlace(pcmForVosk, pcmForVosk.Length, frame.SourceId ?? "webrtc");
 
                         totalSamplesProcessed += pcmForVosk.Length / 2;
 
-                        // Compute RMS for diagnostics
+                        // Compute RMS for diagnostics (after normalization)
                         float rms = NormalizedAudioFrame.ComputeRms(pcmForVosk, pcmForVosk.Length);
                         if (rms > peakRms) peakRms = rms;
 
@@ -1498,15 +1535,98 @@ namespace Kinectv1
                 catch { }
 
                 var now = DateTime.UtcNow;
-                if ((now - lastLog).TotalSeconds >= 1)
+                if ((now - lastLog).TotalSeconds >= 5)
                 {
-                    // Keep the expensive diag log out of normal runs.
+                    // Log sample rate distribution every 5 seconds
+                    if (frames16k > 0 || framesOther > 0)
+                    {
+                        Console.WriteLine($"[WebRTC-STT] SampleRate distribution: 16kHz={frames16k}, other={framesOther} (total {frames} frames)");
+                    }
                     frames = 0;
+                    frames16k = 0;
+                    framesOther = 0;
                     totalSamplesProcessed = 0;
                     peakRms = 0f;
                     lastLog = now;
                 }
             }
+        }
+
+        /// <summary>
+        /// Mix stereo float audio to mono by averaging L+R channels.
+        /// </summary>
+        private static float[] MixStereoToMonoFloat(float[] stereo)
+        {
+            if (stereo == null || stereo.Length == 0) return Array.Empty<float>();
+            var mono = new float[stereo.Length / 2];
+            for (int i = 0; i < mono.Length; i++)
+            {
+                mono[i] = (stereo[i * 2] + stereo[i * 2 + 1]) * 0.5f;
+            }
+            return mono;
+        }
+
+        /// <summary>
+        /// Convert short[] PCM to float[] in range [-1, 1].
+        /// </summary>
+        private static float[] ShortsToFloats(short[] pcm)
+        {
+            if (pcm == null || pcm.Length == 0) return Array.Empty<float>();
+            var floats = new float[pcm.Length];
+            for (int i = 0; i < pcm.Length; i++)
+            {
+                floats[i] = pcm[i] / 32768f;
+            }
+            return floats;
+        }
+
+        // Per-source low-pass filter state for proper anti-aliasing during resampling
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, NAudio.Dsp.BiQuadFilter> _webRtcResampleFilters 
+            = new System.Collections.Concurrent.ConcurrentDictionary<string, NAudio.Dsp.BiQuadFilter>();
+
+        /// <summary>
+        /// Resample mono float audio with proper anti-aliasing filter.
+        /// Uses low-pass filter before decimation to prevent aliasing artifacts.
+        /// </summary>
+        private static float[] ResampleMonoWithFilter(float[] input, int srcRate, int dstRate, string sourceId)
+        {
+            if (input == null || input.Length == 0 || srcRate <= 0 || dstRate <= 0)
+                return Array.Empty<float>();
+
+            if (srcRate == dstRate) return input;
+
+            // Get or create anti-aliasing low-pass filter for this source
+            // Cutoff at Nyquist of target rate (8kHz for 16kHz target) with some headroom
+            var filterKey = $"{sourceId ?? "default"}_{srcRate}_{dstRate}";
+            var lpf = _webRtcResampleFilters.GetOrAdd(filterKey, _ => 
+                NAudio.Dsp.BiQuadFilter.LowPassFilter(srcRate, dstRate * 0.45f, 0.707f));
+
+            // Apply anti-aliasing filter
+            var filtered = new float[input.Length];
+            for (int i = 0; i < input.Length; i++)
+            {
+                filtered[i] = lpf.Transform(input[i]);
+            }
+
+            // Calculate output length
+            double ratio = (double)srcRate / dstRate;
+            int outputLength = (int)(input.Length / ratio);
+            if (outputLength <= 0) return Array.Empty<float>();
+
+            var output = new float[outputLength];
+            
+            // Linear interpolation on filtered signal
+            for (int i = 0; i < outputLength; i++)
+            {
+                double srcIndex = i * ratio;
+                int idx0 = (int)srcIndex;
+                int idx1 = Math.Min(idx0 + 1, filtered.Length - 1);
+                double frac = srcIndex - idx0;
+
+                output[i] = (float)(filtered[idx0] * (1.0 - frac) + filtered[idx1] * frac);
+            }
+
+            return output;
         }
 
         /// <summary>
@@ -1632,6 +1752,9 @@ namespace Kinectv1
                 var sttModelPath = App.SettingsProvider?.Current?.Stt?.ModelPath ?? string.Empty;
                 VoiceRecognizer.Start(sttModelPath);
 
+                // Load WebRTC normalization settings from config
+                AudioUtils.LoadNormalizationSettingsFromConfig();
+
                 EnsureWebRtcWiring();
                 StartWebRtcServerAlways();
 
@@ -1660,7 +1783,6 @@ namespace Kinectv1
 
             WebRtcSignalingServer.OnModeChangeRequested += OnWebUiModeChangeRequested;
             WebRtcSignalingServer.OnWebTextInput += OnWebUiTextInput;
-            WebRtcSignalingServer.OnWebAudioReceived += OnWebRtcInboundAudio;
         }
     }
 }

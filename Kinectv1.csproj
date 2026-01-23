@@ -227,6 +227,7 @@
     <Folder Include="src\Audio\" />
     <Folder Include="src\UI\Settings\Editors\" />
     <Folder Include="src\UI\Validation\" />
+    <Folder Include="Transcription\AudioCapture\" />
   </ItemGroup>
 
   <Target Name="VerifyRuntimeSetup" AfterTargets="Build">

@@ -17,6 +17,7 @@
             --green: #22C55E;
             --red: #EF4444;
             --purple: #8B5CF6;
+            --orange: #F59E0B;
         }
         * { box-sizing: border-box; margin: 0; padding: 0; }
         html, body { height: 100%; }
@@ -42,21 +43,70 @@
             border-bottom: 1px solid var(--border);
         }
         .header h1 { font-size: 13px; font-weight: 600; }
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
         .status {
             display: flex;
             align-items: center;
             gap: 4px;
             font-size: 10px;
             color: var(--text-dim);
+            cursor: pointer;
+            padding: 4px 8px;
+            border-radius: 12px;
+            background: var(--surface-light);
+            border: 1px solid var(--border);
+            transition: all 0.15s;
+            -webkit-tap-highlight-color: transparent;
+        }
+        .status:hover, .status:active {
+            background: var(--bg);
+            border-color: var(--text-muted);
+        }
+        .status:active {
+            transform: scale(0.95);
         }
         .dot {
-            width: 5px; height: 5px;
+            width: 6px; height: 6px;
             border-radius: 50%;
             background: var(--text-muted);
+            flex-shrink: 0;
         }
-        .dot.on { background: var(--green); }
+        .dot.on { background: var(--green); box-shadow: 0 0 4px var(--green); }
         .dot.warn { background: orange; animation: blink 1s infinite; }
         @keyframes blink { 50% { opacity: 0.4; } }
+
+        /* Transcription mode button */
+        .btn-transcribe {
+            background: var(--surface-light);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 3px 8px;
+            font-size: 10px;
+            color: var(--text-dim);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            transition: all 0.15s;
+        }
+        .btn-transcribe:hover {
+            background: var(--surface);
+            border-color: var(--text-muted);
+        }
+        .btn-transcribe.on {
+            background: var(--orange);
+            border-color: var(--orange);
+            color: #fff;
+        }
+        .btn-transcribe svg {
+            width: 12px;
+            height: 12px;
+            fill: currentColor;
+        }
 
         /* Compact 3-Position Slider Switch */
         .switch-wrap {
@@ -85,6 +135,7 @@
             transition: color 0.15s;
             user-select: none;
             gap: 3px;
+            -webkit-tap-highlight-color: transparent;
         }
         .switch-opt.active { color: #fff; }
         .switch-thumb {
@@ -100,6 +151,19 @@
         }
         .switch-thumb.p1 { left: calc(33.333% + 0.67px); background: var(--blue); }
         .switch-thumb.p2 { left: calc(66.666% - 0.67px); background: var(--purple); }
+
+        /* Transcription mode banner */
+        .transcription-banner {
+            background: var(--orange);
+            color: #fff;
+            padding: 4px 10px;
+            font-size: 10px;
+            text-align: center;
+            display: none;
+        }
+        .transcription-banner.visible {
+            display: block;
+        }
 
         /* Chat Area */
         .chat {
@@ -126,6 +190,12 @@
         .msg.ai {
             align-self: flex-start;
             background: var(--surface-light);
+            border-bottom-left-radius: 3px;
+        }
+        .msg.transcription {
+            align-self: flex-start;
+            background: var(--orange);
+            opacity: 0.9;
             border-bottom-left-radius: 3px;
         }
         .msg.typing {
@@ -220,10 +290,20 @@
 <body>
     <div class="header">
         <h1>Voice AI</h1>
-        <div class="status">
-            <span class="dot" id="dot"></span>
-            <span id="statusText">Offline</span>
+        <div class="header-right">
+            <button type="button" class="btn-transcribe" id="transcribeBtn" title="Toggle transcription-only mode">
+                <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm4 18H6V4h7v5h5v11zM8 15h8v2H8v-2zm0-4h8v2H8v-2z"/></svg>
+                <span id="transcribeBtnText">📝</span>
+            </button>
+            <div class="status" id="status" title="Tap to reconnect">
+                <span class="dot" id="dot"></span>
+                <span id="statusText">Offline</span>
+            </div>
         </div>
+    </div>
+
+    <div class="transcription-banner" id="transcriptionBanner">
+        📝 Transcription Mode — Speech is logged, AI responses disabled
     </div>
 
     <div class="switch-wrap">
@@ -239,7 +319,7 @@
         <div class="empty" id="empty">
             <div>Select 📱 WebRTC mode to use voice</div>
             <div>or type a message below</div>
-            <div class="empty-hint">Tap anywhere to enable audio playback</div>
+            <div class="empty-hint">Tap status indicator to reconnect if stuck</div>
         </div>
     </div>
 

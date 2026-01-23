@@ -1,0 +1,142 @@
+<UserControl x:Class="Kinectv1.UI.Settings.TranscriptionSettingsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d"
+             d:DesignHeight="800" d:DesignWidth="600">
+    <UserControl.Resources>
+        <SolidColorBrush x:Key="WindowBackground" Color="#FF1E1E1E"/>
+        <SolidColorBrush x:Key="SurfaceBackground" Color="#FF2D2D30"/>
+        <SolidColorBrush x:Key="SurfaceBackgroundLight" Color="#FF3F3F46"/>
+        <SolidColorBrush x:Key="BorderBrush" Color="#FF464647"/>
+        <SolidColorBrush x:Key="TextPrimary" Color="#FFFFFFFF"/>
+        <SolidColorBrush x:Key="TextSecondary" Color="#FFE0E0E0"/>
+        <SolidColorBrush x:Key="TextMuted" Color="#FF999999"/>
+        <SolidColorBrush x:Key="AccentGreen" Color="#FF107C10"/>
+        <SolidColorBrush x:Key="AccentOrange" Color="#FFFF8C00"/>
+        <Style x:Key="ThemedButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="{DynamicResource SurfaceBackground}"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="12,6"/>
+        </Style>
+        <Style x:Key="ThemedTextBoxStyle" TargetType="TextBox">
+            <Setter Property="Background" Value="{DynamicResource SurfaceBackground}"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+            <Setter Property="Padding" Value="6,4"/>
+        </Style>
+        <Style x:Key="ThemedCheckBoxStyle" TargetType="CheckBox">
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
+        </Style>
+    </UserControl.Resources>
+    <Grid Background="{DynamicResource WindowBackground}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <TextBlock Text="Transcription Settings" Foreground="{DynamicResource TextPrimary}" FontSize="16" FontWeight="SemiBold"/>
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="0,10,0,0">
+            <StackPanel>
+                <Border Background="{DynamicResource SurfaceBackground}" CornerRadius="4" Padding="16" Margin="0,0,0,16">
+                    <StackPanel>
+                        <TextBlock Text="Transcription Mode" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimary}" Margin="0,0,0,12"/>
+                        <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource TextMuted}" FontSize="12" Margin="0,0,0,12"
+                                   Text="When enabled, the system operates in transcription-only mode. Speech is transcribed and logged to files, but not sent to the AI assistant. Meeting summaries can be auto-generated using the LLM."/>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                            <TextBlock Text="Enable Transcription Mode" Foreground="{DynamicResource TextSecondary}" Width="200" VerticalAlignment="Center"/>
+                            <CheckBox x:Name="EnabledCheckBox" Style="{StaticResource ThemedCheckBoxStyle}"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                            <TextBlock Text="Mute TTS Output" Foreground="{DynamicResource TextSecondary}" Width="200" VerticalAlignment="Center"/>
+                            <CheckBox x:Name="MuteTtsCheckBox" Style="{StaticResource ThemedCheckBoxStyle}" ToolTip="When enabled, AI responses will not be spoken aloud"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+                <Border Background="{DynamicResource SurfaceBackground}" CornerRadius="4" Padding="16" Margin="0,0,0,16">
+                    <StackPanel>
+                        <TextBlock Text="Speaker Diarization" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimary}" Margin="0,0,0,12"/>
+                        <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource TextMuted}" FontSize="12" Margin="0,0,0,12"
+                                   Text="Controls how strictly speakers are differentiated by voice. Lower values group similar voices together (fewer speakers), higher values separate them (more speakers)."/>
+                        <StackPanel Margin="0,0,0,8">
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                <TextBlock Text="Voice Match Strictness" Foreground="{DynamicResource TextSecondary}" Width="200" VerticalAlignment="Center"/>
+                                <TextBlock x:Name="DiarizationThresholdValueText" Text="0.50" Foreground="{DynamicResource TextMuted}" Width="40" VerticalAlignment="Center"/>
+                            </StackPanel>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="50"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="50"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="Lenient" Foreground="{DynamicResource TextMuted}" FontSize="10"/>
+                                <Slider x:Name="DiarizationThresholdSlider" Grid.Column="1" Minimum="0" Maximum="1" Value="0.5" 
+                                        TickFrequency="0.1" IsSnapToTickEnabled="False" ValueChanged="DiarizationThresholdSlider_ValueChanged"/>
+                                <TextBlock Grid.Column="2" Text="Strict" Foreground="{DynamicResource TextMuted}" FontSize="10" HorizontalAlignment="Right"/>
+                            </Grid>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+                <Border Background="{DynamicResource SurfaceBackground}" CornerRadius="4" Padding="16" Margin="0,0,0,16">
+                    <StackPanel>
+                        <TextBlock Text="File Output" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimary}" Margin="0,0,0,12"/>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                            <TextBlock Text="Save Transcriptions to File" Foreground="{DynamicResource TextSecondary}" Width="200" VerticalAlignment="Center"/>
+                            <CheckBox x:Name="LogToFileCheckBox" Style="{StaticResource ThemedCheckBoxStyle}"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                            <TextBlock Text="Output Folder" Foreground="{DynamicResource TextSecondary}" Width="200" VerticalAlignment="Center"/>
+                            <TextBox x:Name="OutputFolderTextBox" Style="{StaticResource ThemedTextBoxStyle}" Width="250"/>
+                            <Button Content="Browse..." Margin="8,0,0,0" Style="{StaticResource ThemedButtonStyle}" Click="BrowseOutputFolderButton_Click"/>
+                        </StackPanel>
+                        <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource TextMuted}" FontSize="11" Margin="0,4,0,0"
+                                   Text="Files are named: Meeting_YYYY-MM-DD_HH-mm-ss.txt"/>
+                    </StackPanel>
+                </Border>
+                <Border Background="{DynamicResource SurfaceBackground}" CornerRadius="4" Padding="16" Margin="0,0,0,16">
+                    <StackPanel>
+                        <TextBlock Text="Meeting Summary" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimary}" Margin="0,0,0,12"/>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                            <TextBlock Text="Auto-Generate Summary" Foreground="{DynamicResource TextSecondary}" Width="200" VerticalAlignment="Center"/>
+                            <CheckBox x:Name="GenerateSummaryCheckBox" Style="{StaticResource ThemedCheckBoxStyle}" ToolTip="Use LLM to generate a meeting summary when the session ends"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                            <TextBlock Text="Idle Timeout (seconds)" Foreground="{DynamicResource TextSecondary}" Width="200" VerticalAlignment="Center"/>
+                            <TextBox x:Name="SummaryDelayTextBox" Style="{StaticResource ThemedTextBoxStyle}" Width="80" ToolTip="Seconds of silence before auto-generating summary (5-3600)"/>
+                        </StackPanel>
+                        <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource TextMuted}" FontSize="11" Margin="0,4,0,0"
+                                   Text="Summary is generated after the specified idle time or when the session is manually stopped. Requires LLM to be enabled."/>
+                    </StackPanel>
+                </Border>
+                <Border Background="{DynamicResource SurfaceBackground}" CornerRadius="4" Padding="16" Margin="0,0,0,16">
+                    <StackPanel>
+                        <TextBlock Text="Current Session" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimary}" Margin="0,0,0,12"/>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                            <TextBlock Text="Status: " Foreground="{DynamicResource TextMuted}" FontSize="12" Width="80"/>
+                            <TextBlock x:Name="SessionStatusText" Text="Not Active" Foreground="{DynamicResource TextSecondary}" FontSize="12"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                            <TextBlock Text="Entries: " Foreground="{DynamicResource TextMuted}" FontSize="12" Width="80"/>
+                            <TextBlock x:Name="EntryCountText" Text="0" Foreground="{DynamicResource TextSecondary}" FontSize="12"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                            <TextBlock Text="File: " Foreground="{DynamicResource TextMuted}" FontSize="12" Width="80"/>
+                            <TextBlock x:Name="CurrentFileText" Text="--" Foreground="{DynamicResource TextSecondary}" FontSize="12" TextTrimming="CharacterEllipsis" MaxWidth="300"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                            <Button x:Name="StartStopButton" Content="Start Session" Style="{StaticResource ThemedButtonStyle}" Click="StartStopButton_Click" Width="120"/>
+                            <Button Content="Open Folder" Margin="8,0,0,0" Style="{StaticResource ThemedButtonStyle}" Click="OpenFolderButton_Click"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+                <TextBlock x:Name="StatusText" Foreground="{DynamicResource TextMuted}" Margin="0,0,0,10"/>
+            </StackPanel>
+        </ScrollViewer>
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
+            <Button Content="Save" Style="{StaticResource ThemedButtonStyle}" Background="{DynamicResource AccentGreen}" Click="SaveButton_Click"/>
+        </StackPanel>
+    </Grid>
+</UserControl>

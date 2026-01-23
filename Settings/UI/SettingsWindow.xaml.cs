@@ -100,6 +100,14 @@ namespace Kinectv1.UI.Settings
                         // Audio/VAD - Show normalized voice threshold as RMS 0-10000 integer
                         editor.AudioVoiceThresholdTextBox.Text = ((int)Math.Round(snapshot.Audio.VoiceThreshold * 10000.0)).ToString(CultureInfo.InvariantCulture);
                         
+                        // ASR/VAD settings
+                        if (editor.VadSilenceTimeoutSlider != null)
+                            editor.VadSilenceTimeoutSlider.Value = snapshot.Asr.VadSilenceTimeoutMs;
+                        if (editor.VadDebounceTimeoutSlider != null)
+                            editor.VadDebounceTimeoutSlider.Value = snapshot.Asr.VadDebounceTimeoutMs;
+                        if (editor.BargeInEnabledCheckBox != null)
+                            editor.BargeInEnabledCheckBox.IsChecked = snapshot.Asr.BargeInEnabled;
+                        
                         // Speaker identification
                         if (editor.SpeakerMatchThresholdTextBox != null)
                         {
@@ -183,6 +191,18 @@ namespace Kinectv1.UI.Settings
             string sttModelPath = editor.SttModelPathTextBox?.Text ?? current.Stt.ModelPath;
             string sttInputDevice = editor.MicInputComboBox?.Text ?? current.Stt.InputDevice;
 
+            // ASR/VAD settings
+            int vadSilenceTimeoutMs = current.Asr.VadSilenceTimeoutMs;
+            int vadDebounceTimeoutMs = current.Asr.VadDebounceTimeoutMs;
+            bool bargeInEnabled = current.Asr.BargeInEnabled;
+            
+            if (editor.VadSilenceTimeoutSlider != null)
+                vadSilenceTimeoutMs = (int)editor.VadSilenceTimeoutSlider.Value;
+            if (editor.VadDebounceTimeoutSlider != null)
+                vadDebounceTimeoutMs = (int)editor.VadDebounceTimeoutSlider.Value;
+            if (editor.BargeInEnabledCheckBox != null)
+                bargeInEnabled = editor.BargeInEnabledCheckBox.IsChecked ?? current.Asr.BargeInEnabled;
+
             // Speaker embedding model
             string spkPath = editor.SpeakerModelPathTextBox?.Text ?? current.Face.SpeakerEmbeddingModelPath;
 
@@ -221,6 +241,18 @@ namespace Kinectv1.UI.Settings
                 InputDevice: sttInputDevice
             );
 
+            // ASR settings with UI values
+            var asr = new global::Kinectv1.Settings.AsrSettings(
+                VoiceConfidenceThreshold: current.Asr.VoiceConfidenceThreshold,
+                VoiceHighConfidenceThreshold: current.Asr.VoiceHighConfidenceThreshold,
+                VoiceConfidenceBufferSize: current.Asr.VoiceConfidenceBufferSize,
+                VoiceConfidenceLoggingEnabled: current.Asr.VoiceConfidenceLoggingEnabled,
+                VadSilenceTimeoutMs: vadSilenceTimeoutMs,
+                VadDebounceTimeoutMs: vadDebounceTimeoutMs,
+                DiscordVadThreshold: current.Asr.DiscordVadThreshold,
+                BargeInEnabled: bargeInEnabled
+            );
+
             // Preserve face settings but update speaker model path
             var face = new global::Kinectv1.Settings.FaceSettings(
                 Threshold: current.Face.Threshold,
@@ -235,7 +267,7 @@ namespace Kinectv1.UI.Settings
             // Preserve existing settings that aren't in the editor
             return new global::Kinectv1.Settings.AppSettings(
                 audio, tts, current.Ollama, current.Discord, current.WebRtc, 
-                current.Ui, current.Asr, stt, face, current.App);
+                current.Ui, asr, stt, face, current.App, current.Transcription, current.Debug);
         }
 
         private void Verify_Click(object sender, RoutedEventArgs e)
@@ -316,6 +348,15 @@ namespace Kinectv1.UI.Settings
 
                     // Audio/VAD
                     editor.AudioVoiceThresholdTextBox.Text = ((int)Math.Round(defaults.Audio.VoiceThreshold * 10000.0)).ToString(CultureInfo.InvariantCulture);
+                    
+                    // ASR/VAD settings
+                    if (editor.VadSilenceTimeoutSlider != null)
+                        editor.VadSilenceTimeoutSlider.Value = defaults.Asr.VadSilenceTimeoutMs;
+                    if (editor.VadDebounceTimeoutSlider != null)
+                        editor.VadDebounceTimeoutSlider.Value = defaults.Asr.VadDebounceTimeoutMs;
+                    if (editor.BargeInEnabledCheckBox != null)
+                        editor.BargeInEnabledCheckBox.IsChecked = defaults.Asr.BargeInEnabled;
+                    
                     if (editor.SpeakerMatchThresholdTextBox != null)
                         editor.SpeakerMatchThresholdTextBox.Text = defaults.Audio.SpeakerMatchMinScore.ToString(CultureInfo.InvariantCulture);
                     if (editor.SpeakerModelPathTextBox != null)
@@ -381,6 +422,15 @@ namespace Kinectv1.UI.Settings
 
                     // Audio/VAD
                     editor.AudioVoiceThresholdTextBox.Text = ((int)Math.Round(snapshot.Audio.VoiceThreshold * 10000.0)).ToString(CultureInfo.InvariantCulture);
+                    
+                    // ASR/VAD settings
+                    if (editor.VadSilenceTimeoutSlider != null)
+                        editor.VadSilenceTimeoutSlider.Value = snapshot.Asr.VadSilenceTimeoutMs;
+                    if (editor.VadDebounceTimeoutSlider != null)
+                        editor.VadDebounceTimeoutSlider.Value = snapshot.Asr.VadDebounceTimeoutMs;
+                    if (editor.BargeInEnabledCheckBox != null)
+                        editor.BargeInEnabledCheckBox.IsChecked = snapshot.Asr.BargeInEnabled;
+                    
                     if (editor.SpeakerMatchThresholdTextBox != null)
                         editor.SpeakerMatchThresholdTextBox.Text = snapshot.Audio.SpeakerMatchMinScore.ToString(CultureInfo.InvariantCulture);
                     if (editor.SpeakerModelPathTextBox != null)
@@ -427,6 +477,16 @@ namespace Kinectv1.UI.Settings
                     _attachedEditor.TtsOutputDeviceComboBox.SelectionChanged -= OnEditorDirtySelection;
                 if (_attachedEditor.MicInputComboBox != null)
                     _attachedEditor.MicInputComboBox.SelectionChanged -= OnEditorDirtySelection;
+                // ASR/VAD controls
+                if (_attachedEditor.VadSilenceTimeoutSlider != null)
+                    _attachedEditor.VadSilenceTimeoutSlider.ValueChanged -= OnEditorDirtyValue;
+                if (_attachedEditor.VadDebounceTimeoutSlider != null)
+                    _attachedEditor.VadDebounceTimeoutSlider.ValueChanged -= OnEditorDirtyValue;
+                if (_attachedEditor.BargeInEnabledCheckBox != null)
+                {
+                    _attachedEditor.BargeInEnabledCheckBox.Checked -= OnEditorDirty;
+                    _attachedEditor.BargeInEnabledCheckBox.Unchecked -= OnEditorDirty;
+                }
             }
 
             _attachedEditor = _viewModel?.SelectedCategory?.EditorView as ModelsSettingsView;
@@ -458,6 +518,16 @@ namespace Kinectv1.UI.Settings
                     _attachedEditor.TtsOutputDeviceComboBox.SelectionChanged += OnEditorDirtySelection;
                 if (_attachedEditor.MicInputComboBox != null)
                     _attachedEditor.MicInputComboBox.SelectionChanged += OnEditorDirtySelection;
+                // ASR/VAD controls
+                if (_attachedEditor.VadSilenceTimeoutSlider != null)
+                    _attachedEditor.VadSilenceTimeoutSlider.ValueChanged += OnEditorDirtyValue;
+                if (_attachedEditor.VadDebounceTimeoutSlider != null)
+                    _attachedEditor.VadDebounceTimeoutSlider.ValueChanged += OnEditorDirtyValue;
+                if (_attachedEditor.BargeInEnabledCheckBox != null)
+                {
+                    _attachedEditor.BargeInEnabledCheckBox.Checked += OnEditorDirty;
+                    _attachedEditor.BargeInEnabledCheckBox.Unchecked += OnEditorDirty;
+                }
             }
         }
 

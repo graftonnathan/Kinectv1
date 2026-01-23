@@ -476,6 +476,48 @@
                                      Style="{StaticResource ThemedTextBoxStyle}" Height="30"
                                      ToolTip="RMS level that triggers speech detection. Lower = more sensitive."/>
                         </Grid>
+
+                        <!-- VAD Silence Timeout -->
+                        <Grid Margin="0,0,0,8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="180"/>
+                                <ColumnDefinition Width="250"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Silence Timeout (ms)" VerticalAlignment="Center" 
+                                       Foreground="{DynamicResource TextSecondary}"/>
+                            <Slider Grid.Column="1" Name="VadSilenceTimeoutSlider" Minimum="300" Maximum="2000" TickFrequency="50" IsSnapToTickEnabled="True"
+                                    ToolTip="Time of silence before speech is considered complete. Lower = faster response, but may cut off mid-sentence."/>
+                            <TextBlock Grid.Column="2" Name="VadSilenceTimeoutValueText" Width="50" Margin="8,0,0,0" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
+                        </Grid>
+
+                        <!-- VAD Debounce Timeout -->
+                        <Grid Margin="0,0,0,8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="180"/>
+                                <ColumnDefinition Width="250"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Debounce (ms)" VerticalAlignment="Center" 
+                                       Foreground="{DynamicResource TextSecondary}"/>
+                            <Slider Grid.Column="1" Name="VadDebounceTimeoutSlider" Minimum="30" Maximum="500" TickFrequency="10" IsSnapToTickEnabled="True"
+                                    ToolTip="Time of loud audio before speech is detected. Lower = faster start detection."/>
+                            <TextBlock Grid.Column="2" Name="VadDebounceTimeoutValueText" Width="50" Margin="8,0,0,0" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"/>
+                        </Grid>
+
+                        <!-- Barge-In Enabled -->
+                        <Grid Margin="0,0,0,8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="180"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Barge-In Enabled" VerticalAlignment="Center" 
+                                       Foreground="{DynamicResource TextSecondary}"/>
+                            <CheckBox Grid.Column="1" Name="BargeInEnabledCheckBox" Style="{StaticResource ThemedCheckBoxStyle}"
+                                      ToolTip="When enabled, speaking will interrupt AI responses. Disable to let AI finish before responding."/>
+                        </Grid>
                     </StackPanel>
                 </Border>
 

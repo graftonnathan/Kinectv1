@@ -106,6 +106,12 @@ namespace Kinectv1.UI.Settings
 
             Categories.Add(new SettingsCategoryVM
             {
+                Name = "Transcription",
+                EditorView = new TranscriptionSettingsView()
+            });
+
+            Categories.Add(new SettingsCategoryVM
+            {
                 Name = "Discord",
                 EditorView = new DiscordSettingsView()
             });
@@ -114,6 +120,12 @@ namespace Kinectv1.UI.Settings
             {
                 Name = "WebRTC",
                 EditorView = new WebRtcSettingsView()
+            });
+
+            Categories.Add(new SettingsCategoryVM
+            {
+                Name = "Debug",
+                EditorView = new DebugSettingsView()
             });
 
             if (Categories.Count > 0)

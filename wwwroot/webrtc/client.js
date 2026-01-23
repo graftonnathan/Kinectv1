@@ -11,9 +11,16 @@ var mode = MODE_MIC;
 var voiceOn = false;
 var pendingText = null;
 
+// Transcription mode
+var transcriptionMode = false;
+
 var captureProcessor = null;
 var captureSource = null;
 var captureGain = null;
+
+// Input gain boost for low volume capture (adjustable)
+// Values > 1.0 amplify the signal before sending to server
+var CAPTURE_INPUT_GAIN = 2.0; // 2x boost for better STT recognition
 
 // TTS
 var ttsAudioEl = null;
@@ -54,7 +61,23 @@ var isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
 var isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
 var needsIOSWorkaround = isIOS || (isSafari && navigator.maxTouchPoints > 0);
 
-var chat, empty, input, level, dot, statusText, micBtn, thumb, sendBtn;
+// WebSocket reconnection state
+var wsReconnectAttempt = 0;
+var wsReconnectTimer = null;
+var wsLastPongTime = 0;
+var wsPingInterval = null;
+var wsConnectionId = 0; // Track connection instance to prevent stale handlers
+var wsConnectStartTime = 0; // Track when connection attempt started
+
+// Reconnection timing - more aggressive for iOS
+var WS_RECONNECT_BASE_MS = 500;     // Start faster
+var WS_RECONNECT_MAX_MS = 5000;     // Cap lower
+var WS_PING_INTERVAL_MS = 10000;    // Ping more frequently
+var WS_PONG_TIMEOUT_MS = 3000;      // Shorter pong timeout
+var WS_CONNECT_TIMEOUT_MS = 8000;   // Shorter connect timeout for stale detection
+var WS_OPEN_CONFIRM_MS = 2000;      // Time to wait for first message after open
+
+var chat, empty, input, level, dot, statusText, micBtn, thumb, sendBtn, transcribeBtn, transcriptionBanner;
 
 function estimateRmsFloat(buf) {
     if (!buf || buf.length <= 0) return 0;
@@ -85,6 +108,7 @@ function modeToPos(m) {
 }
 
 function updateMode(m) {
+    console.log('[Mode] Updating UI to mode: ' + m);
     mode = m;
     if (thumb) thumb.className = 'switch-thumb ' + modeToPos(m);
     document.querySelectorAll('.switch-opt').forEach(function (opt) {
@@ -97,21 +121,52 @@ function updateMode(m) {
 }
 
 function setMode(m) {
+    var switchingToWebRtc = (m === MODE_WEBRTC && mode !== MODE_WEBRTC);
+    
+    // Update UI immediately for responsiveness
+    updateMode(m);
+    
     fetch('/api/mode', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ mode: m })
-    }).then(function (res) { if (res.ok) updateMode(m); });
+    }).then(function (res) { 
+        if (res.ok) {
+            console.log('[Mode] Server accepted mode change to: ' + m);
+            // Force reconnect when switching to WebRTC for fresh connection
+            if (switchingToWebRtc) {
+                console.log('[WS] Switching to WebRTC mode - forcing fresh connection');
+                forceReconnect();
+            }
+        } else {
+            console.log('[Mode] Server rejected mode change');
+        }
+    }).catch(function(err) {
+        console.log('[Mode] Failed to set mode: ' + err);
+    });
 }
 
-function addMsg(text, type) {
+function addMsg(text, type, speaker) {
     if (empty) empty.classList.add('hidden');
     var div = document.createElement('div');
     div.className = 'msg ' + type;
-    div.textContent = text;
+    
+    // For transcription messages, show speaker label
+    if (type === 'transcription' && speaker) {
+        div.innerHTML = '<strong>' + escapeHtml(speaker) + ':</strong> ' + escapeHtml(text);
+    } else {
+        div.textContent = text;
+    }
+    
     chat.appendChild(div);
     chat.scrollTop = chat.scrollHeight;
     return div;
+}
+
+function escapeHtml(text) {
+    var div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
 }
 
 var typingEl = null;
@@ -234,7 +289,7 @@ function startNewUtterance(nowMs) {
     resetTtsBuffer();
 }
 
-function enqueueTtsChunk(base64Data, srcRate) {
+function enqueueTtsChunk(base64Data, srcRate = ttsSampleRate) {
     if (!base64Data) return;
 
     var nowMs = Date.now();
@@ -284,7 +339,6 @@ function flushTtsBufferToAudioEl(force) {
     if (ttsPcmTotalBytes <= 0) return;
     if (ttsPlayInProgress) return;
 
-    // More conservative start buffering for the first segment of an utterance
     if (!ttsStartedThisUtterance) {
         if (!force && ttsPcmTotalBytes < TTS_MIN_START_BYTES) return;
     } else {
@@ -520,8 +574,6 @@ function startCapture() {
 
     var actualSampleRate = audioCtx.sampleRate;
     captureSource = audioCtx.createMediaStreamSource(stream);
-
-    // Avoid routing mic capture to speakers.
     captureGain = audioCtx.createGain();
     captureGain.gain.value = 0;
 
@@ -547,15 +599,21 @@ function startCapture() {
         // Optional: TTS leakage gate (disabled by default because it can interfere with barge-in).
         if (BARGE_IN_TTS_LEAK_GATE_ENABLED && ttsSpeaking) {
             var rms = estimateRmsFloat(inputData);
-            var thr = Math.min(TTS_LEAK_GATE_MAX, Math.Max(TTS_LEAK_RMS_GATE, _ambientRms * TTS_LEAK_MULTIPLIER));
+            var thr = Math.min(TTS_LEAK_GATE_MAX, Math.max(TTS_LEAK_RMS_GATE, _ambientRms * TTS_LEAK_MULTIPLIER));
             if (rms >= thr) return;
         }
 
-        // Convert to PCM16 at capture/device rate.
+        // Convert to PCM16 at capture/device rate with input gain boost.
         // Let the server do resampling + ASR-friendly preprocessing.
         var pcm = new Int16Array(inputData.length);
+        var gain = CAPTURE_INPUT_GAIN || 1.0;
         for (var i = 0; i < inputData.length; i++) {
-            var s = Math.max(-1, Math.min(1, inputData[i]));
+            // Apply gain and soft-clip to avoid harsh distortion
+            var s = inputData[i] * gain;
+            // Soft clipping using tanh for values approaching limits
+            if (s > 0.9) s = 0.9 + 0.1 * Math.tanh((s - 0.9) * 10);
+            else if (s < -0.9) s = -0.9 + 0.1 * Math.tanh((s + 0.9) * 10);
+            s = Math.max(-1, Math.min(1, s));
             pcm[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
         }
 
@@ -580,7 +638,8 @@ function startCapture() {
                     noiseSuppression: CAPTURE_NOISE_SUPPRESSION,
                     autoGainControl: CAPTURE_AUTO_GAIN
                 },
-                prerollMs: PREROLL_MS
+                prerollMs: PREROLL_MS,
+                inputGain: gain
             }));
         } catch (err) {
             console.error('[Audio] Send error:', err);
@@ -625,11 +684,16 @@ function startStatusPoll() {
             .then(function (r) { return r.ok ? r.json() : null; })
             .then(function (j) {
                 if (!j) return;
-                if (j.mode !== undefined) updateMode(j.mode);
+                if (j.mode !== undefined && j.mode !== mode) {
+                    console.log('[Poll] Mode changed from server: ' + j.mode);
+                    updateMode(j.mode);
+                }
                 if (j.bargeInEnabled !== undefined) bargeInEnabled = j.bargeInEnabled;
+                if (j.transcriptionEnabled !== undefined) updateTranscriptionMode(j.transcriptionEnabled);
+                updateDspSettings(j);
             })
             .catch(function () { });
-    }, 1000);
+    }, 2000);
 }
 
 function stopStatusPoll() {
@@ -638,63 +702,276 @@ function stopStatusPoll() {
     statusPollTimer = null;
 }
 
-function connect() {
-    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    ws = new WebSocket(proto + '//' + location.host + '/ws?ts=' + Date.now());
+// Force a fresh WebSocket reconnection (for mode switches or manual refresh)
+function forceReconnect() {
+    console.log('[WS] Force reconnect requested');
+    wsReconnectAttempt = 0;
+    wsFirstMessageReceived = false;
+    cleanupWebSocket();
+    
+    // Small delay to ensure cleanup completes
+    setTimeout(function() {
+        connect();
+    }, 100);
+}
 
-    startStatusPoll();
+// Clean up WebSocket state before reconnecting
+function cleanupWebSocket() {
+    // Stop ping interval
+    if (wsPingInterval) {
+        clearInterval(wsPingInterval);
+        wsPingInterval = null;
+    }
+    
+    // Clear reconnect timer
+    if (wsReconnectTimer) {
+        clearTimeout(wsReconnectTimer);
+        wsReconnectTimer = null;
+    }
+    
+    // Force close existing socket
+    if (ws) {
+        try {
+            // Remove handlers to prevent double-firing
+            ws.onopen = null;
+            ws.onmessage = null;
+            ws.onclose = null;
+            ws.onerror = null;
+            
+            if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+                ws.close(1000, 'Reconnecting');
+            }
+        } catch (e) { }
+        ws = null;
+    }
+}
+
+// Start WebSocket ping/pong keepalive
+function startPingInterval(connectionId) {
+    if (wsPingInterval) {
+        clearInterval(wsPingInterval);
+    }
+    
+    wsLastPongTime = Date.now();
+    
+    wsPingInterval = setInterval(function () {
+        // Check if this is still the active connection
+        if (connectionId !== wsConnectionId) {
+            clearInterval(wsPingInterval);
+            wsPingInterval = null;
+            return;
+        }
+        
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+            return;
+        }
+        
+        // Check for pong timeout
+        var timeSincePong = Date.now() - wsLastPongTime;
+        if (timeSincePong > WS_PING_INTERVAL_MS + WS_PONG_TIMEOUT_MS) {
+            console.log('[WS] Pong timeout (' + timeSincePong + 'ms), forcing reconnect');
+            setStatus('Reconnecting...', 'warn');
+            forceReconnect();
+            return;
+        }
+        
+        // Send ping
+        try {
+            ws.send(JSON.stringify({ type: 'ping', ts: Date.now() }));
+        } catch (e) {
+            console.error('[WS] Ping send error:', e);
+            forceReconnect();
+        }
+    }, WS_PING_INTERVAL_MS);
+}
+
+// Schedule reconnection with exponential backoff
+function scheduleReconnect() {
+    if (wsReconnectTimer) return;
+    
+    var delay = Math.min(
+        WS_RECONNECT_BASE_MS * Math.pow(1.5, wsReconnectAttempt),
+        WS_RECONNECT_MAX_MS
+    );
+    
+    console.log('[WS] Scheduling reconnect in ' + delay + 'ms (attempt ' + (wsReconnectAttempt + 1) + ')');
+    setStatus('Retry in ' + Math.round(delay/1000) + 's...', 'warn');
+    
+    wsReconnectTimer = setTimeout(function () {
+        wsReconnectTimer = null;
+        wsReconnectAttempt++;
+        connect();
+    }, delay);
+}
+
+function connect() {
+    // Clean up any existing connection first
+    cleanupWebSocket();
+    
+    // Increment connection ID to invalidate stale handlers
+    wsConnectionId++;
+    var myConnectionId = wsConnectionId;
+    wsConnectStartTime = Date.now();
+    wsFirstMessageReceived = false;
+    
+    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    // Add cache-busting and connection ID to prevent stale connections
+    var url = proto + '//' + location.host + '/ws?t=' + Date.now();
+    
+    console.log('[WS] Connecting to: ' + url);
+    setStatus('Connecting...', 'warn');
+
+    try {
+        ws = new WebSocket(url);
+    } catch (e) {
+        console.error('[WS] WebSocket creation failed:', e);
+        setStatus('Connection failed', '');
+        scheduleReconnect();
+        return;
+    }
+
+    var connectTimeout = setTimeout(function () {
+        if (myConnectionId !== wsConnectionId) return;
+        
+        if (!wsFirstMessageReceived) {
+            var elapsed = Date.now() - wsConnectStartTime;
+            console.log('[WS] Connection timeout after ' + elapsed + 'ms (no message received)');
+            setStatus('Timeout', '');
+            cleanupWebSocket();
+            scheduleReconnect();
+        }
+    }, WS_CONNECT_TIMEOUT_MS);
 
     ws.onopen = function () {
-        setStatus('Connected', 'on');
-        stopStatusPoll();
-
-        // If we have pending TTS chunks from before unlock, try to play them once connected.
-        if (pendingTtsChunks.length && audioUnlocked) {
-            try {
-                pendingTtsChunks.forEach(function (c) { enqueueTtsChunk(c.data, c.rate); });
-                pendingTtsChunks = [];
-                flushTtsBufferToAudioEl(true);
-            } catch (e) { }
+        if (myConnectionId !== wsConnectionId) {
+            // Stale connection, close it
+            try { ws.close(); } catch (e) { }
+            return;
         }
+        
+        console.log('[WS] Socket opened, waiting for server status...');
+        setStatus('Waiting...', 'warn');
     };
 
     ws.onmessage = function (e) {
+        if (myConnectionId !== wsConnectionId) return;
+        
+        // First message received - connection verified!
+        if (!wsFirstMessageReceived) {
+            wsFirstMessageReceived = true;
+            clearTimeout(connectTimeout);
+            
+            console.log('[WS] Connection verified');
+            setStatus('Connected', 'on');
+            
+            wsReconnectAttempt = 0;
+            stopStatusPoll();
+            startPingInterval(myConnectionId);
+            
+            // Play any pending TTS chunks
+            if (pendingTtsChunks.length && audioUnlocked) {
+                try {
+                    pendingTtsChunks.forEach(function (c) { enqueueTtsChunk(c.data, c.rate); });
+                    pendingTtsChunks = [];
+                    flushTtsBufferToAudioEl(true);
+                } catch (e) { }
+            }
+        }
+        
         var msg;
         try { msg = JSON.parse(e.data); } catch (err) { return; }
 
-        if (msg.type === 'status') {
-            if (msg.mode !== undefined) updateMode(msg.mode);
-            if (msg.bargeInEnabled !== undefined) bargeInEnabled = msg.bargeInEnabled;
-        } else if (msg.type === 'transcription') {
-            if (pendingText && msg.text === pendingText) {
-                pendingText = null;
-            } else {
-                addMsg(msg.text, 'user');
-                showTyping();
-            }
-        } else if (msg.type === 'response_chunk') {
-            appendResponse(msg.text);
-        } else if (msg.type === 'response') {
-            hideTyping();
-            if (!streamEl) addMsg(msg.text, 'ai');
-            finalizeResponse();
-        } else if (msg.type === 'tts_audio' && msg.data) {
-            playTtsAudio(msg.data, msg.sampleRate || 24000);
-        } else if (msg.type === 'tts_stop') {
-            stopTtsPlayback();
+        // Handle all message types
+        switch (msg.type) {
+            case 'pong':
+                wsLastPongTime = Date.now();
+                break;
+                
+            case 'status':
+                console.log('[WS] Received status: mode=' + msg.mode);
+                if (msg.mode !== undefined && msg.mode !== mode) {
+                    updateMode(msg.mode);
+                }
+                if (msg.bargeInEnabled !== undefined) bargeInEnabled = msg.bargeInEnabled;
+                if (msg.transcriptionEnabled !== undefined) updateTranscriptionMode(msg.transcriptionEnabled);
+                break;
+                
+            case 'transcription_mode':
+                if (msg.enabled !== undefined) updateTranscriptionMode(msg.enabled);
+                break;
+                
+            case 'transcription_diarized':
+                var speaker = msg.speaker || 'Unknown';
+                var text = msg.text || '';
+                addMsg(text, 'transcription', speaker);
+                break;
+                
+            case 'transcription':
+                if (pendingText && msg.text === pendingText) {
+                    pendingText = null;
+                } else {
+                    var msgType = transcriptionMode ? 'transcription' : 'user';
+                    var spkr = msg.speaker || null;
+                    addMsg(msg.text, msgType, spkr);
+                    if (!transcriptionMode) {
+                        showTyping();
+                    }
+                }
+                break;
+                
+            case 'response_chunk':
+                if (!transcriptionMode) {
+                    appendResponse(msg.text);
+                }
+                break;
+                
+            case 'response':
+                if (!transcriptionMode) {
+                    hideTyping();
+                    if (!streamEl) addMsg(msg.text, 'ai');
+                    finalizeResponse();
+                }
+                break;
+                
+            case 'tts_audio':
+                if (msg.data && !transcriptionMode) {
+                    playTtsAudio(msg.data, msg.sampleRate || 24000);
+                }
+                break;
+                
+            case 'tts_stop':
+                stopTtsPlayback();
+                break;
         }
     };
 
-    ws.onclose = function () {
+    ws.onclose = function (event) {
+        if (myConnectionId !== wsConnectionId) return;
+        
+        clearTimeout(connectTimeout);
+        console.log('[WS] Closed: code=' + event.code + ', wasVerified=' + wsFirstMessageReceived);
         setStatus('Disconnected', '');
-        // keep status polling so app->web mode still updates
+        
+        // Clean up ping interval
+        if (wsPingInterval) {
+            clearInterval(wsPingInterval);
+            wsPingInterval = null;
+        }
+        
+        // Start status polling as fallback
         startStatusPoll();
-        setTimeout(connect, 2000);
+        
+        // Schedule reconnect
+        scheduleReconnect();
     };
 
-    ws.onerror = function () {
+    ws.onerror = function (event) {
+        if (myConnectionId !== wsConnectionId) return;
+        
+        console.error('[WS] Error');
         setStatus('Error', '');
-        // keep status polling so app->web mode still updates
+        
+        // Start status polling as fallback
         startStatusPoll();
     };
 }
@@ -729,7 +1006,7 @@ function startVoice() {
     cleanupCapture();
 
     if (!ws || ws.readyState !== 1) {
-        addMsg('⚠️ Not connected. Please wait for Connected status, then try mic again.', 'ai');
+        addMsg('⚠️ Not connected. Tap status to reconnect.', 'ai');
         return;
     }
 
@@ -751,10 +1028,10 @@ function startVoice() {
                 startLevel();
                 startKeepalive();
             }).catch(function () {
-                addMsg('⏱️ Mic request timed out. Try: Settings > Safari > Camera & Microphone > Allow', 'ai');
+                addMsg('⏱️ Mic request timed out. Check Settings > Safari > Microphone', 'ai');
             });
         } catch (e) {
-            addMsg('⏱️ Mic request timed out. Try: Settings > Safari > Camera & Microphone > Allow', 'ai');
+            addMsg('⏱️ Mic request timed out.', 'ai');
         }
     }, 5000);
 
@@ -793,13 +1070,13 @@ function startVoice() {
         var msg = e.message || e.name || 'Unknown error';
 
         if (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError') {
-            addMsg('❌ Microphone permission denied. Go to Settings > Safari > Camera & Microphone Access and enable it for this site.', 'ai');
+            addMsg('❌ Microphone permission denied.', 'ai');
         } else if (e.name === 'NotFoundError') {
-            addMsg('❌ No microphone found on this device.', 'ai');
+            addMsg('❌ No microphone found.', 'ai');
         } else if (e.name === 'NotReadableError' || e.name === 'AbortError') {
-            addMsg('❌ Microphone is busy or not readable. Close other apps using mic.', 'ai');
+            addMsg('❌ Microphone busy. Close other apps.', 'ai');
         } else if (e.name === 'SecurityError') {
-            addMsg('❌ Security error - microphone requires HTTPS on this browser. Try enabling HTTPS in settings.', 'ai');
+            addMsg('❌ Security error - HTTPS required.', 'ai');
         } else {
             addMsg('❌ Mic error: ' + msg, 'ai');
         }
@@ -823,28 +1100,51 @@ function startKeepalive() {
         if (stream) {
             var tracks = stream.getAudioTracks();
             if (tracks.length === 0 || tracks[0].readyState === 'ended') {
-                addMsg('⚠️ Microphone stream ended. Click mic to restart.', 'ai');
+                addMsg('⚠️ Mic stream ended. Tap mic to restart.', 'ai');
                 stopVoice();
             }
         }
     }, 5000);
 }
 
-// Capture constraint defaults (avoid undefined globals)
-var CAPTURE_ECHO_CANCELLATION = true;
-var CAPTURE_NOISE_SUPPRESSION = true;
-var CAPTURE_AUTO_GAIN = true;
+// Capture constraint defaults
+// These are loaded from server settings via /api/status
+var CAPTURE_ECHO_CANCELLATION = false;
+var CAPTURE_NOISE_SUPPRESSION = false;
+var CAPTURE_AUTO_GAIN = false;
 
-// Allow querystring override: ?raw=1 disables the processing constraints
+// Allow querystring override: ?dsp=1 enables all, ?raw=1 disables all
 try {
-    if (location && location.search && location.search.indexOf('raw=1') >= 0) {
-        CAPTURE_ECHO_CANCELLATION = false;
-        CAPTURE_NOISE_SUPPRESSION = false;
-        CAPTURE_AUTO_GAIN = false;
+    if (location && location.search) {
+        if (location.search.indexOf('dsp=1') >= 0) {
+            CAPTURE_ECHO_CANCELLATION = true;
+            CAPTURE_NOISE_SUPPRESSION = true;
+            CAPTURE_AUTO_GAIN = true;
+        }
+        if (location.search.indexOf('raw=1') >= 0) {
+            CAPTURE_ECHO_CANCELLATION = false;
+            CAPTURE_NOISE_SUPPRESSION = false;
+            CAPTURE_AUTO_GAIN = false;
+        }
     }
 } catch (e) { }
 
+// Update DSP settings from server status
+function updateDspSettings(status) {
+    if (status.webRtcEchoCancellation !== undefined) {
+        CAPTURE_ECHO_CANCELLATION = status.webRtcEchoCancellation;
+    }
+    if (status.webRtcNoiseSuppression !== undefined) {
+        CAPTURE_NOISE_SUPPRESSION = status.webRtcNoiseSuppression;
+    }
+    if (status.webRtcAutoGainControl !== undefined) {
+        CAPTURE_AUTO_GAIN = status.webRtcAutoGainControl;
+    }
+}
+
 function init() {
+    console.log('[Init] Starting...');
+    
     chat = document.getElementById('chat');
     empty = document.getElementById('empty');
     input = document.getElementById('input');
@@ -855,6 +1155,8 @@ function init() {
     thumb = document.getElementById('thumb');
     sendBtn = document.getElementById('sendBtn');
     ttsAudioEl = document.getElementById('ttsAudio');
+    transcribeBtn = document.getElementById('transcribeBtn');
+    transcriptionBanner = document.getElementById('transcriptionBanner');
 
     if (sendBtn) {
         sendBtn.ontouchend = function (e) { e.preventDefault(); send(); };
@@ -874,8 +1176,50 @@ function init() {
         };
     }
 
+    if (transcribeBtn) {
+        transcribeBtn.ontouchend = function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            onTranscribeClick();
+        };
+        transcribeBtn.onclick = function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            onTranscribeClick();
+        };
+    }
+
+    // Allow tapping status indicator to force reconnect
+    var statusEl = document.getElementById('status');
+    if (statusEl) {
+        statusEl.style.cursor = 'pointer';
+        statusEl.title = 'Tap to reconnect';
+        statusEl.ontouchend = function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            onStatusTap();
+        };
+        statusEl.onclick = function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            onStatusTap();
+        };
+    }
+    
+    // Also make dot clickable for reconnect
+    if (dot) {
+        dot.style.cursor = 'pointer';
+        dot.title = 'Tap to reconnect';
+    }
+
     document.querySelectorAll('.switch-opt').forEach(function (opt) {
         opt.onclick = function () {
+            unlockAudio();
+            setMode(parseInt(this.dataset.mode, 10));
+        };
+        // Add touch handler for iOS
+        opt.ontouchend = function (e) {
+            e.preventDefault();
             unlockAudio();
             setMode(parseInt(this.dataset.mode, 10));
         };
@@ -894,11 +1238,87 @@ function init() {
     document.addEventListener('touchstart', handleUserGesture, { passive: true, capture: true });
     document.addEventListener('touchend', handleUserGesture, { passive: true, capture: true });
     document.addEventListener('click', handleUserGesture, { passive: true, capture: true });
+    
+    // Handle page visibility changes (iOS Safari can suspend WebSocket when backgrounded)
+    document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState === 'visible') {
+            console.log('[Visibility] Page visible, checking connection...');
+            // Give a moment for the socket to "wake up"
+            setTimeout(function () {
+                if (!ws || ws.readyState !== WebSocket.OPEN || !wsFirstMessageReceived) {
+                    console.log('[Visibility] Connection stale, reconnecting...');
+                    forceReconnect();
+                } else {
+                    // Send a ping to verify connection is alive
+                    try {
+                        ws.send(JSON.stringify({ type: 'ping', ts: Date.now() }));
+                    } catch (e) {
+                        console.log('[Visibility] Ping failed, reconnecting...');
+                        forceReconnect();
+                    }
+                }
+            }, 500);
+        }
+    });
 
-    setStatus('Connecting...', 'warn');
-    connect();
+    // Fetch initial status before connecting WebSocket
+    fetch('/api/status', { cache: 'no-store' })
+        .then(function(r) { return r.ok ? r.json() : null; })
+        .then(function(j) {
+            if (j && j.mode !== undefined) {
+                console.log('[Init] Initial mode from server: ' + j.mode);
+                updateMode(j.mode);
+            }
+            if (j && j.bargeInEnabled !== undefined) bargeInEnabled = j.bargeInEnabled;
+            if (j && j.transcriptionEnabled !== undefined) updateTranscriptionMode(j.transcriptionEnabled);
+            if (j) updateDspSettings(j);
+        })
+        .catch(function() {})
+        .finally(function() {
+            setStatus('Connecting...', 'warn');
+            connect();
+        });
 }
 
+// Handle tap on status indicator to force reconnect
+function onStatusTap() {
+    console.log('[WS] Status tapped - forcing reconnect');
+    addMsg('🔄 Reconnecting...', 'ai');
+    forceReconnect();
+}
+
+// transcription mode functions
+function updateTranscriptionMode(enabled) {
+    transcriptionMode = enabled;
+    if (transcribeBtn) {
+        transcribeBtn.classList.toggle('on', enabled);
+    }
+    if (transcriptionBanner) {
+        transcriptionBanner.classList.toggle('visible', enabled);
+    }
+}
+
+function setTranscriptionMode(enabled) {
+    fetch('/api/transcription', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: enabled })
+    }).then(function (res) { 
+        if (res.ok) {
+            updateTranscriptionMode(enabled);
+        }
+    }).catch(function() {
+        // Fallback: toggle locally even if API fails
+        updateTranscriptionMode(enabled);
+    });
+}
+
+function onTranscribeClick() {
+    unlockAudio();
+    setTranscriptionMode(!transcriptionMode);
+}
+
+// Initialize when DOM is ready
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init);
 } else {
