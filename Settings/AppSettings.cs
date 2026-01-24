@@ -163,7 +163,9 @@ namespace Kinectv1.Settings
         string OutputFolder,
         bool GenerateSummary,
         [property: Range(5, 3600)] int SummaryDelaySeconds, // Time after last transcription before generating summary
-        [property: Range(0.0, 1.0)] double DiarizationSimilarityThreshold // 0=less strict (fewer speakers), 1=more strict (more speakers)
+        [property: Range(0.0, 1.0)] double DiarizationSimilarityThreshold, // 0=less strict (fewer speakers), 1=more strict (more speakers)
+        // WebRTC silence-based sentence flush timeout
+        [property: Range(0, 2000)] int WebRtcSilenceFlushMs // How long to wait after silence before emitting accumulated text (ms). 0 = emit immediately on each Vosk result
     );
 
     // New: Debug settings for diagnostics and troubleshooting
@@ -176,8 +178,6 @@ namespace Kinectv1.Settings
         // WebRTC audio normalization (server-side AGC for quiet mobile audio)
         bool WebRtcNormalizationEnabled, // Enable server-side audio normalization for WebRTC input
         [property: Range(500, 10000)] float WebRtcNormalizationTargetRms, // Target RMS level (0-32768 scale, ~3000 for speech)
-        [property: Range(1.0, 20.0)] float WebRtcNormalizationMaxGain, // Maximum gain to apply (prevents amplifying noise)
-        // WebRTC silence-based sentence flush timeout
-        [property: Range(0, 2000)] int WebRtcSilenceFlushMs // How long to wait after silence before emitting accumulated text (ms). 0 = emit immediately on each Vosk result
-    );
+        [property: Range(1.0, 20.0)] float WebRtcNormalizationMaxGain // Maximum gain to apply (prevents amplifying noise)
+     );
 }

@@ -31,7 +31,6 @@ namespace Kinectv1.UI.Settings
         private TextBox _normalizationTargetRmsTextBox;
         private TextBox _normalizationMaxGainTextBox;
         private TextBlock _normalizationStatusText;
-        private TextBox _silenceFlushMsTextBox;
 
         public DebugSettingsView()
         {
@@ -49,7 +48,6 @@ namespace Kinectv1.UI.Settings
                 _normalizationTargetRmsTextBox = FindName("NormalizationTargetRmsTextBox") as TextBox;
                 _normalizationMaxGainTextBox = FindName("NormalizationMaxGainTextBox") as TextBox;
                 _normalizationStatusText = FindName("NormalizationStatusText") as TextBlock;
-                _silenceFlushMsTextBox = FindName("SilenceFlushMsTextBox") as TextBox;
 
                 var cfg = _svc?.Current?.Debug;
                 AudioCaptureFolderTextBox.Text = cfg?.AudioCaptureFolder ?? "debug_audio";
@@ -70,8 +68,6 @@ namespace Kinectv1.UI.Settings
                     _normalizationTargetRmsTextBox.Text = (cfg?.WebRtcNormalizationTargetRms ?? 3000f).ToString("F0");
                 if (_normalizationMaxGainTextBox != null)
                     _normalizationMaxGainTextBox.Text = (cfg?.WebRtcNormalizationMaxGain ?? 8f).ToString("F1");
-                if (_silenceFlushMsTextBox != null)
-                    _silenceFlushMsTextBox.Text = (cfg?.WebRtcSilenceFlushMs ?? 1200).ToString();
                 
                 _suppressDspEvents = false;
                 
@@ -604,7 +600,6 @@ namespace Kinectv1.UI.Settings
                 // Parse normalization settings with validation
                 float targetRms = 3000f;
                 float maxGain = 8f;
-                int silenceFlushMs = 1200;
                 
                 if (_normalizationTargetRmsTextBox != null && float.TryParse(_normalizationTargetRmsTextBox.Text, out var parsedRms))
                 {
@@ -616,11 +611,6 @@ namespace Kinectv1.UI.Settings
                     maxGain = Math.Max(1f, Math.Min(20f, parsedGain));
                 }
 
-                if (_silenceFlushMsTextBox != null && int.TryParse(_silenceFlushMsTextBox.Text, out var parsedSilence))
-                {
-                    silenceFlushMs = Math.Max(0, Math.Min(2000, parsedSilence));
-                }
-
                 var next = new DebugSettings(
                     AudioCaptureEnabled: false,
                     AudioCaptureFolder: string.IsNullOrWhiteSpace(AudioCaptureFolderTextBox.Text) ? "debug_audio" : AudioCaptureFolderTextBox.Text,
@@ -629,8 +619,7 @@ namespace Kinectv1.UI.Settings
                     WebRtcAutoGainControl: AutoGainCheckBox?.IsChecked ?? false,
                     WebRtcNormalizationEnabled: _normalizationEnabledCheckBox?.IsChecked ?? true,
                     WebRtcNormalizationTargetRms: targetRms,
-                    WebRtcNormalizationMaxGain: maxGain,
-                    WebRtcSilenceFlushMs: silenceFlushMs
+                    WebRtcNormalizationMaxGain: maxGain
                 );
 
                 var updated = cur with { Debug = next };
@@ -645,9 +634,6 @@ namespace Kinectv1.UI.Settings
                     next.WebRtcNormalizationTargetRms,
                     next.WebRtcNormalizationMaxGain
                 );
-
-                // Update VoiceRecognizer with new silence flush setting
-                VoiceRecognizer.SetWebRtcSilenceFlushMs(silenceFlushMs);
 
                 StatusText.Text = "Settings saved. WebRTC clients need to reconnect for DSP changes.";
                 StatusText.Foreground = new SolidColorBrush(Color.FromRgb(0x10, 0x7C, 0x10));

@@ -100,7 +100,8 @@
     "outputFolder": "transcriptions",
     "generateSummary": true,
     "summaryDelaySeconds": 60,
-    "diarizationSimilarityThreshold": 0.5
+    "diarizationSimilarityThreshold": 0.5,
+    "webRtcSilenceFlushMs": 1200
   },
   "debug": {
     "audioCaptureEnabled": false,
@@ -110,7 +111,6 @@
     "webRtcAutoGainControl": false,
     "webRtcNormalizationEnabled": true,
     "webRtcNormalizationTargetRms": 3000.0,
-    "webRtcNormalizationMaxGain": 8.0,
-    "webRtcSilenceFlushMs": 1200
+    "webRtcNormalizationMaxGain": 8.0
   }
 }

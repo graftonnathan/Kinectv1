@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Kinectv1.Settings;
 using Kinectv1.Voice;
+using Kinectv1.Llm;
 
 namespace Kinectv1.Services.Transcription
 {
@@ -63,6 +64,13 @@ namespace Kinectv1.Services.Transcription
         // Embeddings seem to hop ~500ms; 3 counts ? 1.5s stable (increased for stability)
         private const int WebRtcSpeakerSwitchConfirmCount = 3;
 
+        // Segment index store (persistent)
+        private TranscriptSegmentIndexStore _segmentStore;
+        private LmStudioEmbeddingClient _segmentEmbeddingClient;
+        private Task _segmentStoreLoadTask;
+        private readonly SemaphoreSlim _segmentStoreIoMutex = new SemaphoreSlim(1, 1);
+        private int _segmentIndexInSession = 0;
+
         public bool IsActive => _isActive;
         public string CurrentSessionFile => _currentSessionFile;
         public int EntryCount { get { lock (_entriesLock) return _sessionEntries.Count; } }
@@ -98,9 +106,16 @@ namespace Kinectv1.Services.Transcription
                 _lastEmbedding = embedding;
             }
 
-            // HARD GATE: only drive boundaries when WebRTC is explicitly active
-            // Using _webrtcActive flag instead of LastFrameSource to avoid race conditions
+            // HARD GATE: only drive speaker boundaries when BOTH:
+            // 1. WebRTC is explicitly active
+            // 2. Transcription mode is enabled (we're in a transcription session)
+            // In normal chat mode, we don't want speaker switches to interrupt/flush partial STT
             if (!_webrtcActive)
+                return;
+                
+            // Only trigger speaker boundary flushes in transcription mode
+            // In normal WebUI chat mode, let the silence timeout handle emission naturally
+            if (!_isActive)
                 return;
 
             if (embedding == null || embedding.Length == 0)
@@ -174,6 +189,7 @@ namespace Kinectv1.Services.Transcription
             lock (_entriesLock)
             {
                 _sessionEntries.Clear();
+                _segmentIndexInSession = 0;
             }
 
             // Reset diarizer for new session
@@ -205,6 +221,9 @@ namespace Kinectv1.Services.Transcription
             // Generate filename: Meeting_2024-01-15_14-30-00.txt
             var fileName = $"Meeting_{_sessionStartTime:yyyy-MM-dd_HH-mm-ss}.txt";
             _currentSessionFile = Path.Combine(outputFolder, fileName);
+
+            // Ensure segment index is initialized now that we know output folder/session id
+            try { EnsureSegmentIndexInitialized(); } catch { }
 
             // Write header
             try
@@ -318,12 +337,22 @@ namespace Kinectv1.Services.Transcription
                 Text = text.Trim()
             };
 
+            int segIndex;
             lock (_entriesLock)
             {
                 _sessionEntries.Add(entry);
+                segIndex = _segmentIndexInSession;
+                _segmentIndexInSession++;
             }
 
             _lastTranscriptionTime = entry.Timestamp;
+
+            // Upsert segment + embedding metadata in background
+            _ = Task.Run(async () =>
+            {
+                try { await UpsertTranscriptSegmentAsync(entry, speaker, embedding, segIndex).ConfigureAwait(false); }
+                catch { }
+            });
 
             // Notify listeners
             try { OnSpeakerIdentified?.Invoke(resolvedSpeaker, text); } catch { }
@@ -660,6 +689,170 @@ namespace Kinectv1.Services.Transcription
             catch { }
         }
 
+        private void EnsureSegmentIndexInitialized()
+        {
+            if (_segmentStore != null) return;
+
+            try
+            {
+                // Prefer the active session's folder if available so recall can find it.
+                // Fallback to settings folder for initialization outside a running session.
+                string folder;
+                try
+                {
+                    folder = !string.IsNullOrWhiteSpace(_currentSessionFile)
+                        ? (Path.GetDirectoryName(_currentSessionFile) ?? GetOutputFolder(App.SettingsProvider?.Current?.Transcription))
+                        : GetOutputFolder(App.SettingsProvider?.Current?.Transcription);
+                }
+                catch
+                {
+                    folder = GetOutputFolder(App.SettingsProvider?.Current?.Transcription);
+                }
+
+                Directory.CreateDirectory(folder);
+
+                var path = Path.Combine(folder, "transcript_segments.json");
+                _segmentStore = new TranscriptSegmentIndexStore(path);
+
+                _segmentEmbeddingClient = new LmStudioEmbeddingClient(
+                    App.SettingsProvider?.Current?.Ollama?.LmStudioBaseUrl ?? "http://127.0.0.1:1234",
+                    App.SettingsProvider?.Current?.Ollama?.ApiKey,
+                    () => App.SettingsProvider?.Current?.Ollama?.EmbeddingsModel);
+
+                _segmentStoreLoadTask = Task.Run(async () =>
+                {
+                    await _segmentStoreIoMutex.WaitAsync().ConfigureAwait(false);
+                    try { await _segmentStore.LoadAsync().ConfigureAwait(false); }
+                    finally { _segmentStoreIoMutex.Release(); }
+                });
+
+                Console.WriteLine($"[TranscriptSegmentIndex] Using store: {path}");
+            }
+            catch (Exception ex)
+            {
+                Log($"[Transcription] Segment index init failed: {ex.Message}");
+            }
+        }
+
+        private static string GetSessionIdFromSessionFile(string sessionFile)
+        {
+            if (string.IsNullOrWhiteSpace(sessionFile)) return string.Empty;
+            try { return Path.GetFileNameWithoutExtension(sessionFile) ?? string.Empty; }
+            catch { return string.Empty; }
+        }
+
+        private static string GetSessionTitleFromSessionFile(string sessionFile)
+        {
+            // Current sessions are named Meeting_yyyy-MM-dd_HH-mm-ss.txt
+            // Title is stable and user-facing.
+            return GetSessionIdFromSessionFile(sessionFile);
+        }
+
+        private double GetCurrentSessionElapsedSeconds(DateTime entryTimestampLocal)
+        {
+            try
+            {
+                var start = _sessionStartTime;
+                var dt = entryTimestampLocal - start;
+                if (dt.TotalSeconds < 0) return 0;
+                return dt.TotalSeconds;
+            }
+            catch { return 0; }
+        }
+
+        private async Task UpsertTranscriptSegmentAsync(TranscriptionEntry entry, string providedSpeaker, float[] embedding)
+            => await UpsertTranscriptSegmentAsync(entry, providedSpeaker, embedding, null).ConfigureAwait(false);
+
+        private async Task UpsertTranscriptSegmentAsync(TranscriptionEntry entry, string providedSpeaker, float[] embedding, int? segIndexOverride)
+        {
+            try
+            {
+                EnsureSegmentIndexInitialized();
+                if (_segmentStore == null) return;
+
+                var load = _segmentStoreLoadTask;
+                if (load != null) { try { await load.ConfigureAwait(false); } catch { } }
+
+                // Prefer the diarizer label for grouping, but also keep the resolved speaker name.
+                string speakerLabel = string.Empty;
+                if (embedding != null && embedding.Length > 0)
+                {
+                    try
+                    {
+                        var (lab, _) = SpeakerDiarizer.Instance.IdentifyOrAssign(embedding);
+                        speakerLabel = lab ?? string.Empty;
+                    }
+                    catch { }
+                }
+
+                var sessionId = GetSessionIdFromSessionFile(_currentSessionFile);
+                var title = GetSessionTitleFromSessionFile(_currentSessionFile);
+
+                double tEnd = GetCurrentSessionElapsedSeconds(entry.Timestamp);
+
+                // Estimate start time by assuming the utterance is ~2.5 wps
+                // (fallback only; true audio timestamps are not currently plumbed through.)
+                double estimatedDur = 0;
+                try
+                {
+                    var words = entry.Text?.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)?.Length ?? 0;
+                    estimatedDur = words / 2.5;
+                }
+                catch { }
+                estimatedDur = Math.Max(0.5, Math.Min(20.0, estimatedDur));
+
+                double tStart = Math.Max(0, tEnd - estimatedDur);
+
+                var startedAtUtc = _sessionStartTime.ToUniversalTime();
+                var segIndex = segIndexOverride ?? _segmentIndexInSession;
+                var segId = $"{sessionId}:{segIndex:D6}";
+
+                float[] segEmbedding = null;
+                try
+                {
+                    if (_segmentEmbeddingClient != null)
+                        segEmbedding = await _segmentEmbeddingClient.GetEmbeddingAsync(entry.Text, CancellationToken.None).ConfigureAwait(false);
+                }
+                catch { }
+
+                if (segEmbedding == null || segEmbedding.Length == 0)
+                {
+                    // Fall back to voice embedding if available (dimension may differ from query embeddings; tolerated).
+                    segEmbedding = embedding;
+                }
+
+                var seg = new TranscriptSegment
+                {
+                    Id = segId,
+                    SessionId = sessionId,
+                    Title = title,
+                    SpeakerLabel = speakerLabel,
+                    SpeakerName = entry.Speaker,
+                    Text = entry.Text,
+                    TStartSec = tStart,
+                    TEndSec = tEnd,
+                    StartedAtUtc = startedAtUtc
+                };
+
+                if (segEmbedding != null && segEmbedding.Length > 0)
+                    seg.SetEmbedding(segEmbedding);
+
+                _segmentStore.UpsertSegment(seg);
+
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await _segmentStoreIoMutex.WaitAsync().ConfigureAwait(false);
+                        try { await _segmentStore.SaveAsync().ConfigureAwait(false); }
+                        finally { _segmentStoreIoMutex.Release(); }
+                    }
+                    catch { }
+                });
+            }
+            catch { }
+        }
+
         public void Dispose()
         {
             StopSummaryTimer();
@@ -667,6 +860,7 @@ namespace Kinectv1.Services.Transcription
             
             // Unsubscribe from events
             try { SpeakerEmbedder.OnEmbedding -= OnVoiceEmbedding; } catch { }
+            try { _segmentEmbeddingClient?.Dispose(); } catch { }
         }
 
         private class TranscriptionEntry

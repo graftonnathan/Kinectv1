@@ -9,6 +9,11 @@ The WebRTC Audio Bridge provides a browser-based interface for interacting with 
 - **Mode control** - Switch between Mic/Discord/WebRTC modes from the web UI
 - **Chat interface** - View transcriptions and AI responses in a mobile-friendly chat UI
 
+When **WebRTC mode** (`AudioInMode.WebRtcVoice`) is active, the system is intended to be **WebUI-routed**:
+- STT input should come from the WebUI stream (phone mic) only.
+- The desktop app should not ingest local microphone frames for STT.
+- The app should not ingest system loopback audio (speaker mix) for STT.
+
 ## Architecture
 
 ```
@@ -34,6 +39,8 @@ The WebRTC Audio Bridge provides a browser-based interface for interacting with 
                                              ???????????????????????
 ```
 
+Note: browser audio is delivered to the app via `WebRtcAudioTransport` and then fed into `VoiceRecognizer` as `AudioSourceType.WebRtc`.
+
 ## Web Client Features
 
 ### Chat Interface
@@ -56,6 +63,12 @@ Mode changes sync bidirectionally:
 - Real-time audio level meter
 - Voice button only enabled in WebRTC mode
 - Automatic codec negotiation (prefers PCMU)
+
+#### iOS: TTS self-hearing suppression
+On iOS (especially speakerphone), the phone mic can re-capture the AI TTS playback. The WebUI applies a short temporary mic-suppress window after receiving TTS audio chunks.
+
+- Client setting: `TTS_MIC_SUPPRESS_MS` (in `wwwroot/webrtc/client.js`).
+- This was increased to reduce iOS Safari feedback loops when louder server-side RMS normalization is enabled.
 
 ### Text Input
 - Type messages directly to the LLM
@@ -91,15 +104,6 @@ Mode changes sync bidirectionally:
 - `OnWebTextInput` - Fired when text is sent from web UI
 - `BroadcastModeChange(int mode)` - Broadcast mode changes to all web clients
 
-## Web Client Files
-
-| File | Purpose |
-|------|---------|
-| `wwwroot/webrtc/index.html` | Mobile-optimized chat UI with 3-position mode switch |
-| `wwwroot/webrtc/client.js` | WebSocket, WebRTC, and UI logic |
-
-Files are read fresh on each request (no caching) for easy development. Fallback embedded versions exist in the server code.
-
 ## Audio Pipeline
 
 ### Inbound (Browser ? App)
@@ -108,9 +112,16 @@ Files are read fresh on each request (no caching) for easy development. Fallback
 3. **RTP packets** sent over UDP to WPF application
 4. **WebRtcAudioTransport** decodes ?-law to PCM16
 5. **MainWindow** upsamples 8kHz ? 16kHz for Vosk
-6. **VoiceRecognizer** processes via `ProcessAudio()`
-7. **Vosk STT** produces transcription
-8. **OnTranscription** event triggers LLM dispatch
+6. **WebRTC RMS normalization (AGC)**: the app applies smooth RMS normalization to WebRTC audio before feeding Vosk to improve recognition on quiet mobile mics
+7. **VoiceRecognizer** processes via `ProcessAudio()`
+8. **Vosk STT** produces transcription
+9. **OnTranscription** event triggers LLM dispatch
+
+### Isolation in WebRTC mode
+When `AudioInMode.WebRtcVoice` is active:
+- Local mic capture is disabled in `VoiceRecognizer`.
+- Discord voice input is disabled.
+- System loopback capture is blocked (see `DiscordSystemAudioCapture`) to prevent desktop audio/mic sidetone from contaminating STT.
 
 ### Text Input (Browser ? App)
 1. **Browser sends** `{ type: "text", text: "..." }` via WebSocket

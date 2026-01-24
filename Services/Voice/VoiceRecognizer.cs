@@ -27,9 +27,9 @@ namespace Kinectv1
         private static DateTime _lastRmsLog = DateTime.MinValue;
         private static float _peakRmsForLog = 0f;
         private static int _framesSinceRmsLog = 0;
-        
+
         public static void EnableDiagnostics(bool on) => _diagEnabled = on;
-        
+
         public static void EnableRmsLogging(bool on)
         {
             _rmsLoggingEnabled = on;
@@ -38,20 +38,20 @@ namespace Kinectv1
                 Console.WriteLine($"[VAD] RMS logging enabled. Current threshold={_vadRmsThreshold:F0}, low={_vadRmsThresholdLow:F0}");
             }
         }
-        
+
         private static void VRLog(string tag, string msg)
         {
             if (!_diagEnabled) return;
             try { Console.WriteLine($"[VR][{tag}] {msg}"); } catch { }
         }
-        
+
         private static void LogRmsIfEnabled(float rms, AudioSourceType source)
         {
             if (!_rmsLoggingEnabled) return;
-            
+
             _framesSinceRmsLog++;
             if (rms > _peakRmsForLog) _peakRmsForLog = rms;
-            
+
             var now = DateTime.UtcNow;
             if ((now - _lastRmsLog).TotalSeconds >= 1.0)
             {
@@ -88,7 +88,7 @@ namespace Kinectv1
 
         private static Model _sttModel;
         private static VoskRecognizer _recognizer;
-        private static readonly object _voskLock = new object(); // Lock for all Vosk operations
+        private static readonly object _voskLock = new object();
         private static string _modelPath;
         private const int SampleRate = 16000;
 
@@ -125,22 +125,29 @@ namespace Kinectv1
         private static int _extBargeInLoudFrames = 0;
         private static DateTime _extBargeInIgnoreUntilUtc = DateTime.MinValue;
 
-        // WebRTC accumulated text and silence-based flush
         private static readonly object _webRtcLock = new object();
         private static readonly StringBuilder _webRtcAccumulatedText = new StringBuilder();
         private static DateTime _webRtcLastVoskResultTime = DateTime.MinValue;
         private static int _webRtcSilenceFlushMs = 1200;
         private static bool _webRtcHasPendingText = false;
-        private static string _webRtcLastPartialText = string.Empty; // Track last partial to detect actual changes
+        private static string _webRtcLastPartialText = string.Empty;
 
-        // Track the last audio source for speaker boundary detection
+        private static bool _webRtcSpeechActive = false;
+        private static int _webRtcSilentMs = 0;
+        private static int _webRtcLoudMs = 0;
+        private const int WebRtcVadStartMs = 60;
+
+        // Raw RMS-based silence tracker for WebRTC (independent of Vosk partial updates).
+        // We use this only for conservative flush decisions to avoid mid-word cutoffs.
+        private static int _webRtcRawSilentMs = 0;
+        private static int _webRtcLastFeedFrameMs = FRAME_DURATION_MS;
+
         private static volatile AudioSourceType _lastFrameSource = AudioSourceType.LocalMic;
         public static AudioSourceType LastFrameSource => _lastFrameSource;
 
-        // WebRTC pre-roll, tail delay, and feed buffering for better transcription quality
         private const int WebRtcPreRollMs = 250;
-        private const int WebRtcTailDelayMs = 180;   // helps trailing consonants
-        private const int WebRtcFeedBlockMs = 200;   // buffer frames into larger blocks for Vosk
+        private const int WebRtcTailDelayMs = 180;
+        private const int WebRtcFeedBlockMs = 100;
         private static readonly object _webRtcPcmLock = new();
         private static readonly List<byte> _webRtcPreRollPcm = new();
         private static readonly List<byte> _webRtcFeedBuffer = new();
@@ -160,8 +167,6 @@ namespace Kinectv1
         private static void OnSpeakerEmbeddingReceived(float[] embedding)
         {
             if (embedding == null || embedding.Length == 0) return;
-
-            // Forward embedding to UI/enrollment
             try { OnVoiceEmbedding?.Invoke(embedding); } catch { }
         }
 
@@ -169,51 +174,39 @@ namespace Kinectv1
         {
             try
             {
-                // First, capture and clear the accumulated state to prevent race conditions
                 string accumulatedText;
                 string lastPartial;
                 lock (_webRtcLock)
                 {
                     accumulatedText = _webRtcAccumulatedText.ToString().Trim();
                     lastPartial = _webRtcLastPartialText?.Trim() ?? string.Empty;
-                    
-                    // Clear state immediately to prevent double emission
+
                     _webRtcAccumulatedText.Clear();
                     _webRtcHasPendingText = false;
                     _webRtcLastPartialText = string.Empty;
                 }
-                
-                // Get final result from Vosk with proper locking
+
+                try { WebRtcPadSilenceAndHarvest(250); } catch { }
+
                 string finalText = null;
                 lock (_voskLock)
                 {
                     var rec = _recognizer;
                     if (rec == null) return;
-                    
+
                     var json = rec.FinalResult();
                     finalText = ExtractText(json);
                 }
 
-                // Determine the best text to emit:
-                // 1. Prefer Vosk's FinalResult if it has content
-                // 2. Fall back to accumulated text if FinalResult is empty
-                // 3. Fall back to last partial as last resort
                 string textToEmit = null;
-                
+
                 if (!string.IsNullOrWhiteSpace(finalText))
-                {
                     textToEmit = finalText.Trim();
-                }
                 else if (!string.IsNullOrWhiteSpace(accumulatedText))
-                {
                     textToEmit = accumulatedText;
-                }
                 else if (!string.IsNullOrWhiteSpace(lastPartial))
-                {
                     textToEmit = lastPartial;
-                }
-                
-                // Emit if we have meaningful text
+
                 if (!string.IsNullOrWhiteSpace(textToEmit) && !textToEmit.Equals("the", StringComparison.OrdinalIgnoreCase))
                 {
                     VRLog("WEBRTC", $"Emitting transcription ({reason}): '{(textToEmit.Length > 50 ? textToEmit.Substring(0, 50) + "..." : textToEmit)}'");
@@ -226,38 +219,87 @@ namespace Kinectv1
             }
         }
 
+        private static bool IsSafePartialBoundary(string partial, string lastEmittedPartial)
+        {
+            if (string.IsNullOrWhiteSpace(partial)) return false;
+
+            // Vosk partials often do NOT include trailing whitespace.
+            // Treat as safe if:
+            //  1) it ends with whitespace (rare but fine), OR
+            //  2) it has been stable (unchanged) since the last time we emitted a partial.
+            // This is a conservative proxy for "word boundary" without requiring punctuation.
+            char last = partial[partial.Length - 1];
+            if (char.IsWhiteSpace(last)) return true;
+
+            if (!string.IsNullOrWhiteSpace(lastEmittedPartial) &&
+                string.Equals(partial, lastEmittedPartial, StringComparison.Ordinal))
+                return true;
+
+            return false;
+        }
+
         private static void MaybeFlushWebRtcOnSilence()
         {
             if (!_webRtcEnabled) return;
-            if (_webRtcSilenceFlushMs <= 0) return; // 0 = disabled, emit immediately on each result
-            
-            // Check if we have pending text and enough time has passed since last speech
+            if (_webRtcSilenceFlushMs <= 0) return;
+
             bool shouldConsiderFlush;
+            int rawSilentMs = 0;
+            string lastPartial = string.Empty;
+            int frameMs = FRAME_DURATION_MS;
+            string lastEmittedPartial = string.Empty;
             lock (_webRtcLock)
             {
-                // Flush if we have either:
-                //  1) accumulated finalized text OR
-                //  2) meaningful partial activity (common in WebRTC streams)
                 shouldConsiderFlush =
                     (_webRtcAccumulatedText.Length > 0) ||
                     (!string.IsNullOrWhiteSpace(_webRtcLastPartialText)) ||
                     (_webRtcHasPendingText);
 
                 if (!shouldConsiderFlush) return;
-                if (_webRtcLastVoskResultTime == DateTime.MinValue) return;
+
+                rawSilentMs = _webRtcRawSilentMs;
+                lastPartial = _webRtcLastPartialText;
+                frameMs = _webRtcLastFeedFrameMs;
+                lastEmittedPartial = _lastPartialText;
             }
 
             var now = DateTime.UtcNow;
-            var timeSinceLastResult = (now - _webRtcLastVoskResultTime).TotalMilliseconds;
+            var timeSinceLastResult = _webRtcLastVoskResultTime == DateTime.MinValue
+                ? double.PositiveInfinity
+                : (now - _webRtcLastVoskResultTime).TotalMilliseconds;
 
-            if (timeSinceLastResult >= _webRtcSilenceFlushMs)
+            // Prefer actual audio silence (RMS-based) over Vosk partial timing.
+            // Only allow an RMS-driven flush at a "safe boundary" to avoid mid-word cuts:
+            //  - either we already have finalized accumulated text, OR
+            //  - the current partial ends with whitespace (word boundary).
+            bool rmsSilenceReached = rawSilentMs >= _webRtcSilenceFlushMs;
+
+            if (rmsSilenceReached)
             {
                 lock (_webRtcLock)
                 {
                     if (_webRtcAccumulatedText.Length > 0 || !string.IsNullOrWhiteSpace(_webRtcLastPartialText))
                     {
-                        VRLog("WEBRTC", $"Silence timeout ({timeSinceLastResult:F0}ms >= {_webRtcSilenceFlushMs}ms), flushing text");
-                        FlushWebRtcAccumulatedText("silence");
+                        bool hasFinalized = _webRtcAccumulatedText.Length > 0;
+                        bool safeBoundary = hasFinalized || IsSafePartialBoundary(_webRtcLastPartialText, lastEmittedPartial);
+
+                        // If the user configured an extremely small flush timeout (e.g., 1ms for testing),
+                        // don't require stability; sustained RMS silence is already the guard.
+                        if (!safeBoundary && _webRtcSilenceFlushMs <= 50 && _webRtcHasPendingText)
+                            safeBoundary = true;
+
+                        if (safeBoundary)
+                        {
+                            VRLog("WEBRTC", $"Silence flush (raw={_webRtcRawSilentMs}ms, sinceVosk={timeSinceLastResult:F0}ms, thr={_webRtcSilenceFlushMs}ms), flushing text");
+                            FlushWebRtcAccumulatedText("silence");
+                            _webRtcRawSilentMs = 0;
+                        }
+                        else
+                        {
+                            // Not at a safe boundary yet; keep waiting.
+                            // Raw silence may continue accruing; we will flush once the partial stabilizes to whitespace.
+                            VRLog("WEBRTC", $"Silence reached but not at safe boundary (raw={_webRtcRawSilentMs}ms). Holding.");
+                        }
                     }
                 }
             }
@@ -271,6 +313,11 @@ namespace Kinectv1
                 _webRtcLastVoskResultTime = DateTime.MinValue;
                 _webRtcHasPendingText = false;
                 _webRtcLastPartialText = string.Empty;
+                _webRtcSpeechActive = false;
+                _webRtcSilentMs = 0;
+                _webRtcLoudMs = 0;
+                _webRtcRawSilentMs = 0;
+                _webRtcLastFeedFrameMs = FRAME_DURATION_MS;
             }
             lock (_webRtcPcmLock)
             {
@@ -280,18 +327,13 @@ namespace Kinectv1
             VRLog("WEBRTC", "State reset");
         }
 
-        /// <summary>
-        /// Append WebRTC PCM to the pre-roll ring buffer (keeps last 250ms).
-        /// </summary>
         private static void AppendWebRtcPreRoll(byte[] pcm16, int lengthBytes)
         {
             lock (_webRtcPcmLock)
             {
-                // Add new data
                 for (int i = 0; i < lengthBytes; i++)
                     _webRtcPreRollPcm.Add(pcm16[i]);
 
-                // Trim to max size (16kHz * 2 bytes = 32 bytes/ms)
                 int bytesPerMs = (SampleRate * 2) / 1000;
                 int maxBytes = WebRtcPreRollMs * bytesPerMs;
 
@@ -303,26 +345,18 @@ namespace Kinectv1
             }
         }
 
-        /// <summary>
-        /// Buffer WebRTC frames into larger blocks before feeding Vosk.
-        /// This improves recognition quality by avoiding micro-frame timing issues.
-        /// </summary>
         private static void ProcessWebRtcBuffered(byte[] pcm16, int lengthBytes)
         {
-            // Always append to pre-roll for seeding after boundaries
             AppendWebRtcPreRoll(pcm16, lengthBytes);
 
             lock (_webRtcPcmLock)
             {
-                // Add to feed buffer
                 for (int i = 0; i < lengthBytes; i++)
                     _webRtcFeedBuffer.Add(pcm16[i]);
 
-                // Calculate block size (16kHz * 2 bytes = 32 bytes/ms)
                 int bytesPerMs = (SampleRate * 2) / 1000;
                 int blockBytes = WebRtcFeedBlockMs * bytesPerMs;
 
-                // Feed complete blocks to Vosk
                 while (_webRtcFeedBuffer.Count >= blockBytes)
                 {
                     var block = new byte[blockBytes];
@@ -334,12 +368,156 @@ namespace Kinectv1
             }
         }
 
+        private static void WebRtcPadSilenceAndHarvest(int silenceMs = 250)
+        {
+            try
+            {
+                int bytesPerMs = (SampleRate * 2) / 1000;
+                int totalBytes = Math.Max(0, silenceMs) * bytesPerMs;
+                if (totalBytes <= 0) return;
+
+                var zeros = new byte[totalBytes];
+
+                bool accepted;
+                string json = null;
+
+                lock (_voskLock)
+                {
+                    var rec = _recognizer;
+                    if (rec == null) return;
+
+                    accepted = rec.AcceptWaveform(zeros, zeros.Length);
+                    if (accepted)
+                        json = rec.Result();
+                }
+
+                if (!accepted || string.IsNullOrWhiteSpace(json)) return;
+
+                var t = ExtractText(json)?.Trim();
+                if (string.IsNullOrWhiteSpace(t)) return;
+
+                lock (_webRtcLock)
+                {
+                    if (_webRtcAccumulatedText.Length > 0) _webRtcAccumulatedText.Append(" ");
+                    _webRtcAccumulatedText.Append(t);
+                    _webRtcHasPendingText = true;
+                    _webRtcLastPartialText = string.Empty;
+                    _webRtcLastVoskResultTime = DateTime.UtcNow;
+                }
+            }
+            catch { }
+        }
+
+        private static double GetWebRtcSilenceThreshold()
+        {
+            // WebRTC frames use RMS in the 0..10000 scale.
+            // The general VAD thresholds (_vadRmsThreshold/_vadRmsThresholdLow) are in the same scale for mic.
+            // However, historically some paths used much smaller thresholds; ensure we return a sensible
+            // WebRTC silence threshold here based on the *current* mic-derived value.
+            //
+            // Treat silence as "below low threshold" but clamp to a minimum so near-zero noise still counts.
+            var thr = _vadRmsThresholdLow;
+            if (thr < 50.0) thr = 50.0;
+            return thr;
+        }
+
+        private static void UpdateWebRtcVad(float rms, int frameMs)
+        {
+            // Track raw sustained silence independent of Vosk partial timing.
+            // We consider silence only when we're below the low threshold.
+            lock (_webRtcLock)
+            {
+                _webRtcLastFeedFrameMs = frameMs;
+                // IMPORTANT: WebRTC RMS is on a 0..10000 scale.
+                // Use a WebRTC-appropriate silence threshold; otherwise silence never accrues and flush won't trigger.
+                var silenceThr = GetWebRtcSilenceThreshold();
+                if (rms < silenceThr) _webRtcRawSilentMs += frameMs;
+                else _webRtcRawSilentMs = 0;
+            }
+
+            if (_webRtcSpeechActive)
+            {
+                if (rms < _vadRmsThresholdLow) _webRtcSilentMs += frameMs;
+                else _webRtcSilentMs = 0;
+
+                if (_webRtcSilentMs >= _webRtcSilenceFlushMs)
+                {
+                    _webRtcSpeechActive = false;
+                    _webRtcLoudMs = 0;
+                }
+            }
+            else
+            {
+                if (rms >= _vadRmsThreshold) _webRtcLoudMs += frameMs;
+                else _webRtcLoudMs = 0;
+
+                if (_webRtcLoudMs >= WebRtcVadStartMs)
+                {
+                    _webRtcSpeechActive = true;
+                    _webRtcSilentMs = 0;
+                }
+            }
+        }
+
+        private static void ReplayWebRtcPreRollIntoRecognizer()
+        {
+            byte[] seed;
+            lock (_webRtcPcmLock)
+            {
+                seed = _webRtcPreRollPcm.ToArray();
+            }
+
+            if (seed.Length <= 0) return;
+
+            FeedRecognizer(seed, seed.Length, AudioSourceType.WebRtc);
+        }
+
+        private static void ProcessWebRtcMirroredVad(byte[] pcm16, int lengthBytes, float rms, int frameDurationMs)
+        {
+            bool wasActive = _webRtcSpeechActive;
+            UpdateWebRtcVad(rms, frameDurationMs);
+
+            // Silence flush should be driven by real audio silence (RMS), not only by Vosk producing results.
+            // Call this from the VAD path as well so we can flush even when Vosk hasn't emitted a partial yet.
+            MaybeFlushWebRtcOnSilence();
+
+            if (!_webRtcSpeechActive)
+            {
+                AppendWebRtcPreRoll(pcm16, lengthBytes);
+
+                if (wasActive)
+                {
+                    lock (_webRtcLock)
+                    {
+                        _webRtcLastVoskResultTime = DateTime.UtcNow;
+                        _webRtcHasPendingText = true;
+                    }
+                }
+
+                return;
+            }
+
+            if (!wasActive && _webRtcSpeechActive)
+            {
+                lock (_webRtcLock)
+                {
+                    _webRtcAccumulatedText.Clear();
+                    _webRtcHasPendingText = false;
+                    _webRtcLastPartialText = string.Empty;
+                }
+
+                ReplayWebRtcPreRollIntoRecognizer();
+            }
+
+            ProcessWebRtcBuffered(pcm16, lengthBytes);
+        }
+
         private static void FlushFinal()
         {
             try
             {
                 string finalText = null;
-                
+
                 lock (_voskLock)
                 {
                     var rec = _recognizer;
@@ -348,7 +526,7 @@ namespace Kinectv1
                     var json = rec.FinalResult();
                     finalText = ExtractText(json);
                 }
-                
+
                 if (!string.IsNullOrWhiteSpace(finalText))
                 {
                     if (_accumulatedText.Length > 0) _accumulatedText.Append(" ");
@@ -399,11 +577,10 @@ namespace Kinectv1
                     MaybeBargeInOnExternalVoice(frame.Rms);
 
                 try { SpeakerEmbedder.AddPcm16(frame.Pcm16, frame.Length); } catch { }
-                
-                // WebRTC: buffer frames into larger blocks for better Vosk performance
+
                 if (frame.Source == AudioSourceType.WebRtc)
                 {
-                    ProcessWebRtcBuffered(frame.Pcm16, frame.Length);
+                    ProcessWebRtcMirroredVad(frame.Pcm16, frame.Length, frame.Rms, frameDurationMs);
                 }
                 else
                 {
@@ -465,12 +642,11 @@ namespace Kinectv1
             {
                 bool isExternal = source.IsExternal();
                 bool isWebRtc = source == AudioSourceType.WebRtc;
-                
+
                 bool accepted;
                 string json = null;
                 string pjson = null;
-                
-                // All Vosk operations under lock
+
                 lock (_voskLock)
                 {
                     var rec = _recognizer;
@@ -481,14 +657,13 @@ namespace Kinectv1
                     if (accepted)
                     {
                         json = rec.Result();
-                    }
+                      }
                     else
                     {
                         pjson = rec.PartialResult();
                     }
                 }
 
-                // Always check for silence flush on WebRTC frames (independent of Vosk results)
                 if (isWebRtc)
                 {
                     MaybeFlushWebRtcOnSilence();
@@ -505,28 +680,23 @@ namespace Kinectv1
 
                         if (isWebRtc)
                         {
-                            // Only update timestamp when we have actual speech content
                             _webRtcLastVoskResultTime = DateTime.UtcNow;
-                            
-                            // If silence flush is 0, emit immediately without accumulation
+
                             if (_webRtcSilenceFlushMs <= 0)
                             {
                                 try { OnTranscription?.Invoke(t); } catch { }
                             }
                             else
                             {
-                                // Accumulate text - do NOT emit here, let silence timeout handle emission
-                                // This prevents double emission (once here, once on silence flush)
                                 lock (_webRtcLock)
                                 {
                                     if (_webRtcAccumulatedText.Length > 0) _webRtcAccumulatedText.Append(" ");
                                     _webRtcAccumulatedText.Append(t);
                                     _webRtcHasPendingText = true;
-                                    // Clear last partial since we now have finalized text
                                     _webRtcLastPartialText = string.Empty;
                                 }
                             }
-                            
+
                             MaybeBargeIn(t);
                         }
                         else if (isExternal)
@@ -542,7 +712,6 @@ namespace Kinectv1
                         }
                     }
 
-                    // Send partial updates for UI feedback (but don't emit as final transcription)
                     if (!isWebRtc)
                     {
                         var partial = isExternal ? string.Empty : _accumulatedText.ToString();
@@ -554,7 +723,6 @@ namespace Kinectv1
                     }
                     else if (_webRtcSilenceFlushMs > 0)
                     {
-                        // For WebRTC, send accumulated text as partial for UI feedback
                         lock (_webRtcLock)
                         {
                             var webRtcPartial = _webRtcAccumulatedText.ToString();
@@ -570,19 +738,15 @@ namespace Kinectv1
                 {
                     var ptext = ExtractPartialText(pjson);
 
-                    // Only update WebRTC timestamp if partial text actually changed (real speech activity)
                     if (isWebRtc && !string.IsNullOrWhiteSpace(ptext))
                     {
                         var pt = ptext.Trim();
                         lock (_webRtcLock)
                         {
-                            // Only update timestamp if this is NEW partial content (real speech)
                             if (!string.IsNullOrEmpty(pt) && pt != _webRtcLastPartialText)
                             {
                                 _webRtcLastVoskResultTime = DateTime.UtcNow;
                                 _webRtcLastPartialText = pt;
-
-                                // IMPORTANT: allow silence flush even if we never got a full Result()
                                 _webRtcHasPendingText = true;
                             }
                         }
@@ -596,9 +760,8 @@ namespace Kinectv1
                         {
                             lock (_webRtcLock)
                             {
-                                // Show accumulated + current partial for UI feedback
-                                var combined = _webRtcAccumulatedText.Length > 0 
-                                    ? _webRtcAccumulatedText.ToString() + " " + pt 
+                                var combined = _webRtcAccumulatedText.Length > 0
+                                    ? _webRtcAccumulatedText.ToString() + " " + pt
                                     : pt;
                                 if (combined != _lastPartialText)
                                 {
@@ -742,7 +905,7 @@ namespace Kinectv1
                                 ProcessAudioInternal(frame);
                             }
                             catch (Exception ex) { VRLog("ERROR", $"ProcessFrame: {ex.Message}"); }
-                            
+
                             spinWait.Reset();
                         }
                         else
@@ -786,17 +949,15 @@ namespace Kinectv1
             var wasEnabled = _webRtcEnabled;
             _webRtcEnabled = enabled;
             VRLog("WEBRTC", enabled ? "Enabled" : "Disabled");
-            
-            // Notify TranscriptionService of WebRTC state change for speaker boundary detection
+
             try { Services.Transcription.TranscriptionService.Instance.SetWebRtcActive(enabled); } catch { }
-            
+
             if (enabled && !wasEnabled)
             {
                 ResetWebRtcState();
             }
             else if (!enabled && wasEnabled)
             {
-                // Flush any remaining text when disabling
                 lock (_webRtcLock)
                 {
                     var remaining = _webRtcAccumulatedText.ToString().Trim();
@@ -876,7 +1037,6 @@ namespace Kinectv1
         {
             if (!_webRtcEnabled) return;
 
-            // Only arm one boundary at a time
             if (Interlocked.Exchange(ref _webrtcBoundaryArmed, 1) == 1)
                 return;
 
@@ -884,9 +1044,9 @@ namespace Kinectv1
             {
                 try
                 {
-                    // Tail delay to let trailing consonants/words settle
                     await Task.Delay(WebRtcTailDelayMs).ConfigureAwait(false);
 
+                    WebRtcPadSilenceAndHarvest(250);
                     FlushWebRtcAccumulatedText(reason);
                     ResetWebRtcRecognizer();
                 }
@@ -916,7 +1076,6 @@ namespace Kinectv1
                     _recognizer.SetWords(false);
                 }
 
-                // Clear only WebRTC-related accumulators
                 lock (_webRtcLock)
                 {
                     _webRtcAccumulatedText.Clear();
@@ -925,13 +1084,11 @@ namespace Kinectv1
                     _webRtcLastPartialText = string.Empty;
                 }
 
-                // Clear the feed buffer but keep pre-roll for seeding
                 lock (_webRtcPcmLock)
                 {
                     _webRtcFeedBuffer.Clear();
                 }
 
-                // Seed recognizer with pre-roll so we don't lose leading phonemes
                 byte[] seed;
                 lock (_webRtcPcmLock)
                 {
@@ -980,7 +1137,7 @@ namespace Kinectv1
                     Console.WriteLine($"[VoiceRecognizer] Vosk model not found: '{resolved}'");
                     return;
                 }
-                
+
                 lock (_voskLock)
                 {
                     if (_sttModel != null && string.Equals(_modelPath, resolved, StringComparison.OrdinalIgnoreCase)) return;
@@ -1035,11 +1192,10 @@ namespace Kinectv1
                     Console.WriteLine($"[VAD] Loaded: silence={_vadSilenceMs}ms");
                 }
 
-                // Load WebRTC silence flush timeout from Debug settings
-                var debug = snap.Debug;
-                if (debug != null)
+                var tr = snap.Transcription;
+                if (tr != null)
                 {
-                    _webRtcSilenceFlushMs = Math.Max(0, Math.Min(2000, debug.WebRtcSilenceFlushMs));
+                    _webRtcSilenceFlushMs = Math.Max(0, Math.Min(2000, tr.WebRtcSilenceFlushMs));
                 }
                 Console.WriteLine($"[WebRTC] Silence flush timeout: {_webRtcSilenceFlushMs}ms");
 

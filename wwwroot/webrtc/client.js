@@ -30,7 +30,7 @@ var ttsEndTime = 0;
 var ttsLastAudioAt = 0;
 // Increased suppression to reduce self-hearing on speakerphone / iOS.
 // Keep this small so barge-in remains responsive.
-var TTS_MIC_SUPPRESS_MS = 200;
+var TTS_MIC_SUPPRESS_MS = 800;
 
 // During TTS playback, do NOT fully suppress mic (would break barge-in).
 var BARGE_IN_TTS_LEAK_GATE_ENABLED = false;

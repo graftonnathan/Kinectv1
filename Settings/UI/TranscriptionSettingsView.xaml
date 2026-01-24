@@ -78,6 +78,28 @@
                                 <TextBlock Grid.Column="2" Text="Strict" Foreground="{DynamicResource TextMuted}" FontSize="10" HorizontalAlignment="Right"/>
                             </Grid>
                         </StackPanel>
+
+                        <Border Background="{DynamicResource SurfaceBackgroundLight}" CornerRadius="4" Padding="12" Margin="0,8,0,0">
+                            <StackPanel>
+                                <TextBlock Text="WebRTC sentence flush" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimary}" Margin="0,0,0,8"/>
+                                <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource TextMuted}" FontSize="11" Margin="0,0,0,10"
+                                           Text="Controls when WebRTC transcriptions are emitted after the speaker stops talking."/>
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="Silence Flush Timeout" Foreground="{DynamicResource TextSecondary}" Width="200" VerticalAlignment="Center"/>
+                                    <TextBox x:Name="WebRtcSilenceFlushMsTextBox" Style="{StaticResource ThemedTextBoxStyle}" Width="80"
+                                             ToolTip="How long to wait after speech stops before emitting the accumulated transcription (0-2000ms). 0 = emit immediately on each result. Default: 1200ms"/>
+                                    <TextBlock Text="ms (0-2000)" Foreground="{DynamicResource TextMuted}" FontSize="11" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                                </StackPanel>
+
+                                <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource TextMuted}" FontSize="10" Margin="0,10,0,0">
+                                    <Run>- 0ms: Emit immediately on each Vosk result (fastest, may be choppy)</Run>
+                                    <LineBreak/>
+                                    <Run>- 300-800ms: Fast response, may split sentences during pauses</Run>
+                                    <LineBreak/>
+                                    <Run>- 1000-2000ms: Waits longer, better for natural speech</Run>
+                                </TextBlock>
+                            </StackPanel>
+                        </Border>
                     </StackPanel>
                 </Border>
                 <Border Background="{DynamicResource SurfaceBackground}" CornerRadius="4" Padding="16" Margin="0,0,0,16">

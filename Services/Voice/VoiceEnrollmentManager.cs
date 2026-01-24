@@ -7,6 +7,18 @@ namespace Kinectv1
 {
     public static class VoiceEnrollmentManager
     {
+        static VoiceEnrollmentManager()
+        {
+            try
+            {
+                SpeakerEmbedder.OnEmbedding += embedding =>
+                {
+                    try { ProcessVoiceSample(embedding); } catch { }
+                };
+            }
+            catch { }
+        }
+
         private static string _pendingEnrollmentName = null;
         private static readonly List<float[]> _enrollmentSamples = new List<float[]>();
         private static readonly int RequiredSamples = 10; // Increased from 3 to 10 for better voice recognition accuracy

@@ -16,6 +16,7 @@ namespace Kinectv1.UI.Settings
         private readonly SettingsService _svc = App.SettingsProvider;
         private DispatcherTimer _refreshTimer;
         private bool _suppressSliderEvent;
+        private TextBox _webRtcSilenceFlushMsTextBox;
 
         public TranscriptionSettingsView()
         {
@@ -28,6 +29,8 @@ namespace Kinectv1.UI.Settings
         {
             try
             {
+                _webRtcSilenceFlushMsTextBox = FindName("WebRtcSilenceFlushMsTextBox") as TextBox;
+
                 var cfg = _svc?.Current?.Transcription;
                 if (cfg == null) return;
 
@@ -43,6 +46,9 @@ namespace Kinectv1.UI.Settings
                 DiarizationThresholdSlider.Value = cfg.DiarizationSimilarityThreshold;
                 DiarizationThresholdValueText.Text = cfg.DiarizationSimilarityThreshold.ToString("F2");
                 _suppressSliderEvent = false;
+
+                if (_webRtcSilenceFlushMsTextBox != null)
+                    _webRtcSilenceFlushMsTextBox.Text = cfg.WebRtcSilenceFlushMs.ToString();
 
                 UpdateSessionStatus();
 
@@ -291,6 +297,10 @@ namespace Kinectv1.UI.Settings
                 // Get diarization threshold from slider
                 var diarizationThreshold = Math.Clamp(DiarizationThresholdSlider.Value, 0.0, 1.0);
 
+                int webRtcSilenceFlushMs = 1200;
+                if (_webRtcSilenceFlushMsTextBox != null && int.TryParse(_webRtcSilenceFlushMsTextBox.Text, out var parsedFlush))
+                     webRtcSilenceFlushMs = Math.Clamp(parsedFlush, 0, 2000);
+
                 var next = new TranscriptionSettings(
                     Enabled: EnabledCheckBox.IsChecked ?? false,
                     MuteTts: MuteTtsCheckBox.IsChecked ?? true,
@@ -298,12 +308,15 @@ namespace Kinectv1.UI.Settings
                     OutputFolder: string.IsNullOrWhiteSpace(OutputFolderTextBox.Text) ? "transcriptions" : OutputFolderTextBox.Text,
                     GenerateSummary: GenerateSummaryCheckBox.IsChecked ?? true,
                     SummaryDelaySeconds: summaryDelay,
-                    DiarizationSimilarityThreshold: diarizationThreshold
+                    DiarizationSimilarityThreshold: diarizationThreshold,
+                    WebRtcSilenceFlushMs: webRtcSilenceFlushMs
                 );
 
                 var updated = cur with { Transcription = next };
                 SettingsService.ValidateOrThrow(updated);
                 _svc.Save(updated);
+                
+                try { Kinectv1.VoiceRecognizer.SetWebRtcSilenceFlushMs(webRtcSilenceFlushMs); } catch { }
             }
             catch (Exception ex)
             {

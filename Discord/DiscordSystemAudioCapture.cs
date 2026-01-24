@@ -30,6 +30,14 @@ namespace Kinectv1.Discord
                     return;
                 }
 
+                // Guard: In WebRTC mode, all audio input should come from the WebUI.
+                // System loopback can include mic sidetone / app audio and will bleed into STT.
+                if (audioMode == AudioInMode.WebRtcVoice)
+                {
+                    Console.WriteLine("🚫 System loopback capture blocked - WebRTC mode is active");
+                    return;
+                }
+
                 try
                 {
                     _capture = new WasapiLoopbackCapture(); // default output device

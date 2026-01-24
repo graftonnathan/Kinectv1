@@ -110,6 +110,19 @@ namespace Kinectv1
                     VoiceRecognizer.OnSpeakerResolvedForOllama += ShowSpeakerResolvedForOllama;
                     VoiceRecognizer.OnVoiceEmbedding += OnVoiceEmbedding;
 
+                    // Voice enrollment events -> UI
+                    try
+                    {
+                        VoiceEnrollmentManager.OnEnrollmentProgress -= UpdateVoiceEnrollmentProgress;
+                        VoiceEnrollmentManager.OnEnrollmentComplete -= OnVoiceEnrollmentComplete;
+                        VoiceEnrollmentManager.OnEnrollmentCancelled -= OnVoiceEnrollmentCancelled;
+                    }
+                    catch { }
+
+                    VoiceEnrollmentManager.OnEnrollmentProgress += UpdateVoiceEnrollmentProgress;
+                    VoiceEnrollmentManager.OnEnrollmentComplete += OnVoiceEnrollmentComplete;
+                    VoiceEnrollmentManager.OnEnrollmentCancelled += OnVoiceEnrollmentCancelled;
+
                     // Ensure final-only UI and LLM dispatch wiring
                     WireTranscriptionEvents();
                     WireDispatchPipeline();
@@ -1226,10 +1239,94 @@ namespace Kinectv1
         }
 
         // XAML click handlers that are referenced in MainWindow.xaml
-        private void EnrollVoiceButton_Click(object sender, RoutedEventArgs e) { }
-        private void CancelVoiceButton_Click(object sender, RoutedEventArgs e) { }
-        private void ListSpeakersButton_Click(object sender, RoutedEventArgs e) { }
-        private void FlushVoiceButton_Click(object sender, RoutedEventArgs e) { }
+        private void EnrollVoiceButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var name = EnrollNameBox?.Text?.Trim();
+                if (string.IsNullOrWhiteSpace(name))
+                {
+                    // Avoid dumping large console instructions on UI thread.
+                    // Just no-op if the name is missing.
+                    return;
+                }
+
+                // Start enrollment on a background thread to guarantee the UI never blocks
+                // even if downstream logging is slow.
+                _ = Task.Run(() =>
+                {
+                    try { VoiceEnrollmentManager.StartEnrollment(name); } catch { }
+                });
+
+                // Make progress UI visible immediately
+                if (VoiceEnrollmentPanel != null) VoiceEnrollmentPanel.Visibility = Visibility.Visible;
+                if (VoiceEnrollProgress != null)
+                {
+                    VoiceEnrollProgress.Maximum = VoiceEnrollmentManager.GetRequiredSamples();
+                    VoiceEnrollProgress.Value = 0;
+                }
+                if (VoiceProgressText != null)
+                    VoiceProgressText.Text = $"0/{VoiceEnrollmentManager.GetRequiredSamples()}";
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"EnrollVoiceButton_Click failed: {ex.Message}");
+            }
+        }
+
+        private void CancelVoiceButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                VoiceEnrollmentManager.CancelEnrollment();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"CancelVoiceButton_Click failed: {ex.Message}");
+            }
+        }
+
+        private void ListSpeakersButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                SpeakerIdentifier.ListEnrolledSpeakers();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"ListSpeakersButton_Click failed: {ex.Message}");
+            }
+        }
+
+        private void FlushVoiceButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                // Cancel any enrollment in progress first
+                try { VoiceEnrollmentManager.CancelEnrollment(); } catch { }
+
+                SpeakerIdentifier.ClearAll();
+
+                // Reset UI state
+                try
+                {
+                    if (VoiceEnrollmentPanel != null) VoiceEnrollmentPanel.Visibility = Visibility.Collapsed;
+                    if (VoiceEnrollProgress != null)
+                    {
+                        VoiceEnrollProgress.Value = 0;
+                        VoiceEnrollProgress.Maximum = VoiceEnrollmentManager.GetRequiredSamples();
+                    }
+                    if (VoiceProgressText != null)
+                        VoiceProgressText.Text = $"0/{VoiceEnrollmentManager.GetRequiredSamples()}";
+                }
+                catch { }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"FlushVoiceButton_Click failed: {ex.Message}");
+            }
+        }
+
         private void ToggleOllamaButton_Click(object sender, RoutedEventArgs e) { }
         private void OllamaModelComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e) { }
         private void RefreshModelsButton_Click(object sender, RoutedEventArgs e) { }
@@ -1524,6 +1621,11 @@ namespace Kinectv1
                         // Compute RMS for diagnostics (after normalization)
                         float rms = NormalizedAudioFrame.ComputeRms(pcmForVosk, pcmForVosk.Length);
                         if (rms > peakRms) peakRms = rms;
+
+                        // Update UI meter to reflect the amplified (post-normalization) audio.
+                        // The transport callback shows raw inbound RMS which can be misleading when AGC is enabled.
+                        _latestWebRtcRmsValue = rms;
+                        _lastWebRtcRmsTime = DateTime.UtcNow;
 
                         var normalizedFrame = Kinectv1.Voice.NormalizedAudioFrame.Create(
                             pcmForVosk, pcmForVosk.Length,

@@ -176,7 +176,7 @@
                     <StackPanel>
                         <TextBlock Text="WebRTC Audio Processing (Server-Side)" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimary}" Margin="0,0,0,12"/>
                         <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource TextMuted}" FontSize="12" Margin="0,0,0,12"
-                                   Text="Server-side audio processing for WebRTC input. Normalization boosts quiet audio; silence flush controls when sentences are emitted."/>
+                                   Text="Server-side audio processing for WebRTC input. Normalization boosts quiet audio for better recognition."/>
 
                         <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                             <TextBlock Text="Enable Normalization" Foreground="{DynamicResource TextSecondary}" Width="150" VerticalAlignment="Center"/>
@@ -200,30 +200,14 @@
                             <TextBlock Text="x (1-20)" Foreground="{DynamicResource TextMuted}" FontSize="11" Margin="8,0,0,0" VerticalAlignment="Center"/>
                         </StackPanel>
 
-                        <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                            <TextBlock Text="Silence Flush Timeout" Foreground="{DynamicResource TextSecondary}" Width="150" VerticalAlignment="Center"/>
-                            <TextBox x:Name="SilenceFlushMsTextBox" Style="{StaticResource ThemedTextBoxStyle}" Width="80"
-                                     ToolTip="How long to wait after speech stops before emitting the accumulated transcription (0-2000ms). 0 = emit immediately on each result. Lower = faster response, higher = catches longer pauses. Default: 1200ms"/>
-                            <TextBlock Text="ms (0-2000)" Foreground="{DynamicResource TextMuted}" FontSize="11" Margin="8,0,0,0" VerticalAlignment="Center"/>
-                        </StackPanel>
-
                         <Border Background="{DynamicResource SurfaceBackgroundLight}" CornerRadius="4" Padding="8" Margin="0,8,0,0">
                             <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource TextMuted}" FontSize="10">
-                                <Run FontWeight="SemiBold">Silence Flush:</Run>
-                                <Run>Controls when WebRTC transcriptions are emitted after the speaker stops talking.</Run>
-                                <LineBreak/>
-                                <Run>- 0ms: Emit immediately on each Vosk result (fastest, may be choppy)</Run>
-                                <LineBreak/>
-                                <Run>- 300-800ms: Fast response, may split sentences during pauses</Run>
-                                <LineBreak/>
-                                <Run>- 1000-2000ms: Waits longer, better for natural speech with pauses</Run>
-                                <LineBreak/>
-                                <Run FontWeight="SemiBold">Normalization:</Run>
-                                <Run>Boosts quiet audio for better speech recognition.</Run>
-                                <LineBreak/>
-                                <Run>- Low target RMS (2000): Gentle boost, preserves dynamics</Run>
-                                <LineBreak/>
-                                <Run>- High target RMS (4000): Stronger boost, may sound compressed</Run>
+                                 <Run FontWeight="SemiBold">Normalization:</Run>
+                                 <Run>Boosts quiet audio for better speech recognition.</Run>
+                                 <LineBreak/>
+                                 <Run>- Low target RMS (2000): Gentle boost, preserves dynamics</Run>
+                                 <LineBreak/>
+                                 <Run>- High target RMS (4000): Stronger boost, may sound compressed</Run>
                             </TextBlock>
                         </Border>
                     </StackPanel>

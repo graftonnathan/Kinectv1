@@ -11,15 +11,19 @@ using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Kinectv1.Llm;
 using Kinectv1.Llm.Tools;
+using Kinectv1.Services.Transcription;
 
 namespace Kinectv1
 {
-    // Central LLM + conversation history service
     public static class OllamaService
     {
         public static event Action<string> OnPromptSent;
         public static event Action<string> OnResponseReceived;
         public static event Action<string> OnError;
+
+        // Prevent duplicate console logs / abort fallbacks when overlapping dispatches occur
+        private static long _chatLogGeneration = 0;
+        private static long _lastAbortHandledGeneration = -1;
         
         // New: Streaming events for real-time TTS
         /// <summary>
@@ -583,27 +587,35 @@ namespace Kinectv1
         public static async Task SendPromptStreamingAsync(string speakerName, string transcription, CancellationToken ct = default, bool skipHistory = false)
         {
             CancellationTokenSource linkedCts;
+            long myGen;
             lock (_streamingCtsLock)
             {
                 try { _currentStreamingCts?.Cancel(); } catch { }
                 try { _currentStreamingCts?.Dispose(); } catch { }
-                
-                _currentStreamingCts = ct == default 
-                    // new CancellationTokenSource() 
+
+                _currentStreamingCts = ct == default
                     ? CancellationTokenSource.CreateLinkedTokenSource(ct)
                     : new CancellationTokenSource();
                 linkedCts = _currentStreamingCts;
+
+                myGen = Interlocked.Increment(ref _chatLogGeneration);
             }
-            
+
             var streamingCt = linkedCts.Token;
             _isLlmStreaming = true;
-            
+
             try
             {
                 if (!IsEnabled()) return;
                 EnsureRouterInitialized();
                 var normalizedSpeaker = string.IsNullOrWhiteSpace(speakerName) ? "UnknownSpeaker" : speakerName.Trim();
-                
+
+                // If this dispatch was already superseded/cancelled, don't log it.
+                if (streamingCt.IsCancellationRequested) return;
+
+                // Log full user message (complete, final)
+                try { Console.WriteLine($"[CHAT][USER][{normalizedSpeaker}] {transcription}"); } catch { }
+
                 await EnsureMemoryInitializedAsync(streamingCt).ConfigureAwait(false);
                 
                 var system = LoadSystemPrompt();
@@ -618,6 +630,7 @@ namespace Kinectv1
                 // Skip history if requested (for system operations like summary generation)
                 string history = string.Empty;
                 string memoryContext = string.Empty;
+                var mm = GetMemoryManager();
                 
                 if (!skipHistory)
                 {
@@ -626,7 +639,6 @@ namespace Kinectv1
                     history = BuildHistoryBlockAllSpeakersForCurrentPrompt();
 
                     // Build context from vector memory (warm summary + retrieved chunks)
-                    var mm = GetMemoryManager();
                     if (mm.IsEnabled)
                     {
                         try
@@ -645,7 +657,63 @@ namespace Kinectv1
                     }
                 }
                 
+                // Transcript recall: only inject when asked
+                string transcriptContext = null;
+                bool transcriptRecallHit = false;
+                if (TranscriptIntent.IsTranscriptAsk(transcription))
+                {
+                    try
+                    {
+                        Console.WriteLine($"[TranscriptRecall] Triggered for query: '{(transcription?.Length > 80 ? transcription.Substring(0, 80) + "..." : transcription)}'");
+
+                        var recall = new TranscriptRecallService(mm, new Kinectv1.Llm.LmStudioEmbeddingClient(
+                            Snap?.Ollama?.LmStudioBaseUrl ?? "http://127.0.0.1:1234",
+                            Snap?.Ollama?.ApiKey,
+                            () => Snap?.Ollama?.EmbeddingsModel));
+
+                        var pack = await recall.TryBuildTranscriptContextAsync(transcription, topK: 6, ct).ConfigureAwait(false);
+                        transcriptContext = pack?.ToPromptBlock();
+                        transcriptRecallHit = pack?.Snippets != null && pack.Snippets.Count > 0;
+
+                        Console.WriteLine($"[TranscriptRecall] Snippets={(pack?.Snippets?.Count ?? 0)} bytes={(transcriptContext?.Length ?? 0)}");
+
+                        if (!transcriptRecallHit)
+                        {
+                            const string noHit = "I couldn't find anything relevant in the saved transcripts.";
+                            try
+                            {
+                                var ttsEnabled = false;
+                                try { ttsEnabled = Kinectv1.App.SettingsProvider?.Current?.Tts?.Enabled ?? false; } catch { }
+                                if (ttsEnabled)
+                                {
+                                    var voice = Kinectv1.App.SettingsProvider?.Current?.Tts?.Speaker;
+                                    Kinectv1.Tts.TtsService.QueueSentenceForStreaming(noHit, voice);
+                                }
+                            }
+                            catch { }
+
+                            try { OnResponseReceived?.Invoke(noHit); } catch { }
+                            return;
+                        }
+
+                        if (!string.IsNullOrWhiteSpace(transcriptContext))
+                        {
+                            system += "\n\nWhen transcript excerpts are provided as context, treat them as reference material and cite sources in this format: Meeting Title [HH:MM:SS-HH:MM:SS], Speaker.";
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[TranscriptRecall] Failed: {ex.Message}");
+                    }
+                }
+                
                 var userPrompt = BuildUserPromptWithMemory(normalizedSpeaker, transcription, null, history, memoryContext);
+
+                if (!string.IsNullOrWhiteSpace(transcriptContext))
+                {
+                    userPrompt += "\n\nTRANSCRIPT CONTEXT:\n" + transcriptContext.Trim();
+                }
+
                 try { OnPromptSent?.Invoke(userPrompt); } catch { }
                 
                 if (!skipHistory)
@@ -655,16 +723,36 @@ namespace Kinectv1
                 
                 // Stream the response with tool support
                 var (finalResponse, toolsUsed) = await StreamResponseWithToolsAsync(system, userPrompt, normalizedSpeaker, streamingCt).ConfigureAwait(false);
-                
+
                 if (streamingCt.IsCancellationRequested)
                 {
+                    // Avoid duplicate abort fallback for multiple overlapping cancels.
+                    if (Interlocked.CompareExchange(ref _lastAbortHandledGeneration, myGen, _lastAbortHandledGeneration) == myGen)
+                        return;
+
                     Console.WriteLine("[OllamaService] Streaming aborted - not saving partial response");
+                    var abortedMsg = "I couldn't complete that response. Please try again.";
+                    try { OnResponseReceived?.Invoke(abortedMsg); } catch { }
+                    try
+                    {
+                        var ttsEnabled = false;
+                        try { ttsEnabled = Kinectv1.App.SettingsProvider?.Current?.Tts?.Enabled ?? false; } catch { }
+                        if (ttsEnabled)
+                        {
+                            var voice = Kinectv1.App.SettingsProvider?.Current?.Tts?.Speaker;
+                            Kinectv1.Tts.TtsService.QueueSentenceForStreaming(abortedMsg, voice);
+                        }
+                    }
+                    catch { }
+
+                    // Log final AI message (aborted)
+                    try { Console.WriteLine($"[CHAT][AI][{normalizedSpeaker}] {abortedMsg}"); } catch { }
                     return;
                 }
                 
                 if (string.IsNullOrWhiteSpace(finalResponse)) finalResponse = "(no response)";
                 var cleanedFull = SanitizeAssistantText(finalResponse);
-                
+
                 if (!skipHistory)
                 {
                     AppendConversation(normalizedSpeaker, "assistant", cleanedFull);
@@ -673,15 +761,18 @@ namespace Kinectv1
                     await CheckAndProcessMemoryOverflowAsync(normalizedSpeaker, streamingCt).ConfigureAwait(false);
                 
                     // Save memory manager state periodically
-                    var mm = GetMemoryManager();
-                    if (mm.IsEnabled)
+                    var mmSave = GetMemoryManager();
+                    if (mmSave.IsEnabled)
                     {
-                        try { await mm.SaveAsync(streamingCt).ConfigureAwait(false); }
+                        try { await mmSave.SaveAsync(streamingCt).ConfigureAwait(false); }
                         catch { }
                     }
                 }
                 
                 try { OnResponseReceived?.Invoke(cleanedFull); } catch { }
+
+                // Log full AI response (complete, final)
+                try { Console.WriteLine($"[CHAT][AI][{normalizedSpeaker}] {cleanedFull}"); } catch { }
             }
             catch (OperationCanceledException)
             {
@@ -878,28 +969,68 @@ namespace Kinectv1
                     catch { }
                 }
                 
-                var userPrompt = BuildUserPromptWithMemory(normalizedSpeaker, transcription, null, history, memoryContext);
-                try { OnPromptSent?.Invoke(userPrompt); } catch { }
-                AppendConversation(normalizedSpeaker, "user", transcription);
-                
-                string raw;
-                try { raw = await _router.ChatOnceAsync(system, userPrompt).ConfigureAwait(false); }
-                catch (OperationCanceledException) { return; }
-                if (string.IsNullOrWhiteSpace(raw)) raw = "(no response)";
-                var cleaned = SanitizeAssistantText(raw);
-                AppendConversation(normalizedSpeaker, "assistant", cleaned);
-                
-                // Check for memory overflow after appending the response
-                await CheckAndProcessMemoryOverflowAsync(normalizedSpeaker, ct).ConfigureAwait(false);
-                
-                // Save memory manager state periodically
-                if (mm.IsEnabled)
+                // Transcript recall: only inject when asked
+                string transcriptContext = null;
+                if (TranscriptIntent.IsTranscriptAsk(transcription))
                 {
-                    try { await mm.SaveAsync(ct).ConfigureAwait(false); }
-                    catch { }
+                    try
+                    {
+                        Console.WriteLine($"[TranscriptRecall] Triggered for query: '{(transcription?.Length > 80 ? transcription.Substring(0, 80) + "..." : transcription)}'");
+
+                        var recall = new TranscriptRecallService(mm, new Kinectv1.Llm.LmStudioEmbeddingClient(
+                            Snap?.Ollama?.LmStudioBaseUrl ?? "http://127.0.0.1:1234",
+                            Snap?.Ollama?.ApiKey,
+                            () => Snap?.Ollama?.EmbeddingsModel));
+
+                        var pack = await recall.TryBuildTranscriptContextAsync(transcription, topK: 6, ct).ConfigureAwait(false);
+                        transcriptContext = pack?.ToPromptBlock();
+
+                        Console.WriteLine($"[TranscriptRecall] Snippets={(pack?.Snippets?.Count ?? 0)} bytes={(transcriptContext?.Length ?? 0)}");
+
+                        if (pack?.Snippets == null || pack.Snippets.Count == 0)
+                        {
+                            try
+                            {
+                                var ttsEnabled = false;
+                                try { ttsEnabled = Kinectv1.App.SettingsProvider?.Current?.Tts?.Enabled ?? false; } catch { }
+                                if (ttsEnabled)
+                                {
+                                    var voice = Kinectv1.App.SettingsProvider?.Current?.Tts?.Speaker;
+                                    Kinectv1.Tts.TtsService.QueueSentenceForStreaming("I couldn't find anything relevant in the saved transcripts.", voice);
+                                }
+                            }
+                            catch { }
+                        }
+
+                        var userPrompt = BuildUserPromptWithMemory(normalizedSpeaker, transcription, null, history, memoryContext);
+
+                        if (!string.IsNullOrWhiteSpace(transcriptContext))
+                        {
+                            userPrompt += "\n\nTRANSCRIPT CONTEXT:\n" + transcriptContext.Trim();
+                        }
+
+                        string raw;
+                        try { raw = await _router.ChatOnceAsync(system, userPrompt).ConfigureAwait(false); }
+                        catch (OperationCanceledException) { return; }
+                        if (string.IsNullOrWhiteSpace(raw)) raw = "(no response)";
+
+                        var cleaned = SanitizeAssistantText(raw);
+                        AppendConversation(normalizedSpeaker, "assistant", cleaned);
+                        
+                        // Check for memory overflow after appending the response
+                        await CheckAndProcessMemoryOverflowAsync(normalizedSpeaker, ct).ConfigureAwait(false);
+                        
+                        // Save memory manager state periodically
+                        if (mm.IsEnabled)
+                        {
+                            try { await mm.SaveAsync(ct).ConfigureAwait(false); }
+                            catch { }
+                        }
+                        
+                        try { OnResponseReceived?.Invoke(cleaned); } catch { }
+                    }
+                    catch (Exception ex) { LogErr($"LLM dispatch failed: {ex.Message}"); }
                 }
-                
-                try { OnResponseReceived?.Invoke(cleaned); } catch { }
             }
             catch (Exception ex) { LogErr($"LLM dispatch failed: {ex.Message}"); }
         }
