@@ -114,7 +114,7 @@ namespace Kinectv1.UI.Settings
                             editor.SpeakerMatchThresholdTextBox.Text = snapshot.Audio.SpeakerMatchMinScore.ToString(CultureInfo.InvariantCulture);
                         }
                         if (editor.SpeakerModelPathTextBox != null)
-                            editor.SpeakerModelPathTextBox.Text = snapshot.Face.SpeakerEmbeddingModelPath ?? string.Empty;
+                            editor.SpeakerModelPathTextBox.Text = snapshot.Transcription?.SpeakerEmbeddingModelPath ?? string.Empty;
                     }
                 }
                 _viewModel.HasUnsavedChanges = false; // initial load is clean
@@ -204,7 +204,8 @@ namespace Kinectv1.UI.Settings
                 bargeInEnabled = editor.BargeInEnabledCheckBox.IsChecked ?? current.Asr.BargeInEnabled;
 
             // Speaker embedding model
-            string spkPath = editor.SpeakerModelPathTextBox?.Text ?? current.Face.SpeakerEmbeddingModelPath;
+            string spkPath = editor.SpeakerModelPathTextBox?.Text ?? current.Transcription?.SpeakerEmbeddingModelPath ?? string.Empty;
+            spkPath = spkPath?.Trim() ?? string.Empty;
 
             // Extended TTS fields from sliders
             double localVolume = editor.LocalVolumeSlider.Value / 100.0;
@@ -253,21 +254,13 @@ namespace Kinectv1.UI.Settings
                 BargeInEnabled: bargeInEnabled
             );
 
-            // Preserve face settings but update speaker model path
-            var face = new global::Kinectv1.Settings.FaceSettings(
-                Threshold: current.Face.Threshold,
-                FusionFaceWeight: current.Face.FusionFaceWeight,
-                FusionVoiceWeight: current.Face.FusionVoiceWeight,
-                FusionDecayHalfLifeMs: current.Face.FusionDecayHalfLifeMs,
-                FusionUnknownThreshold: current.Face.FusionUnknownThreshold,
-                ArcFaceModelPath: current.Face.ArcFaceModelPath,
-                SpeakerEmbeddingModelPath: spkPath
-            );
+            var transcription = (current.Transcription ?? throw new InvalidOperationException("Transcription settings unavailable"))
+                with { SpeakerEmbeddingModelPath = spkPath };
 
             // Preserve existing settings that aren't in the editor
             return new global::Kinectv1.Settings.AppSettings(
-                audio, tts, current.Ollama, current.Discord, current.WebRtc, 
-                current.Ui, asr, stt, face, current.App, current.Transcription, current.Debug);
+                audio, tts, current.Ollama, current.Discord, current.WebRtc,
+                current.Ui, asr, stt, current.App, transcription, current.Debug);
         }
 
         private void Verify_Click(object sender, RoutedEventArgs e)
@@ -360,7 +353,7 @@ namespace Kinectv1.UI.Settings
                     if (editor.SpeakerMatchThresholdTextBox != null)
                         editor.SpeakerMatchThresholdTextBox.Text = defaults.Audio.SpeakerMatchMinScore.ToString(CultureInfo.InvariantCulture);
                     if (editor.SpeakerModelPathTextBox != null)
-                        editor.SpeakerModelPathTextBox.Text = defaults.Face.SpeakerEmbeddingModelPath ?? string.Empty;
+                        editor.SpeakerModelPathTextBox.Text = defaults.Transcription?.SpeakerEmbeddingModelPath ?? string.Empty;
                 }
             }
             catch (Exception ex)
@@ -434,7 +427,7 @@ namespace Kinectv1.UI.Settings
                     if (editor.SpeakerMatchThresholdTextBox != null)
                         editor.SpeakerMatchThresholdTextBox.Text = snapshot.Audio.SpeakerMatchMinScore.ToString(CultureInfo.InvariantCulture);
                     if (editor.SpeakerModelPathTextBox != null)
-                        editor.SpeakerModelPathTextBox.Text = snapshot.Face.SpeakerEmbeddingModelPath ?? string.Empty;
+                        editor.SpeakerModelPathTextBox.Text = snapshot.Transcription?.SpeakerEmbeddingModelPath ?? string.Empty;
                 }
                 _viewModel.RefreshSnapshotFromService();
                 _viewModel.HasUnsavedChanges = false;

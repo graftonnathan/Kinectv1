@@ -189,33 +189,48 @@ namespace Kinectv1
                 try { WebRtcPadSilenceAndHarvest(250); } catch { }
 
                 string finalText = null;
+                string rawJson = null;
                 lock (_voskLock)
                 {
                     var rec = _recognizer;
                     if (rec == null) return;
 
-                    var json = rec.FinalResult();
-                    finalText = ExtractText(json);
+                    rawJson = rec.FinalResult();
+                    finalText = ExtractText(rawJson);
                 }
 
                 string textToEmit = null;
+                string textSource = "none";
 
                 if (!string.IsNullOrWhiteSpace(finalText))
+                {
                     textToEmit = finalText.Trim();
+                    textSource = "finalResult";
+                }
                 else if (!string.IsNullOrWhiteSpace(accumulatedText))
+                {
                     textToEmit = accumulatedText;
+                    textSource = "accumulated";
+                }
                 else if (!string.IsNullOrWhiteSpace(lastPartial))
+                {
                     textToEmit = lastPartial;
+                    textSource = "partial";
+                }
 
                 if (!string.IsNullOrWhiteSpace(textToEmit) && !textToEmit.Equals("the", StringComparison.OrdinalIgnoreCase))
                 {
-                    VRLog("WEBRTC", $"Emitting transcription ({reason}): '{(textToEmit.Length > 50 ? textToEmit.Substring(0, 50) + "..." : textToEmit)}'");
+                    Console.WriteLine($"[FLUSH] reason={reason}, source={textSource}, text='{(textToEmit.Length > 50 ? textToEmit.Substring(0, 50) + "..." : textToEmit)}'");
                     try { OnTranscription?.Invoke(textToEmit); } catch { }
+                }
+                else
+                {
+                    Console.WriteLine($"[FLUSH] reason={reason}, source={textSource}, text=(empty or filtered)");
                 }
             }
             catch (Exception ex)
             {
-                VRLog("ERROR", $"FlushWebRtcAccumulatedText: {ex.Message}");
+                Console.WriteLine($"[FLUSH] Error: {ex.Message}");
             }
         }
 
@@ -268,7 +283,7 @@ namespace Kinectv1
                 ? double.PositiveInfinity
                 : (now - _webRtcLastVoskResultTime).TotalMilliseconds;
 
-            // Prefer actual audio silence (RMS-based) over Vosk partial timing.
+            // Prefer actual audio silence (RMS-driven) over Vosk partial timing.
             // Only allow an RMS-driven flush at a "safe boundary" to avoid mid-word cuts:
             //  - either we already have finalized accumulated text, OR
             //  - the current partial ends with whitespace (word boundary).
@@ -290,7 +305,7 @@ namespace Kinectv1
 
                         if (safeBoundary)
                         {
-                            VRLog("WEBRTC", $"Silence flush (raw={_webRtcRawSilentMs}ms, sinceVosk={timeSinceLastResult:F0}ms, thr={_webRtcSilenceFlushMs}ms), flushing text");
+                            Console.WriteLine($"[FLUSH-TRIGGER] SILENCE: rawSilentMs={rawSilentMs}ms >= threshold={_webRtcSilenceFlushMs}ms, hasFinalized={hasFinalized}, safeBoundary={safeBoundary}");
                             FlushWebRtcAccumulatedText("silence");
                             _webRtcRawSilentMs = 0;
                         }
@@ -487,6 +502,7 @@ namespace Kinectv1
 
                 if (wasActive)
                 {
+                    Console.WriteLine($"[FLUSH-TRIGGER] VAD_SPEECH_END: Speech ended (RMS below threshold), marking pending");
                     lock (_webRtcLock)
                     {
                         _webRtcLastVoskResultTime = DateTime.UtcNow;
@@ -499,6 +515,7 @@ namespace Kinectv1
 
             if (!wasActive && _webRtcSpeechActive)
             {
+                Console.WriteLine($"[FLUSH-TRIGGER] VAD_SPEECH_START: Speech started (RMS={rms:F0})");
                 lock (_webRtcLock)
                 {
                     _webRtcAccumulatedText.Clear();
@@ -659,9 +676,9 @@ namespace Kinectv1
                         json = rec.Result();
                       }
                     else
-                    {
+                      {
                         pjson = rec.PartialResult();
-                    }
+                      }
                 }
 
                 if (isWebRtc)
@@ -680,10 +697,12 @@ namespace Kinectv1
 
                         if (isWebRtc)
                         {
+                            Console.WriteLine($"[FLUSH-TRIGGER] VOSK_ACCEPTED: Vosk finalized utterance, text='{(t.Length > 40 ? t.Substring(0,40)+"..." : t)}'");
                             _webRtcLastVoskResultTime = DateTime.UtcNow;
 
                             if (_webRtcSilenceFlushMs <= 0)
                             {
+                                Console.WriteLine($"[FLUSH-TRIGGER] VOSK_IMMEDIATE: silenceFlushMs=0, emitting immediately");
                                 try { OnTranscription?.Invoke(t); } catch { }
                             }
                             else
@@ -963,6 +982,7 @@ namespace Kinectv1
                     var remaining = _webRtcAccumulatedText.ToString().Trim();
                     if (!string.IsNullOrWhiteSpace(remaining))
                     {
+                        Console.WriteLine($"[FLUSH-TRIGGER] WEBRTC_DISABLED: Flushing remaining text on disable");
                         try { OnTranscription?.Invoke(remaining); } catch { }
                     }
                     _webRtcAccumulatedText.Clear();
@@ -1035,10 +1055,17 @@ namespace Kinectv1
         /// </summary>
         public static void ForceWebRtcBoundary(string reason = "boundary")
         {
+            // TEMPORARILY DISABLED - testing silence-only flush
+            Console.WriteLine($"[FLUSH-TRIGGER] SPEAKER_CHANGE: DISABLED (reason={reason})");
+            return;
+
+            /*
             if (!_webRtcEnabled) return;
 
             if (Interlocked.Exchange(ref _webrtcBoundaryArmed, 1) == 1)
                 return;
+
+            Console.WriteLine($"[FLUSH-TRIGGER] SPEAKER_CHANGE: reason={reason}, waiting {WebRtcTailDelayMs}ms tail delay");
 
             _ = Task.Run(async () =>
             {
@@ -1046,6 +1073,7 @@ namespace Kinectv1
                 {
                     await Task.Delay(WebRtcTailDelayMs).ConfigureAwait(false);
 
+                    Console.WriteLine($"[FLUSH-TRIGGER] SPEAKER_CHANGE: executing flush after tail delay");
                     WebRtcPadSilenceAndHarvest(250);
                     FlushWebRtcAccumulatedText(reason);
                     ResetWebRtcRecognizer();
@@ -1059,6 +1087,7 @@ namespace Kinectv1
                     Interlocked.Exchange(ref _webrtcBoundaryArmed, 0);
                 }
             });
+            */
         }
 
         private static void ResetWebRtcRecognizer()
@@ -1073,7 +1102,7 @@ namespace Kinectv1
 
                     _recognizer = new VoskRecognizer(_sttModel, SampleRate);
                     _recognizer.SetMaxAlternatives(0);
-                    _recognizer.SetWords(false);
+                    _recognizer.SetWords(true);  // Enable word-level timing for diarization
                 }
 
                 lock (_webRtcLock)
@@ -1150,9 +1179,9 @@ namespace Kinectv1
                     _sttModel = new Model(resolved);
                     _recognizer = new VoskRecognizer(_sttModel, SampleRate);
                     _recognizer.SetMaxAlternatives(0);
-                    _recognizer.SetWords(false);
+                    _recognizer.SetWords(true);  // Enable word-level timing for diarization
                     _modelPath = resolved;
-                    Console.WriteLine($"[VoiceRecognizer] Vosk model loaded: {resolved}");
+                    Console.WriteLine($"[VoiceRecognizer] Vosk model loaded (words=true): {resolved}");
                 }
             }
             catch (Exception ex)

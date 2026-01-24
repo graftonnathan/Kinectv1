@@ -74,6 +74,24 @@ This document describes the streamlined settings pipeline for the Kinectv1 proje
     * When `false`: ongoing TTS suppresses ASR ingestion (frames are buffered as preroll but not recognized) — user speech waits until playback completes.
   * External cancellation (UI / hotkey) routes through `TtsPlaybackController.CancelCurrent()` and marks a cancel timestamp used to relax leading trim on immediate follow‑up speech.
 
+* **Face / Speaker Settings**
+
+  * `FaceSettings` now exposes three knobs that control how `SpeakerEmbedder` samples audio:
+    * `speakerEmbeddingWindowMs` — duration of each embedding crop (default 1600 ms for ECAPA).
+    * `speakerEmbeddingHopMs` — stride between crops (default 800 ms). Smaller hops give denser coverage but use more CPU.
+    * `speakerEmbeddingSilenceDb` — dBFS gate for discarding windows that are mostly silence/room noise.
+  * These values are respected live (no restart required) and should be persisted alongside other Face settings.
+
+* **Enrolled Speaker Matching**
+
+  * `audio.speakerMatchMinScore` — Minimum cosine similarity (0.0–1.0) required to accept an enrolled speaker match.
+    * Default: 0.75 (raised from 0.6 to reduce false positives).
+    * Recommended range: 0.70–0.85 for most use cases.
+    * Lower values (0.50–0.65) are lenient and may match the wrong speaker.
+    * Higher values (0.85–0.95) are strict and may reject valid matches.
+  * This setting can be adjusted in the Transcription Settings UI under "Enrolled Speaker Matching".
+  * Logs are emitted to console showing match scores vs threshold for diagnostics.
+
 ---
 
 ## Load Flow

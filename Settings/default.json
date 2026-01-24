@@ -3,7 +3,7 @@
   "audio": {
     "voiceThreshold": 0.012,
     "bufferSize": 7,
-    "speakerMatchMinScore": 0.6
+    "speakerMatchMinScore": 0.35
   },
   "tts": {
     "enabled": true,
@@ -36,15 +36,6 @@
   "stt": {
     "modelPath": "models/vosk-model-en-us-0.22",
     "inputDevice": "Default"
-  },
-  "face": {
-    "threshold": 0.7,
-    "fusionFaceWeight": 0.5,
-    "fusionVoiceWeight": 0.5,
-    "fusionDecayHalfLifeMs": 2000,
-    "fusionUnknownThreshold": 0.5,
-    "arcFaceModelPath": "models/face/arcface_r100.onnx",
-    "speakerEmbeddingModelPath": "models/speaker/pyannote_embedding.onnx"
   },
   "app": {
     "requireWakeWord": false,
@@ -101,7 +92,11 @@
     "generateSummary": true,
     "summaryDelaySeconds": 60,
     "diarizationSimilarityThreshold": 0.5,
-    "webRtcSilenceFlushMs": 1200
+    "webRtcSilenceFlushMs": 1200,
+    "speakerEmbeddingModelPath": "models/speaker/pyannote_embedding.onnx",
+    "speakerEmbeddingWindowMs": 1600,
+    "speakerEmbeddingHopMs": 800,
+    "speakerEmbeddingSilenceDb": -70.0
   },
   "debug": {
     "audioCaptureEnabled": false,

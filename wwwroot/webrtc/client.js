@@ -2,7 +2,7 @@
 
 var MODE_MIC = 0;
 var MODE_DISCORD = 1;
-var MODE_WEBRTC = 3;
+var MODE_WEBRTC = 2;  // Must match C# AudioInMode.WebRtcVoice enum value
 
 var ws = null;
 var stream = null;

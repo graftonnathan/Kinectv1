@@ -1,7 +1,7 @@
 # Speaker Recognition Windowing Fix - Implementation Notes (Updated)
 
 ## Addendum: Barge?In & TTS Interaction
-The barge?in system (when enabled) cancels active TTS playback but does NOT interrupt the rolling window accumulation for speaker embeddings. Mic audio continues feeding the RingBuffer regardless of TTS state so identity stability is preserved across interruptions.
+The barge?in system (when enabled) cancels active TTS playback but does not interrupt the rolling window accumulation for speaker embeddings. Mic audio continues feeding the RingBuffer regardless of TTS state so identity stability is preserved across interruptions.
 
 (Original content below)
 
@@ -11,6 +11,8 @@ The barge?in system (when enabled) cancels active TTS playback but does NOT inte
 
 ## Summary
 Fixed speaker recognition ingestion issue where embedder often returned 'Unknown' scores despite audio presence. The issue was caused by improper windowing and lack of silence gating.
+
+**Update (ECAPA):** the window length and hop interval are now configurable via `Face.SpeakerEmbeddingWindowMs` and `Face.SpeakerEmbeddingHopMs`. Defaults were increased to 1600 ms / 800 ms to match ECAPA TDNN input statistics. Set these values per model instead of editing code.
 
 ## Root Cause
 - Original implementation consumed entire 1-second audio windows after processing

@@ -14,7 +14,6 @@ namespace Kinectv1.Settings
         [property: Required] UiSettings Ui,
         [property: Required] AsrSettings Asr,
         [property: Required] SttSettings Stt,
-        [property: Required] FaceSettings Face,
         [property: Required] AppConfig App,
         [property: Required] TranscriptionSettings Transcription,
         [property: Required] DebugSettings Debug
@@ -67,31 +66,6 @@ namespace Kinectv1.Settings
         [property: Required] string ModelPath,
         [property: Required] string InputDevice
     );
-
-    // Face recognition and fusion settings
-    public sealed record FaceSettings(
-        [property: Range(0.0, 1.0)] double Threshold,
-        [property: Range(0.0, 1.0)] double FusionFaceWeight,
-        [property: Range(0.0, 1.0)] double FusionVoiceWeight,
-        [property: Range(100, 60000)] int FusionDecayHalfLifeMs,
-        [property: Range(0.0, 1.0)] double FusionUnknownThreshold,
-        string ArcFaceModelPath,
-        string SpeakerEmbeddingModelPath
-    );
-
-    public enum AppScenario { Local, Remote }
-
-    public enum AudioInMode
-    {
-        [EnumMember(Value = "mic")]
-        LocalMic,
-        [EnumMember(Value = "discord")]
-        DiscordVoice,
-        [EnumMember(Value = "loopback")]
-        SystemLoopback,
-        [EnumMember(Value = "webrtc")]
-        WebRtcVoice
-    }
 
     // App-level behavior
     public sealed record AppConfig(
@@ -165,7 +139,11 @@ namespace Kinectv1.Settings
         [property: Range(5, 3600)] int SummaryDelaySeconds, // Time after last transcription before generating summary
         [property: Range(0.0, 1.0)] double DiarizationSimilarityThreshold, // 0=less strict (fewer speakers), 1=more strict (more speakers)
         // WebRTC silence-based sentence flush timeout
-        [property: Range(0, 2000)] int WebRtcSilenceFlushMs // How long to wait after silence before emitting accumulated text (ms). 0 = emit immediately on each Vosk result
+        [property: Range(0, 2000)] int WebRtcSilenceFlushMs, // How long to wait after silence before emitting accumulated text (ms). 0 = emit immediately on each Vosk result
+        [property: Required] string SpeakerEmbeddingModelPath,
+        [property: Range(400, 4000)] int SpeakerEmbeddingWindowMs,
+        [property: Range(200, 4000)] int SpeakerEmbeddingHopMs,
+        [property: Range(-120.0, -5.0)] double SpeakerEmbeddingSilenceDb
     );
 
     // New: Debug settings for diagnostics and troubleshooting

@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
@@ -7,6 +8,7 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using Kinectv1.Services.Transcription;
 using Kinectv1.Settings;
+using Microsoft.Win32;
 using WinForms = System.Windows.Forms;
 
 namespace Kinectv1.UI.Settings
@@ -32,6 +34,7 @@ namespace Kinectv1.UI.Settings
                 _webRtcSilenceFlushMsTextBox = FindName("WebRtcSilenceFlushMsTextBox") as TextBox;
 
                 var cfg = _svc?.Current?.Transcription;
+                var audioCfg = _svc?.Current?.Audio;
                 if (cfg == null) return;
 
                 EnabledCheckBox.IsChecked = cfg.Enabled;
@@ -40,11 +43,20 @@ namespace Kinectv1.UI.Settings
                 OutputFolderTextBox.Text = cfg.OutputFolder ?? "transcriptions";
                 GenerateSummaryCheckBox.IsChecked = cfg.GenerateSummary;
                 SummaryDelayTextBox.Text = cfg.SummaryDelaySeconds.ToString();
+                SpeakerModelPathTextBox.Text = cfg.SpeakerEmbeddingModelPath ?? string.Empty;
+                SpeakerWindowMsTextBox.Text = cfg.SpeakerEmbeddingWindowMs.ToString(CultureInfo.InvariantCulture);
+                SpeakerHopMsTextBox.Text = cfg.SpeakerEmbeddingHopMs.ToString(CultureInfo.InvariantCulture);
+                SpeakerSilenceDbTextBox.Text = cfg.SpeakerEmbeddingSilenceDb.ToString("F1", CultureInfo.InvariantCulture);
                 
                 // Load diarization threshold
                 _suppressSliderEvent = true;
                 DiarizationThresholdSlider.Value = cfg.DiarizationSimilarityThreshold;
                 DiarizationThresholdValueText.Text = cfg.DiarizationSimilarityThreshold.ToString("F2");
+                
+                // Load enrolled speaker match threshold
+                var speakerMatchThreshold = audioCfg?.SpeakerMatchMinScore ?? 0.75;
+                SpeakerMatchThresholdSlider.Value = speakerMatchThreshold;
+                SpeakerMatchThresholdValueText.Text = speakerMatchThreshold.ToString("F2");
                 _suppressSliderEvent = false;
 
                 if (_webRtcSilenceFlushMsTextBox != null)
@@ -93,7 +105,23 @@ namespace Kinectv1.UI.Settings
             {
                 DiarizationThresholdValueText.Text = e.NewValue.ToString("F2");
                 StatusText.Text = "Changed (not saved)";
-                StatusText.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x8C, 0x00));
+                StatusText.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x8C, 0x0A));
+            }
+            catch { }
+        }
+
+        private void SpeakerMatchThresholdSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+        {
+            if (_suppressSliderEvent) return;
+            
+            // Guard against early calls during XAML initialization
+            if (SpeakerMatchThresholdValueText == null || StatusText == null) return;
+            
+            try
+            {
+                SpeakerMatchThresholdValueText.Text = e.NewValue.ToString("F2");
+                StatusText.Text = "Changed (not saved)";
+                StatusText.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x8C, 0x0A));
             }
             catch { }
         }
@@ -197,6 +225,30 @@ namespace Kinectv1.UI.Settings
             }
         }
 
+        private void BrowseSpeakerModelButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var dlg = new OpenFileDialog
+                {
+                    Title = "Select Speaker Embedding Model (.onnx)",
+                    Filter = "ONNX model (*.onnx)|*.onnx|All files (*.*)|*.*"
+                };
+
+                if (dlg.ShowDialog() == true)
+                {
+                    SpeakerModelPathTextBox.Text = dlg.FileName;
+                    StatusText.Text = "Changed (not saved)";
+                    StatusText.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x8C, 0x0A));
+                }
+            }
+            catch (Exception ex)
+            {
+                StatusText.Text = $"Browse error: {ex.Message}";
+                StatusText.Foreground = new SolidColorBrush(Color.FromRgb(0xE7, 0x4C, 0x3C));
+            }
+        }
+
         private void OpenFolderButton_Click(object sender, RoutedEventArgs e)
         {
             try
@@ -297,11 +349,32 @@ namespace Kinectv1.UI.Settings
                 // Get diarization threshold from slider
                 var diarizationThreshold = Math.Clamp(DiarizationThresholdSlider.Value, 0.0, 1.0);
 
+                // Get enrolled speaker match threshold from slider
+                var speakerMatchThreshold = Math.Clamp(SpeakerMatchThresholdSlider.Value, 0.5, 0.95);
+
                 int webRtcSilenceFlushMs = 1200;
                 if (_webRtcSilenceFlushMsTextBox != null && int.TryParse(_webRtcSilenceFlushMsTextBox.Text, out var parsedFlush))
                      webRtcSilenceFlushMs = Math.Clamp(parsedFlush, 0, 2000);
 
-                var next = new TranscriptionSettings(
+                var speakerModelPathRaw = SpeakerModelPathTextBox?.Text?.Trim() ?? string.Empty;
+                var speakerModelPath = string.IsNullOrWhiteSpace(speakerModelPathRaw)
+                    ? string.Empty
+                    : TryMakeRelative(speakerModelPathRaw);
+
+                int windowMs = 1600;
+                if (SpeakerWindowMsTextBox != null && int.TryParse(SpeakerWindowMsTextBox.Text, out var parsedWindow))
+                    windowMs = Math.Clamp(parsedWindow, 400, 4000);
+
+                int hopMs = 800;
+                if (SpeakerHopMsTextBox != null && int.TryParse(SpeakerHopMsTextBox.Text, out var parsedHop))
+                    hopMs = Math.Clamp(parsedHop, 200, 4000);
+                if (hopMs > windowMs) hopMs = windowMs;
+
+                double silenceDb = -70.0;
+                if (SpeakerSilenceDbTextBox != null && double.TryParse(SpeakerSilenceDbTextBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsedSilence))
+                    silenceDb = Math.Clamp(parsedSilence, -120.0, -5.0);
+
+                var nextTranscription = new TranscriptionSettings(
                     Enabled: EnabledCheckBox.IsChecked ?? false,
                     MuteTts: MuteTtsCheckBox.IsChecked ?? true,
                     LogToFile: LogToFileCheckBox.IsChecked ?? true,
@@ -309,10 +382,21 @@ namespace Kinectv1.UI.Settings
                     GenerateSummary: GenerateSummaryCheckBox.IsChecked ?? true,
                     SummaryDelaySeconds: summaryDelay,
                     DiarizationSimilarityThreshold: diarizationThreshold,
-                    WebRtcSilenceFlushMs: webRtcSilenceFlushMs
+                    WebRtcSilenceFlushMs: webRtcSilenceFlushMs,
+                    SpeakerEmbeddingModelPath: speakerModelPath,
+                    SpeakerEmbeddingWindowMs: windowMs,
+                    SpeakerEmbeddingHopMs: hopMs,
+                    SpeakerEmbeddingSilenceDb: silenceDb
                 );
 
-                var updated = cur with { Transcription = next };
+                // Update audio settings with the new speaker match threshold
+                var nextAudio = new AudioSettings(
+                    VoiceThreshold: cur.Audio.VoiceThreshold,
+                    BufferSize: cur.Audio.BufferSize,
+                    SpeakerMatchMinScore: speakerMatchThreshold
+                );
+
+                var updated = cur with { Transcription = nextTranscription, Audio = nextAudio };
                 SettingsService.ValidateOrThrow(updated);
                 _svc.Save(updated);
                 
