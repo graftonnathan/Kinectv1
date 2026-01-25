@@ -712,6 +712,7 @@ namespace Kinectv1
                 if (!string.IsNullOrWhiteSpace(transcriptContext))
                 {
                     userPrompt += "\n\nTRANSCRIPT CONTEXT:\n" + transcriptContext.Trim();
+                    userPrompt += "\n\nINSTRUCTIONS:\nAnswer the user's question using the TRANSCRIPT CONTEXT above. If it doesn't contain enough information, say what's missing and ask a specific follow-up question.";
                 }
 
                 try { OnPromptSent?.Invoke(userPrompt); } catch { }
@@ -1007,6 +1008,7 @@ namespace Kinectv1
                         if (!string.IsNullOrWhiteSpace(transcriptContext))
                         {
                             userPrompt += "\n\nTRANSCRIPT CONTEXT:\n" + transcriptContext.Trim();
+                            userPrompt += "\n\nINSTRUCTIONS:\nAnswer the user's question using the TRANSCRIPT CONTEXT above. If it doesn't contain enough information, say what's missing and ask a specific follow-up question.";
                         }
 
                         string raw;
@@ -1016,17 +1018,17 @@ namespace Kinectv1
 
                         var cleaned = SanitizeAssistantText(raw);
                         AppendConversation(normalizedSpeaker, "assistant", cleaned);
-                        
+
                         // Check for memory overflow after appending the response
                         await CheckAndProcessMemoryOverflowAsync(normalizedSpeaker, ct).ConfigureAwait(false);
-                        
+
                         // Save memory manager state periodically
                         if (mm.IsEnabled)
                         {
                             try { await mm.SaveAsync(ct).ConfigureAwait(false); }
                             catch { }
                         }
-                        
+
                         try { OnResponseReceived?.Invoke(cleaned); } catch { }
                     }
                     catch (Exception ex) { LogErr($"LLM dispatch failed: {ex.Message}"); }
