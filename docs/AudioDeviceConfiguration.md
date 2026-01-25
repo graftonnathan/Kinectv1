@@ -17,11 +17,6 @@ Local TTS playback is now routed through `TtsService` + `TtsPlaybackController` 
 - Tests device availability and functionality
 - Manages device selection and configuration
 
-### AudioInputHelper
-- Creates configured WaveInEvent instances for STT
-- Tests STT input device functionality
-- Provides device information and logging
-
 ## Settings
 
 Settings are persisted in `AppSettings` (see `settings.md`).
@@ -55,9 +50,14 @@ AppSettings.SaveTtsOutputDevice("Speakers (High Definition Audio)");
 
 #### STT Input
 ```csharp
-using (var waveIn = AudioInputHelper.CreateConfiguredWaveIn())
+var inputDevice = AudioDeviceManager.GetConfiguredInputDevice();
+using (var waveIn = new WaveInEvent
 {
-    waveIn.DataAvailable += (s,e)=>{ /* process */ }; 
+    WaveFormat = new WaveFormat(16000, 16, 1),
+    DeviceNumber = inputDevice?.DeviceNumber ?? 0
+})
+{
+    waveIn.DataAvailable += (s,e)=>{ /* process */ };
     waveIn.StartRecording();
 }
 ```
@@ -78,3 +78,4 @@ The controller will preempt any prior utterance and apply volume scaling.
 ## Notes
 - No separate Coqui/Kokoro service layer; unified `TtsService` manages model + playback.
 - Barge?in: when enabled, VAD activation cancels current audio; otherwise STT is suppressed during playback.
+- `AudioInputHelper` was removed; use `AudioDeviceManager` with `WaveInEvent` directly for STT input setup.
