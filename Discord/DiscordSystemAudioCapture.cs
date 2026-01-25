@@ -26,7 +26,7 @@ namespace Kinectv1.Discord
                 var audioMode = Kinectv1.App.SettingsProvider?.Current?.App?.InputMode ?? AudioInMode.LocalMic;
                 if (audioMode == AudioInMode.DiscordVoice)
                 {
-                    Console.WriteLine("🚫 System loopback capture blocked - Discord voice ingest is active");
+                    Console.WriteLine("?? System loopback capture blocked - Discord voice ingest is active");
                     return;
                 }
 
@@ -34,7 +34,7 @@ namespace Kinectv1.Discord
                 // System loopback can include mic sidetone / app audio and will bleed into STT.
                 if (audioMode == AudioInMode.WebRtcVoice)
                 {
-                    Console.WriteLine("🚫 System loopback capture blocked - WebRTC mode is active");
+                    Console.WriteLine("?? System loopback capture blocked - WebRTC mode is active");
                     return;
                 }
 
@@ -47,11 +47,11 @@ namespace Kinectv1.Discord
 
                     _capture.StartRecording();
                     _isRunning = true;
-                    Console.WriteLine("🎧 System loopback capture started (default output)");
+                    Console.WriteLine("?? System loopback capture started (default output)");
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"❌ Failed to start system loopback capture: {ex.Message}");
+                    Console.WriteLine($"? Failed to start system loopback capture: {ex.Message}");
                     Stop();
                 }
             }
@@ -78,7 +78,7 @@ namespace Kinectv1.Discord
                 {
                     if (_isRunning)
                     {
-                        Console.WriteLine("🛑 System loopback capture stopped");
+                        Console.WriteLine("?? System loopback capture stopped");
                     }
                     _isRunning = false;
                 }
@@ -89,7 +89,7 @@ namespace Kinectv1.Discord
         {
             if (e.Exception != null)
             {
-                Console.WriteLine($"⚠️ Loopback capture error: {e.Exception.Message}");
+                Console.WriteLine($"?? Loopback capture error: {e.Exception.Message}");
             }
         }
 
@@ -127,7 +127,7 @@ namespace Kinectv1.Discord
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"⚠️ Loopback capture processing error: {ex.Message}");
+                Console.WriteLine($"?? Loopback capture processing error: {ex.Message}");
             }
         }
     }

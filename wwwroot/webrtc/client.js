@@ -1296,6 +1296,10 @@ function updateTranscriptionMode(enabled) {
     if (transcriptionBanner) {
         transcriptionBanner.classList.toggle('visible', enabled);
     }
+    // If transcription mode is disabled, stop mic capture so the UI mic button is off
+    if (!enabled && voiceOn) {
+        stopVoice();
+    }
 }
 
 function setTranscriptionMode(enabled) {

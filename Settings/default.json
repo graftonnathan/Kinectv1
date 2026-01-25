@@ -93,6 +93,7 @@
     "summaryDelaySeconds": 60,
     "diarizationSimilarityThreshold": 0.5,
     "webRtcSilenceFlushMs": 1200,
+    "transcriptChunkTokenLimit": 600,
     "speakerEmbeddingModelPath": "models/speaker/pyannote_embedding.onnx",
     "speakerEmbeddingWindowMs": 1600,
     "speakerEmbeddingHopMs": 800,

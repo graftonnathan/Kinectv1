@@ -140,6 +140,7 @@ namespace Kinectv1.Settings
         [property: Range(0.0, 1.0)] double DiarizationSimilarityThreshold, // 0=less strict (fewer speakers), 1=more strict (more speakers)
         // WebRTC silence-based sentence flush timeout
         [property: Range(0, 2000)] int WebRtcSilenceFlushMs, // How long to wait after silence before emitting accumulated text (ms). 0 = emit immediately on each Vosk result
+        [property: Range(200, 4000)] int TranscriptChunkTokenLimit, // Token budget for batching plain-text transcript chunks before embedding
         [property: Required] string SpeakerEmbeddingModelPath,
         [property: Range(400, 4000)] int SpeakerEmbeddingWindowMs,
         [property: Range(200, 4000)] int SpeakerEmbeddingHopMs,

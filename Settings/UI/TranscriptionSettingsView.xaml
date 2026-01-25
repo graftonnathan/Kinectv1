@@ -54,6 +54,18 @@
                             <TextBlock Text="Mute TTS Output" Foreground="{DynamicResource TextSecondary}" Width="200" VerticalAlignment="Center"/>
                             <CheckBox x:Name="MuteTtsCheckBox" Style="{StaticResource ThemedCheckBoxStyle}" ToolTip="When enabled, AI responses will not be spoken aloud"/>
                         </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                            <TextBlock Text="Embed Chunk Token Limit" Foreground="{DynamicResource TextSecondary}" Width="200" VerticalAlignment="Center"/>
+                            <TextBox x:Name="TranscriptChunkTokensTextBox" Style="{StaticResource ThemedTextBoxStyle}" Width="80"
+                                     ToolTip="Batch transcript text until this token count, then embed that chunk into the transcript index (200-4000 tokens)."/>
+                            <TextBlock Text="tokens (200-4000)" Foreground="{DynamicResource TextMuted}" FontSize="11" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                        </StackPanel>
+                        <StackPanel Margin="0,0,0,8">
+                            <TextBlock Text="Chunk token usage" Foreground="{DynamicResource TextMuted}" FontSize="11" Margin="0,0,0,4"/>
+                            <ProgressBar x:Name="TranscriptChunkTokenMeter" Height="8" Minimum="0" Maximum="1" Value="0"
+                                         Foreground="{DynamicResource AccentGreen}" Background="{DynamicResource SurfaceBackgroundLight}"/>
+                            <TextBlock x:Name="TranscriptChunkTokenText" Text="0 / 0 tokens" Foreground="{DynamicResource TextSecondary}" FontSize="11" Margin="0,2,0,0"/>
+                        </StackPanel>
                     </StackPanel>
                 </Border>
                 <Border Background="{DynamicResource SurfaceBackground}" CornerRadius="4" Padding="16" Margin="0,0,0,16">

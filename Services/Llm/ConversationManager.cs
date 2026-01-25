@@ -1386,5 +1386,46 @@ namespace Kinectv1
             return sentences;
         }
         #endregion
+
+        /// <summary>
+        /// Non-streaming single-shot chat. Optionally skip conversation history/logging.
+        /// </summary>
+        public static async Task<string> ChatOnceAsync(string systemPrompt, string userPrompt, CancellationToken ct = default, bool skipHistory = false)
+        {
+            try
+            {
+                if (!IsEnabled()) return string.Empty;
+                EnsureRouterInitialized();
+
+                await EnsureMemoryInitializedAsync(ct).ConfigureAwait(false);
+
+                if (!skipHistory)
+                {
+                    // Append user to history
+                    var speaker = "User";
+                    AppendConversation(speaker, "user", userPrompt);
+                }
+
+                var response = await _router.ChatOnceAsync(systemPrompt ?? string.Empty, userPrompt ?? string.Empty, ct).ConfigureAwait(false);
+
+                if (!skipHistory)
+                {
+                    var speaker = "User";
+                    var cleaned = SanitizeAssistantText(response);
+                    AppendConversation(speaker, "assistant", cleaned);
+                }
+
+                return response;
+            }
+            catch (OperationCanceledException)
+            {
+                return string.Empty;
+            }
+            catch (Exception ex)
+            {
+                LogErr($"ChatOnceAsync failed: {ex.Message}");
+                return string.Empty;
+            }
+        }
     }
 }

@@ -431,13 +431,15 @@ namespace Kinectv1.Voice
 
         private void OnTranscription(string text)
         {
-            if (GetCurrentMode() != 3) return;
-            
-            // In transcription mode, skip this - we'll send the diarized version instead
+            // If transcription-only mode is enabled, let the diarized pipeline handle UI; otherwise broadcast to chat.
             var transcriptionEnabled = false;
             try { transcriptionEnabled = App.SettingsProvider?.Current?.Transcription?.Enabled ?? false; } catch { }
             if (transcriptionEnabled) return;
-            
+
+            // Treat speech-driven messages as active WebRTC sessions so responses are relayed to the web UI.
+            _webRtcActive = true;
+            ExtendWebRtcActive(30);
+
             Broadcast(new { type = "transcription", text });
         }
 
@@ -637,6 +639,13 @@ namespace Kinectv1.Voice
                     svc.Save(next);
                 }
 
+                // If transcription is being turned off, embed any pending chunk immediately
+                if (!enabled)
+                {
+                    try { await Services.Transcription.TranscriptionService.Instance.ForceEmbedCurrentChunkAsync().ConfigureAwait(false); }
+                    catch { }
+                }
+
                 Broadcast(new { type = "transcription_mode", enabled });
                 Serve(res, JsonConvert.SerializeObject(new { success = true, enabled }), "application/json");
             }
@@ -741,8 +750,17 @@ namespace Kinectv1.Voice
                             
                             var speaker = App.SettingsProvider?.Current?.Ollama?.ForcedSpeakerId ?? "User";
                             try { OnWebTextInput?.Invoke(speaker, text); } catch { }
-                            // Note: Don't broadcast transcription here - the client already displays the text locally.
-                            // Broadcasting it back would cause double display in the WebUI.
+
+                            // Broadcast once so other web clients see the user prompt; sender dedupes via pendingText.
+                            try
+                            {
+                                var transcriptionEnabled = App.SettingsProvider?.Current?.Transcription?.Enabled ?? false;
+                                if (!transcriptionEnabled)
+                                {
+                                    Broadcast(new { type = "transcription", text, speaker });
+                                }
+                            }
+                            catch { }
                             
                             _ = Task.Run(async () =>
                             {

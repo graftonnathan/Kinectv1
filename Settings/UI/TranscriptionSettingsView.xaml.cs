@@ -43,6 +43,7 @@ namespace Kinectv1.UI.Settings
                 OutputFolderTextBox.Text = cfg.OutputFolder ?? "transcriptions";
                 GenerateSummaryCheckBox.IsChecked = cfg.GenerateSummary;
                 SummaryDelayTextBox.Text = cfg.SummaryDelaySeconds.ToString();
+                TranscriptChunkTokensTextBox.Text = cfg.TranscriptChunkTokenLimit.ToString();
                 SpeakerModelPathTextBox.Text = cfg.SpeakerEmbeddingModelPath ?? string.Empty;
                 SpeakerWindowMsTextBox.Text = cfg.SpeakerEmbeddingWindowMs.ToString(CultureInfo.InvariantCulture);
                 SpeakerHopMsTextBox.Text = cfg.SpeakerEmbeddingHopMs.ToString(CultureInfo.InvariantCulture);
@@ -187,6 +188,35 @@ namespace Kinectv1.UI.Settings
                     CurrentFileText.Text = "--";
                     StartStopButton.Content = "Start Session";
                 }
+
+                UpdateChunkTokenMeter();
+            }
+            catch { }
+        }
+
+        private void UpdateChunkTokenMeter()
+        {
+            try
+            {
+                if (TranscriptChunkTokenMeter == null || TranscriptChunkTokenText == null) return;
+
+                var service = TranscriptionService.Instance;
+                var usage = service.GetCurrentChunkTokenUsage();
+                var limit = Math.Max(usage.limit, 1);
+                var tokens = Math.Max(usage.tokens, 0);
+                var ratio = Math.Min(1.0, (double)tokens / limit);
+
+                TranscriptChunkTokenMeter.Maximum = limit;
+                TranscriptChunkTokenMeter.Value = tokens;
+                TranscriptChunkTokenText.Text = $"{tokens} / {limit} tokens";
+
+                Brush brush;
+                if (ratio >= 0.9) brush = new SolidColorBrush(Color.FromRgb(0xE7, 0x4C, 0x3C)); // red
+                else if (ratio >= 0.75) brush = new SolidColorBrush(Color.FromRgb(0xFF, 0x8C, 0x00)); // orange
+                else brush = new SolidColorBrush(Color.FromRgb(0x10, 0x7C, 0x10)); // green
+
+                TranscriptChunkTokenMeter.Foreground = brush;
+                TranscriptChunkTokenText.Foreground = brush;
             }
             catch { }
         }
@@ -356,6 +386,10 @@ namespace Kinectv1.UI.Settings
                 if (_webRtcSilenceFlushMsTextBox != null && int.TryParse(_webRtcSilenceFlushMsTextBox.Text, out var parsedFlush))
                      webRtcSilenceFlushMs = Math.Clamp(parsedFlush, 0, 2000);
 
+                int chunkTokenLimit = 600;
+                if (TranscriptChunkTokensTextBox != null && int.TryParse(TranscriptChunkTokensTextBox.Text, out var parsedChunkTokens))
+                    chunkTokenLimit = Math.Clamp(parsedChunkTokens, 200, 4000);
+
                 var speakerModelPathRaw = SpeakerModelPathTextBox?.Text?.Trim() ?? string.Empty;
                 var speakerModelPath = string.IsNullOrWhiteSpace(speakerModelPathRaw)
                     ? string.Empty
@@ -383,6 +417,7 @@ namespace Kinectv1.UI.Settings
                     SummaryDelaySeconds: summaryDelay,
                     DiarizationSimilarityThreshold: diarizationThreshold,
                     WebRtcSilenceFlushMs: webRtcSilenceFlushMs,
+                    TranscriptChunkTokenLimit: chunkTokenLimit,
                     SpeakerEmbeddingModelPath: speakerModelPath,
                     SpeakerEmbeddingWindowMs: windowMs,
                     SpeakerEmbeddingHopMs: hopMs,

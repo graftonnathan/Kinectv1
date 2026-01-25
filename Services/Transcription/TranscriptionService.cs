@@ -70,6 +70,10 @@ namespace Kinectv1.Services.Transcription
         private Task _segmentStoreLoadTask;
         private readonly SemaphoreSlim _segmentStoreIoMutex = new SemaphoreSlim(1, 1);
         private int _segmentIndexInSession = 0;
+        private readonly object _chunkLock = new();
+        private readonly StringBuilder _chunkBuilder = new();
+        private double _chunkStartSec = double.NaN;
+        private double _chunkEndSec = double.NaN;
 
         public bool IsActive => _isActive;
         public string CurrentSessionFile => _currentSessionFile;
@@ -191,6 +195,7 @@ namespace Kinectv1.Services.Transcription
                 _sessionEntries.Clear();
                 _segmentIndexInSession = 0;
             }
+            ResetChunkBuilder();
 
             // Reset diarizer for new session
             SpeakerDiarizer.Instance.Reset();
@@ -218,9 +223,8 @@ namespace Kinectv1.Services.Transcription
                 Log($"[Transcription] Failed to create output folder: {ex.Message}");
             }
 
-            // Generate filename: Meeting_2024-01-15_14-30-00.txt
-            var fileName = $"Meeting_{_sessionStartTime:yyyy-MM-dd_HH-mm-ss}.txt";
-            _currentSessionFile = Path.Combine(outputFolder, fileName);
+            // Generate filename: Meeting_2024-01-15_14-30-00.txt (unique per session start)
+            _currentSessionFile = GetUniqueSessionFilePath(outputFolder, _sessionStartTime);
 
             // Ensure segment index is initialized now that we know output folder/session id
             try { EnsureSegmentIndexInitialized(); } catch { }
@@ -258,6 +262,7 @@ namespace Kinectv1.Services.Transcription
 
             _isActive = false;
             StopSummaryTimer();
+            await FlushTranscriptChunkAsync(force: true);
 
             var cfg = App.SettingsProvider?.Current?.Transcription;
 
@@ -337,20 +342,17 @@ namespace Kinectv1.Services.Transcription
                 Text = text.Trim()
             };
 
-            int segIndex;
             lock (_entriesLock)
             {
                 _sessionEntries.Add(entry);
-                segIndex = _segmentIndexInSession;
-                _segmentIndexInSession++;
             }
 
             _lastTranscriptionTime = entry.Timestamp;
 
-            // Upsert segment + embedding metadata in background
+            // Append to chunked transcript buffer and embed when token budget reached
             _ = Task.Run(async () =>
             {
-                try { await UpsertTranscriptSegmentAsync(entry, speaker, embedding, segIndex).ConfigureAwait(false); }
+                try { await AppendTranscriptChunkAsync(entry).ConfigureAwait(false); }
                 catch { }
             });
 
@@ -553,55 +555,9 @@ namespace Kinectv1.Services.Transcription
                     return null;
                 }
 
-                var responseSb = new StringBuilder();
-                var tcs = new TaskCompletionSource<string>();
-
-                void OnChunk(string chunk)
-                {
-                    if (ct.IsCancellationRequested) return;
-                    responseSb.Append(chunk);
-                }
-
-                void OnComplete(string response)
-                {
-                    tcs.TrySetResult(response);
-                }
-
-                void OnError(string error)
-                {
-                    Log($"[Transcription] LLM error: {error}");
-                    tcs.TrySetResult(responseSb.ToString());
-                }
-
-                // Subscribe to events temporarily
-                OllamaService.OnResponseChunk += OnChunk;
-                OllamaService.OnResponseReceived += OnComplete;
-                OllamaService.OnError += OnError;
-
-                try
-                {
-                    // Send the prompt - use a system speaker to avoid polluting conversation history
-                    await OllamaService.DispatchAsync("TranscriptionSummary", prompt, skipHistory: true);
-
-                    // Wait for completion with timeout
-                    using var timeoutCts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
-                    using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
-
-                    var completedTask = await Task.WhenAny(tcs.Task, Task.Delay(Timeout.Infinite, linkedCts.Token));
-
-                    if (completedTask == tcs.Task)
-                    {
-                        return await tcs.Task;
-                    }
-
-                    return responseSb.ToString();
-                }
-                finally
-                {
-                    OllamaService.OnResponseChunk -= OnChunk;
-                    OllamaService.OnResponseReceived -= OnComplete;
-                    OllamaService.OnError -= OnError;
-                }
+                // Use non-streaming call to avoid shared streaming events
+                var response = await OllamaService.ChatOnceAsync(null, prompt, ct, skipHistory: true).ConfigureAwait(false);
+                return string.IsNullOrWhiteSpace(response) ? null : response;
             }
             catch (Exception ex)
             {
@@ -760,10 +716,28 @@ namespace Kinectv1.Services.Transcription
             catch { return 0; }
         }
 
-        private async Task UpsertTranscriptSegmentAsync(TranscriptionEntry entry, string providedSpeaker, float[] embedding)
-            => await UpsertTranscriptSegmentAsync(entry, providedSpeaker, embedding, null).ConfigureAwait(false);
+        private int GetTranscriptChunkTokenLimit()
+        {
+            try
+            {
+                var limit = App.SettingsProvider?.Current?.Transcription?.TranscriptChunkTokenLimit ?? 600;
+                return Math.Clamp(limit, 200, 4000);
+            }
+            catch { return 600; }
+        }
 
-        private async Task UpsertTranscriptSegmentAsync(TranscriptionEntry entry, string providedSpeaker, float[] embedding, int? segIndexOverride)
+        private static double EstimateEntryDurationSeconds(string text)
+        {
+            try
+            {
+                var words = text?.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)?.Length ?? 0;
+                var estimated = words / 2.5;
+                return Math.Clamp(estimated, 0.5, 20.0);
+            }
+            catch { return 1.0; }
+        }
+
+        private async Task AppendTranscriptChunkAsync(TranscriptionEntry entry)
         {
             try
             {
@@ -773,69 +747,101 @@ namespace Kinectv1.Services.Transcription
                 var load = _segmentStoreLoadTask;
                 if (load != null) { try { await load.ConfigureAwait(false); } catch { } }
 
-                // Prefer the diarizer label for grouping, but also keep the resolved speaker name.
-                string speakerLabel = string.Empty;
-                if (embedding != null && embedding.Length > 0)
-                {
-                    try
-                    {
-                        var (lab, _) = SpeakerDiarizer.Instance.IdentifyOrAssign(embedding);
-                        speakerLabel = lab ?? string.Empty;
-                    }
-                    catch { }
-                }
-
-                var sessionId = GetSessionIdFromSessionFile(_currentSessionFile);
-                var title = GetSessionTitleFromSessionFile(_currentSessionFile);
-
                 double tEnd = GetCurrentSessionElapsedSeconds(entry.Timestamp);
-
-                // Estimate start time by assuming the utterance is ~2.5 wps
-                // (fallback only; true audio timestamps are not currently plumbed through.)
-                double estimatedDur = 0;
-                try
-                {
-                    var words = entry.Text?.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)?.Length ?? 0;
-                    estimatedDur = words / 2.5;
-                }
-                catch { }
-                estimatedDur = Math.Max(0.5, Math.Min(20.0, estimatedDur));
-
+                double estimatedDur = EstimateEntryDurationSeconds(entry.Text);
                 double tStart = Math.Max(0, tEnd - estimatedDur);
 
-                var startedAtUtc = _sessionStartTime.ToUniversalTime();
-                var segIndex = segIndexOverride ?? _segmentIndexInSession;
-                var segId = $"{sessionId}:{segIndex:D6}";
+                var line = $"[{entry.Timestamp:HH:mm:ss}] {entry.Speaker}: {entry.Text}";
+                string chunkText = null;
+                double chunkStart = 0;
+                double chunkEnd = 0;
+                int chunkIndex = -1;
+
+                lock (_chunkLock)
+                {
+                    if (_chunkBuilder.Length > 0) _chunkBuilder.AppendLine();
+                    _chunkBuilder.Append(line);
+
+                    if (double.IsNaN(_chunkStartSec))
+                        _chunkStartSec = tStart;
+                    _chunkEndSec = tEnd;
+
+                    int limit = GetTranscriptChunkTokenLimit();
+                    var tokens = TokenBudget.EstimateTokens(_chunkBuilder.ToString());
+                    if (tokens >= limit)
+                    {
+                        chunkText = _chunkBuilder.ToString();
+                        chunkStart = double.IsNaN(_chunkStartSec) ? 0 : _chunkStartSec;
+                        chunkEnd = _chunkEndSec;
+                        chunkIndex = _segmentIndexInSession++;
+                        _chunkBuilder.Clear();
+                        _chunkStartSec = double.NaN;
+                        _chunkEndSec = double.NaN;
+                    }
+                }
+
+                if (!string.IsNullOrWhiteSpace(chunkText) && chunkIndex >= 0)
+                {
+                    await EmbedTranscriptChunkAsync(chunkText, chunkStart, chunkEnd, chunkIndex).ConfigureAwait(false);
+                }
+            }
+            catch { }
+        }
+
+        private async Task FlushTranscriptChunkAsync(bool force = false)
+        {
+            string chunkText;
+            double chunkStart;
+            double chunkEnd;
+            int chunkIndex;
+
+            lock (_chunkLock)
+            {
+                if (_chunkBuilder.Length == 0) return;
+                chunkText = _chunkBuilder.ToString();
+                chunkStart = double.IsNaN(_chunkStartSec) ? 0 : _chunkStartSec;
+                chunkEnd = _chunkEndSec;
+                chunkIndex = _segmentIndexInSession++;
+                _chunkBuilder.Clear();
+                _chunkStartSec = double.NaN;
+                _chunkEndSec = double.NaN;
+            }
+
+            await EmbedTranscriptChunkAsync(chunkText, chunkStart, chunkEnd, chunkIndex).ConfigureAwait(false);
+        }
+
+        private async Task EmbedTranscriptChunkAsync(string chunkText, double chunkStartSec, double chunkEndSec, int chunkIndex)
+        {
+            try
+            {
+                EnsureSegmentIndexInitialized();
+                if (_segmentStore == null || _segmentEmbeddingClient == null) return;
 
                 float[] segEmbedding = null;
-                try
-                {
-                    if (_segmentEmbeddingClient != null)
-                        segEmbedding = await _segmentEmbeddingClient.GetEmbeddingAsync(entry.Text, CancellationToken.None).ConfigureAwait(false);
-                }
+                try { segEmbedding = await _segmentEmbeddingClient.GetEmbeddingAsync(chunkText, CancellationToken.None).ConfigureAwait(false); }
                 catch { }
 
                 if (segEmbedding == null || segEmbedding.Length == 0)
-                {
-                    // Fall back to voice embedding if available (dimension may differ from query embeddings; tolerated).
-                    segEmbedding = embedding;
-                }
+                    return;
+
+                var sessionId = GetSessionIdFromSessionFile(_currentSessionFile);
+                var title = GetSessionTitleFromSessionFile(_currentSessionFile);
+                var segId = $"{sessionId}:{chunkIndex:D6}";
 
                 var seg = new TranscriptSegment
                 {
                     Id = segId,
                     SessionId = sessionId,
                     Title = title,
-                    SpeakerLabel = speakerLabel,
-                    SpeakerName = entry.Speaker,
-                    Text = entry.Text,
-                    TStartSec = tStart,
-                    TEndSec = tEnd,
-                    StartedAtUtc = startedAtUtc
+                    SpeakerLabel = string.Empty,
+                    SpeakerName = "Transcript",
+                    Text = chunkText,
+                    TStartSec = chunkStartSec,
+                    TEndSec = chunkEndSec,
+                    StartedAtUtc = _sessionStartTime.ToUniversalTime()
                 };
 
-                if (segEmbedding != null && segEmbedding.Length > 0)
-                    seg.SetEmbedding(segEmbedding);
+                seg.SetEmbedding(segEmbedding);
 
                 _segmentStore.UpsertSegment(seg);
 
@@ -853,6 +859,30 @@ namespace Kinectv1.Services.Transcription
             catch { }
         }
 
+        private static string GetUniqueSessionFilePath(string folder, DateTime startTime)
+        {
+            var baseName = $"Meeting_{startTime:yyyy-MM-dd_HH-mm-ss}.txt";
+            var path = Path.Combine(folder, baseName);
+
+            int counter = 1;
+            while (File.Exists(path))
+            {
+                path = Path.Combine(folder, $"Meeting_{startTime:yyyy-MM-dd_HH-mm-ss}_{counter:D2}.txt");
+                counter++;
+            }
+
+            return path;
+        }
+        private void ResetChunkBuilder()
+        {
+            lock (_chunkLock)
+            {
+                _chunkBuilder.Clear();
+                _chunkStartSec = double.NaN;
+                _chunkEndSec = double.NaN;
+            }
+        }
+
         public void Dispose()
         {
             StopSummaryTimer();
@@ -868,6 +898,27 @@ namespace Kinectv1.Services.Transcription
             public DateTime Timestamp { get; set; }
             public string Speaker { get; set; }
             public string Text { get; set; }
+        }
+
+        public (int tokens, int limit) GetCurrentChunkTokenUsage()
+        {
+            int limit = GetTranscriptChunkTokenLimit();
+            string chunkText;
+            lock (_chunkLock)
+            {
+                chunkText = _chunkBuilder.ToString();
+            }
+            int tokens = TokenBudget.EstimateTokens(chunkText);
+            return (tokens, limit);
+        }
+
+        /// <summary>
+        /// Force embedding of the current in-memory transcript chunk (even if below token limit).
+        /// Safe to call when no session is active.
+        /// </summary>
+        public Task ForceEmbedCurrentChunkAsync()
+        {
+            return FlushTranscriptChunkAsync(force: true);
         }
     }
 }
