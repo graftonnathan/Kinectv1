@@ -723,7 +723,7 @@ namespace Kinectv1
                 }
                 
                 // Stream the response with tool support
-                var (finalResponse, toolsUsed) = await StreamResponseWithToolsAsync(system, userPrompt, normalizedSpeaker, streamingCt).ConfigureAwait(false);
+                var (finalResponse, toolsUsed) = await StreamResponseWithToolsAsync(system, userPrompt, normalizedSpeaker, streamingCt, null).ConfigureAwait(false);
 
                 if (streamingCt.IsCancellationRequested)
                 {
@@ -798,51 +798,117 @@ namespace Kinectv1
         }
 
         /// <summary>
+        /// Handle image uploads (data URLs) and stream response without storing the raw base64 in history.
+        /// </summary>
+        public static async Task DispatchImageAsync(string speakerName, string dataUrl, string name = null, string mime = null, CancellationToken ct = default)
+        {
+            if (string.IsNullOrWhiteSpace(dataUrl)) return;
+            try
+            {
+                if (!IsEnabled()) return;
+                EnsureRouterInitialized();
+                var normalizedSpeaker = string.IsNullOrWhiteSpace(speakerName) ? "UnknownSpeaker" : speakerName.Trim();
+
+                await EnsureMemoryInitializedAsync(ct).ConfigureAwait(false);
+
+                var system = LoadSystemPrompt();
+                var history = BuildHistoryBlockAllSpeakersForCurrentPrompt();
+
+                string memoryContext = string.Empty;
+                var mm = GetMemoryManager();
+                if (mm.IsEnabled)
+                {
+                    try
+                    {
+                        var context = await mm.BuildContextAsync("(image)", normalizedSpeaker, ct).ConfigureAwait(false);
+                        memoryContext = mm.FormatContextForPrompt(context);
+                    }
+                    catch { }
+                }
+
+                // Small placeholder in history instead of raw image
+                AppendConversation(normalizedSpeaker, "user", $"[image uploaded: {name ?? mime ?? "image"}]");
+
+                var prompt = new StringBuilder();
+                prompt.AppendLine("The user sent an image. Use the attached image to answer their request.");
+                if (!string.IsNullOrWhiteSpace(name)) prompt.AppendLine($"Name: {name}");
+                if (!string.IsNullOrWhiteSpace(mime)) prompt.AppendLine($"Mime: {mime}");
+
+                var userPrompt = BuildUserPromptWithMemory(normalizedSpeaker, prompt.ToString(), null, history, memoryContext);
+
+                // Extract raw base64 for vision-capable LLMs (LM Studio / gemma3 expects base64 strings).
+                var b64 = ExtractBase64(dataUrl);
+                var images = string.IsNullOrWhiteSpace(b64) ? null : new[] { b64 };
+
+                var (finalResponse, _) = await StreamResponseWithToolsAsync(system, userPrompt, normalizedSpeaker, ct, images).ConfigureAwait(false);
+
+                var cleanedFull = SanitizeAssistantText(string.IsNullOrWhiteSpace(finalResponse) ? "(no response)" : finalResponse);
+                AppendConversation(normalizedSpeaker, "assistant", cleanedFull);
+
+                try { OnResponseReceived?.Invoke(cleanedFull); } catch { }
+            }
+            catch (Exception ex)
+            {
+                LogErr($"Image dispatch failed: {ex.Message}");
+            }
+        }
+
+        // Retained for potential future use if raw base64 extraction is needed
+        private static string ExtractBase64(string dataUrl)
+        {
+            if (string.IsNullOrWhiteSpace(dataUrl)) return null;
+            var idx = dataUrl.IndexOf("base64,");
+            if (idx >= 0 && idx + 7 < dataUrl.Length)
+                return dataUrl.Substring(idx + 7);
+            return dataUrl.Trim();
+        }
+
+        /// <summary>
         /// Stream response from LLM with tool execution support.
         /// If the LLM requests a tool, execute it and continue the conversation.
         /// </summary>
         private static async Task<(string finalResponse, bool toolsUsed)> StreamResponseWithToolsAsync(
-            string system, string userPrompt, string speaker, CancellationToken ct)
-        {
-            var toolRegistry = ToolRegistry.Instance;
-            var fullResponse = new StringBuilder();
-            var sentenceBuffer = new StringBuilder();
-            bool toolsUsed = false;
-            int toolIterations = 0;
-            const int maxToolIterations = 3; // Prevent infinite tool loops
+            string system, string userPrompt, string speaker, CancellationToken ct, string[] images = null)
+         {
+             var toolRegistry = ToolRegistry.Instance;
+             var fullResponse = new StringBuilder();
+             var sentenceBuffer = new StringBuilder();
+             bool toolsUsed = false;
+             int toolIterations = 0;
+             const int maxToolIterations = 3; // Prevent infinite tool loops
 
-            string currentPrompt = userPrompt;
+             string currentPrompt = userPrompt;
 
-            while (toolIterations < maxToolIterations)
-            {
-                fullResponse.Clear();
-                sentenceBuffer.Clear();
+             while (toolIterations < maxToolIterations)
+             {
+                 fullResponse.Clear();
+                 sentenceBuffer.Clear();
 
-                try
-                {
-                    await foreach (var chunk in _router.ChatStreamAsync(system, currentPrompt, ct))
-                    {
-                        if (ct.IsCancellationRequested) break;
-                        if (string.IsNullOrEmpty(chunk)) continue;
-                        
-                        fullResponse.Append(chunk);
-                        sentenceBuffer.Append(chunk);
-                        
-                        // Only fire chunk events on the final iteration (when no more tools)
-                        // For tool iterations, we buffer silently
-                        if (toolIterations == 0 || !toolRegistry.HasToolCalls(fullResponse.ToString()))
-                        {
-                            try { OnResponseChunk?.Invoke(chunk); } catch { }
-                        }
-                        
-                        // Extract and fire sentences for TTS (only if not a tool call response)
-                        if (!toolRegistry.HasToolCalls(fullResponse.ToString()))
-                        {
-                            var bufferedText = sentenceBuffer.ToString();
-                            var sentences = ExtractCompleteSentences(ref bufferedText);
-                            sentenceBuffer.Clear();
-                            sentenceBuffer.Append(bufferedText);
-                            
+                 try
+                 {
+                     await foreach (var chunk in _router.ChatStreamAsync(system, currentPrompt, ct, images))
+                     {
+                         if (ct.IsCancellationRequested) break;
+                         if (string.IsNullOrEmpty(chunk)) continue;
+                         
+                         fullResponse.Append(chunk);
+                         sentenceBuffer.Append(chunk);
+                         
+                         // Only fire chunk events on the final iteration (when no more tools)
+                         // For tool iterations, we buffer silently
+                         if (toolIterations == 0 || !toolRegistry.HasToolCalls(fullResponse.ToString()))
+                         {
+                             try { OnResponseChunk?.Invoke(chunk); } catch { }
+                         }
+                         
+                         // Extract and fire sentences for TTS (only if not a tool call response)
+                         if (!toolRegistry.HasToolCalls(fullResponse.ToString()))
+                         {
+                             var bufferedText = sentenceBuffer.ToString();
+                             var sentences = ExtractCompleteSentences(ref bufferedText);
+                             sentenceBuffer.Clear();
+                             sentenceBuffer.Append(bufferedText);
+                             
 
                             foreach (var sentence in sentences)
                             {
@@ -853,13 +919,13 @@ namespace Kinectv1
                                     try { OnResponseSentenceReady?.Invoke(cleaned); } catch { }
                                 }
                             }
-                        }
-                    }
-                }
-                catch (OperationCanceledException)
-                {
-                    return (fullResponse.ToString(), toolsUsed);
-                }
+                         }
+                     }
+                 }
+                 catch (OperationCanceledException)
+                 {
+                     return (fullResponse.ToString(), toolsUsed);
+                 }
 
                 if (ct.IsCancellationRequested) break;
 
@@ -933,7 +999,7 @@ namespace Kinectv1
                 }
 
                 return (responseText, toolsUsed);
-            }
+             }
 
             // Max iterations reached
             Console.WriteLine($"[OllamaService] Max tool iterations ({maxToolIterations}) reached");
@@ -1012,7 +1078,7 @@ namespace Kinectv1
                         }
 
                         string raw;
-                        try { raw = await _router.ChatOnceAsync(system, userPrompt).ConfigureAwait(false); }
+                        try { raw = await _router.ChatOnceAsync(system, userPrompt, CancellationToken.None, null).ConfigureAwait(false); }
                         catch (OperationCanceledException) { return; }
                         if (string.IsNullOrWhiteSpace(raw)) raw = "(no response)";
 
@@ -1406,7 +1472,7 @@ namespace Kinectv1
                     AppendConversation(speaker, "user", userPrompt);
                 }
 
-                var response = await _router.ChatOnceAsync(systemPrompt ?? string.Empty, userPrompt ?? string.Empty, ct).ConfigureAwait(false);
+                var response = await _router.ChatOnceAsync(systemPrompt ?? string.Empty, userPrompt ?? string.Empty, ct, null).ConfigureAwait(false);
 
                 if (!skipHistory)
                 {

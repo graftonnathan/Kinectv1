@@ -77,7 +77,8 @@ var WS_PONG_TIMEOUT_MS = 3000;      // Shorter pong timeout
 var WS_CONNECT_TIMEOUT_MS = 8000;   // Shorter connect timeout for stale detection
 var WS_OPEN_CONFIRM_MS = 2000;      // Time to wait for first message after open
 
-var chat, empty, input, level, dot, statusText, micBtn, thumb, sendBtn, transcribeBtn, transcriptionBanner;
+var chat, empty, input, level, dot, statusText, micBtn, thumb, sendBtn, transcribeBtn, transcriptionBanner, imageBtn, imageInput;
+var lastLocalImageDataUrl = null;
 
 function estimateRmsFloat(buf) {
     if (!buf || buf.length <= 0) return 0;
@@ -942,8 +943,8 @@ function connect() {
             case 'tts_stop':
                 stopTtsPlayback();
                 break;
-        }
-    };
+         }
+     };
 
     ws.onclose = function (event) {
         if (myConnectionId !== wsConnectionId) return;
@@ -1157,10 +1158,26 @@ function init() {
     ttsAudioEl = document.getElementById('ttsAudio');
     transcribeBtn = document.getElementById('transcribeBtn');
     transcriptionBanner = document.getElementById('transcriptionBanner');
+    imageBtn = document.getElementById('imageBtn');
+    imageInput = document.getElementById('imageInput');
 
     if (sendBtn) {
         sendBtn.ontouchend = function (e) { e.preventDefault(); send(); };
         sendBtn.onclick = function (e) { e.preventDefault(); send(); };
+    }
+    
+    if (imageBtn) {
+        imageBtn.ontouchend = function (e) { e.preventDefault(); if (imageInput) imageInput.click(); };
+        imageBtn.onclick = function (e) { e.preventDefault(); if (imageInput) imageInput.click(); };
+    }
+    
+    if (imageInput) {
+        imageInput.onchange = function (e) {
+            var f = e.target.files && e.target.files[0];
+            if (f) sendImageFile(f);
+            // allow re-selecting same file
+            try { imageInput.value = ''; } catch { }
+        };
     }
 
     if (micBtn) {
@@ -1224,7 +1241,15 @@ function init() {
             setMode(parseInt(this.dataset.mode, 10));
         };
     });
-
+    
+    // Drag/drop images
+    document.addEventListener('dragover', function (e) { e.preventDefault(); });
+    document.addEventListener('drop', function (e) {
+        e.preventDefault();
+        if (!e.dataTransfer || !e.dataTransfer.files) return;
+        Array.from(e.dataTransfer.files).forEach(function (f) { sendImageFile(f); });
+    });
+    
     if (input) {
         input.onkeydown = function (e) {
             if (e.key === 'Enter') { e.preventDefault(); send(); }
@@ -1320,6 +1345,78 @@ function setTranscriptionMode(enabled) {
 function onTranscribeClick() {
     unlockAudio();
     setTranscriptionMode(!transcriptionMode);
+}
+
+function addImageMessage(dataUrl, type, speaker, alt) {
+    if (!dataUrl) return;
+    if (empty) empty.classList.add('hidden');
+    var div = document.createElement('div');
+    div.className = 'msg ' + (type || 'ai');
+
+    if (speaker) {
+        var label = document.createElement('div');
+        label.style.fontWeight = '600';
+        label.style.marginBottom = '4px';
+        label.textContent = speaker + ':';
+        div.appendChild(label);
+    }
+
+    var img = document.createElement('img');
+    img.src = dataUrl;
+    img.alt = alt || 'image';
+    img.loading = 'lazy';
+    img.onclick = function () { try { window.open(dataUrl, '_blank'); } catch (e) { } };
+    div.appendChild(img);
+
+    if (alt) {
+        var cap = document.createElement('div');
+        cap.style.fontSize = '11px';
+        cap.style.opacity = '0.8';
+        cap.style.marginTop = '4px';
+        cap.textContent = alt;
+        div.appendChild(cap);
+    }
+
+    chat.appendChild(div);
+    chat.scrollTop = chat.scrollHeight;
+    return div;
+}
+
+async function sendChat(message, imageFile) {
+    var fd = new FormData();
+    fd.append('message', message || '');
+    if (imageFile) fd.append('image', imageFile, imageFile.name || 'image');
+
+    var res = await fetch('/api/chat', { method: 'POST', body: fd });
+    if (!res.ok) throw new Error(await res.text());
+    var json = await res.json();
+    return json && json.reply ? json.reply : '';
+}
+
+function sendImageFile(file) {
+    if (!file || !file.type || file.type.indexOf('image/') !== 0) return;
+    var maxBytes = 6 * 1024 * 1024; // 6MB safety cap
+    if (file.size > maxBytes) { addMsg('Image too large (max 6MB).', 'ai'); return; }
+
+    var reader = new FileReader();
+    reader.onload = function (e) {
+        var dataUrl = e.target.result;
+        lastLocalImageDataUrl = dataUrl;
+        addImageMessage(dataUrl, 'user');
+
+        // Broadcast to other web clients
+        if (ws && ws.readyState === 1) {
+            ws.send(JSON.stringify({ type: 'image', data: dataUrl, name: file.name, mime: file.type, role: 'user' }));
+        }
+
+        // Send to backend for LLM vision
+        showTyping();
+        var msg = input && input.value ? input.value.trim() : '';
+        sendChat(msg, file)
+            .then(function (reply) { hideTyping(); if (reply) addMsg(reply, 'ai'); })
+            .catch(function (err) { hideTyping(); addMsg('❌ Image send failed: ' + err.message, 'ai'); });
+    };
+    reader.readAsDataURL(file);
 }
 
 // Initialize when DOM is ready

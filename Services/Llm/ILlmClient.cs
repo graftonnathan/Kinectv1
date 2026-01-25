@@ -6,7 +6,7 @@ namespace Kinectv1.Llm
 {
     public interface ILlmClient
     {
-        IAsyncEnumerable<string> ChatStreamAsync(string system, string user, CancellationToken ct = default);
-        Task<string> ChatOnceAsync(string system, string user, CancellationToken ct = default);
+        IAsyncEnumerable<string> ChatStreamAsync(string system, string user, CancellationToken ct = default, string[] images = null);
+        Task<string> ChatOnceAsync(string system, string user, CancellationToken ct = default, string[] images = null);
     }
 }

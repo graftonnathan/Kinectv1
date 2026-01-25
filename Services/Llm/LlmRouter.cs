@@ -70,8 +70,9 @@ namespace Kinectv1.Llm
         public async IAsyncEnumerable<string> ChatStreamAsync(
             string system, 
             string user,
-            [EnumeratorCancellation] CancellationToken externalCt = default)
-        {
+            [EnumeratorCancellation] CancellationToken externalCt = default,
+            string[] images = null)
+         {
             CancellationToken masterToken;
             lock (_gate) { masterToken = _masterCts.Token; }
             
@@ -82,24 +83,24 @@ namespace Kinectv1.Llm
             
             var linkedToken = linkedCts.Token;
             
-            await foreach (var chunk in Active.ChatStreamAsync(system, user, linkedToken))
-            {
-                if (linkedToken.IsCancellationRequested)
-                    yield break;
-                yield return chunk;
-            }
-        }
+            await foreach (var chunk in Active.ChatStreamAsync(system, user, linkedToken, images))
+             {
+                 if (linkedToken.IsCancellationRequested)
+                     yield break;
+                 yield return chunk;
+             }
+         }
 
-        public async Task<string> ChatOnceAsync(string system, string user, CancellationToken externalCt = default)
-        {
-            CancellationToken masterToken;
-            lock (_gate) { masterToken = _masterCts.Token; }
+        public async Task<string> ChatOnceAsync(string system, string user, CancellationToken externalCt = default, string[] images = null)
+         {
+             CancellationToken masterToken;
+             lock (_gate) { masterToken = _masterCts.Token; }
             
-            using var linkedCts = externalCt == default 
-                ? CancellationTokenSource.CreateLinkedTokenSource(masterToken)
-                : CancellationTokenSource.CreateLinkedTokenSource(externalCt, masterToken);
+             using var linkedCts = externalCt == default 
+                 ? CancellationTokenSource.CreateLinkedTokenSource(masterToken)
+                 : CancellationTokenSource.CreateLinkedTokenSource(externalCt, masterToken);
             
-            return await Active.ChatOnceAsync(system, user, linkedCts.Token).ConfigureAwait(false);
-        }
-    }
-}
+             return await Active.ChatOnceAsync(system, user, linkedCts.Token, images).ConfigureAwait(false);
+         }
+     }
+ }

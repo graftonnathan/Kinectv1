@@ -3,6 +3,7 @@ using System.IO;
 using System.Net;
 using System.Net.WebSockets;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Collections.Concurrent;
@@ -54,8 +55,10 @@ namespace Kinectv1.Voice
         private readonly ConcurrentDictionary<string, WebSocket> _clients = new();
         private readonly ConcurrentDictionary<string, SemaphoreSlim> _clientSendLocks = new();
         private int _clientId = 0;
-        
+ 
         private static readonly string _wwwrootPath;
+
+        private static readonly Regex _dataUrlImageRegex = new Regex("data:image/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+", RegexOptions.Compiled);
 
         // Track if we're receiving WebRTC audio (to filter messages)
         private static volatile bool _webRtcActive = false;
@@ -226,6 +229,40 @@ namespace Kinectv1.Voice
                     _httpListener.Prefixes.Add($"http://127.0.0.1:{_httpPort}/");
                     _httpListener.Start();
                     Log($"[WebRTC] HTTP server started on localhost:{_httpPort} ONLY (LAN access disabled)");
+                }
+            }
+            catch (HttpListenerException ex)
+            {
+                Log($"[WebRTC] HTTP start failed ({ex.ErrorCode}): {ex.Message}. Falling back to localhost only.");
+                try
+                {
+                    _httpListener = new HttpListener();
+                    _httpListener.Prefixes.Add($"http://localhost:{_httpPort}/");
+                    _httpListener.Prefixes.Add($"http://127.0.0.1:{_httpPort}/");
+                    _httpListener.Start();
+                    Log($"[WebRTC] HTTP server started on localhost:{_httpPort} ONLY (fallback)");
+                }
+                catch (Exception inner)
+                {
+                    Log($"[WebRTC] FATAL: HTTP listener failed to start on any prefix: {inner.Message}");
+                    throw;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"[WebRTC] HTTP start error: {ex.Message}. Attempting localhost fallback...");
+                try
+                {
+                    _httpListener = new HttpListener();
+                    _httpListener.Prefixes.Add($"http://localhost:{_httpPort}/");
+                    _httpListener.Prefixes.Add($"http://127.0.0.1:{_httpPort}/");
+                    _httpListener.Start();
+                    Log($"[WebRTC] HTTP server started on localhost:{_httpPort} ONLY (fallback)");
+                }
+                catch
+                {
+                    Log($"[WebRTC] FATAL: HTTP listener failed to start after fallback");
+                    throw;
                 }
             }
 
@@ -455,7 +492,17 @@ namespace Kinectv1.Voice
         {
             if (GetCurrentMode() != 3 && !IsWebRtcActive) return;
             _buffer = "";
-            Broadcast(new { type = "response", text = response });
+
+            if (!string.IsNullOrWhiteSpace(response))
+            {
+                var match = _dataUrlImageRegex.Match(response);
+                if (match.Success)
+                {
+                    Broadcast(new { type = "image", data = match.Value, role = "ai" });
+                }
+            }
+
+             Broadcast(new { type = "response", text = response });
         }
 
         private void OnSpeakerIdentified(string speaker, string text)
@@ -590,6 +637,12 @@ namespace Kinectv1.Voice
                         else
                             ServeError(res, 405, "Method not allowed");
                         break;
+                    case "/api/chat":
+                        if (req.HttpMethod == "POST")
+                            await HandleChat(req, res);
+                        else
+                            ServeError(res, 405, "Method not allowed");
+                        break;
                     default:
                         var file = Path.Combine(_wwwrootPath, path.TrimStart('/'));
                         if (File.Exists(file))
@@ -654,6 +707,246 @@ namespace Kinectv1.Voice
                 ServeError(res, 500, ex.Message);
             }
         }
+
+        private async Task HandleChat(HttpListenerRequest req, HttpListenerResponse res)
+        {
+            try
+            {
+                if (req.ContentLength64 > 25_000_000)
+                {
+                    ServeError(res, 413, "Payload too large");
+                    return;
+                }
+
+                if (req.ContentType == null || !req.ContentType.Contains("multipart/form-data", StringComparison.OrdinalIgnoreCase))
+                {
+                    ServeError(res, 400, "Expected multipart/form-data");
+                    return;
+                }
+
+                var boundary = GetBoundary(req.ContentType);
+                if (string.IsNullOrWhiteSpace(boundary))
+                {
+                    ServeError(res, 400, "Missing boundary");
+                    return;
+                }
+                
+                byte[] body;
+                using (var ms = new MemoryStream())
+                {
+                    await req.InputStream.CopyToAsync(ms);
+                    body = ms.ToArray();
+                }
+
+                string message = string.Empty;
+                byte[] imageBytes = null;
+                string imageFileName = null;
+                string imageMime = null;
+
+                ParseMultipart(boundary, body, out message, out imageBytes, out imageFileName, out imageMime);
+
+                byte[] jpegBytes = null;
+                if (imageBytes != null && imageBytes.Length > 0)
+                {
+                    using var imgStream = new MemoryStream(imageBytes);
+                    try
+                    {
+                        jpegBytes = Llm.ImageNormalize.ToJpegBytes(imgStream, maxLongSide: 1536, quality: 85);
+                    }
+                    catch (Exception ex)
+                    {
+                        ServeError(res, 400, "Image decode failed: " + ex.Message);
+                        return;
+                    }
+                }
+
+                var cfg = App.SettingsProvider?.Current?.Ollama;
+                var baseUrl = cfg?.LmStudioBaseUrl ?? cfg?.BaseUrl ?? "http://127.0.0.1:1234/v1";
+                var model = cfg?.Model ?? "";
+
+                string reply;
+                try
+                {
+                    reply = await Llm.LmStudioVisionClient.ChatAsync(baseUrl, model, message ?? string.Empty, jpegBytes).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    ServeError(res, 502, ex.Message);
+                    return;
+                }
+
+                // Note: Do not trigger extra TTS here. The app's normal response pipeline already
+                // drives TTS and streams audio chunks to WebUI via `tts_audio`.
+
+                Serve(res, JsonConvert.SerializeObject(new { reply }), "application/json");
+            }
+            catch (Exception ex)
+            {
+                ServeError(res, 500, ex.Message);
+            }
+        }
+
+        private static string GetBoundary(string contentType)
+        {
+            try
+            {
+                var parts = contentType.Split(';');
+                foreach (var p in parts)
+                {
+                    var kv = p.Split('=');
+                    if (kv.Length == 2 && kv[0].Trim().Equals("boundary", StringComparison.OrdinalIgnoreCase))
+                        return kv[1].Trim().Trim('"');
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        private static void ParseMultipart(string boundary, byte[] body, out string message, out byte[] imageBytes, out string fileName, out string mime)
+        {
+            message = string.Empty;
+            imageBytes = null;
+            fileName = null;
+            mime = null;
+
+            if (string.IsNullOrWhiteSpace(boundary) || body == null || body.Length == 0) return;
+
+            var boundaryBytes = Encoding.ASCII.GetBytes("--" + boundary);
+            var headerTerminator = new byte[] { (byte)'\r', (byte)'\n', (byte)'\r', (byte)'\n' };
+
+            int pos = 0;
+            while (true)
+            {
+                int start = IndexOf(body, boundaryBytes, pos);
+                if (start < 0) break;
+                start += boundaryBytes.Length;
+
+                // Check for closing boundary
+                if (start + 1 < body.Length && body[start] == (byte)'-' && body[start + 1] == (byte)'-')
+                    break;
+
+                // Skip leading CRLF
+                if (start + 2 <= body.Length && body[start] == (byte)'\r' && body[start + 1] == (byte)'\n')
+                    start += 2;
+
+                int headerEnd = IndexOf(body, headerTerminator, start);
+                if (headerEnd < 0) break;
+
+                var headerBytes = new byte[headerEnd - start];
+                Buffer.BlockCopy(body, start, headerBytes, 0, headerBytes.Length);
+                var headerText = Encoding.ASCII.GetString(headerBytes);
+                var headers = headerText.Split(new[] { "\r\n" }, StringSplitOptions.RemoveEmptyEntries);
+
+                int contentStart = headerEnd + headerTerminator.Length;
+                int nextBoundary = IndexOf(body, boundaryBytes, contentStart);
+                if (nextBoundary < 0) break;
+
+                int contentLength = nextBoundary - contentStart;
+                // Trim trailing CRLF from content
+                if (contentLength >= 2 && body[contentStart + contentLength - 2] == (byte)'\r' && body[contentStart + contentLength - 1] == (byte)'\n')
+                    contentLength -= 2;
+
+                var contentBytes = new byte[contentLength];
+                Buffer.BlockCopy(body, contentStart, contentBytes, 0, contentLength);
+
+                string name = null;
+                string filename = null;
+                string contentType = null;
+
+                foreach (var h in headers)
+                {
+                    if (h.StartsWith("Content-Disposition", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var parts = h.Split(';');
+                        foreach (var part in parts)
+                        {
+                            var trimmed = part.Trim();
+                            if (trimmed.StartsWith("name=", StringComparison.OrdinalIgnoreCase))
+                                name = trimmed.Substring(5).Trim('"');
+                            else if (trimmed.StartsWith("filename=", StringComparison.OrdinalIgnoreCase))
+                                filename = trimmed.Substring(9).Trim('"');
+                        }
+                    }
+                    else if (h.StartsWith("Content-Type", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var kv = h.Split(':');
+                        if (kv.Length == 2) contentType = kv[1].Trim();
+                    }
+                }
+
+                if (string.IsNullOrEmpty(name)) { pos = nextBoundary; continue; }
+
+                if (name == "message")
+                {
+                    message = Encoding.UTF8.GetString(contentBytes).Trim();
+                }
+                else if (name == "image")
+                {
+                    mime = contentType;
+                    fileName = filename;
+                    imageBytes = contentBytes;
+                }
+
+                pos = nextBoundary;
+            }
+        }
+
+        private static int IndexOf(byte[] haystack, byte[] needle, int start)
+        {
+            if (needle == null || haystack == null || needle.Length == 0 || haystack.Length == 0) return -1;
+            for (int i = start; i <= haystack.Length - needle.Length; i++)
+            {
+                bool match = true;
+                for (int j = 0; j < needle.Length; j++)
+                {
+                    if (haystack[i + j] != needle[j]) { match = false; break; }
+                }
+                if (match) return i;
+            }
+            return -1;
+        }
+
+        private void Serve(HttpListenerResponse res, string content, string mime)
+        {
+            try
+            {
+                var bytes = Encoding.UTF8.GetBytes(content ?? "");
+                res.ContentType = mime + "; charset=utf-8";
+                res.ContentLength64 = bytes.Length;
+                res.AddHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+                res.AddHeader("Access-Control-Allow-Origin", "*");
+                res.OutputStream.Write(bytes, 0, bytes.Length);
+                res.Close();
+            }
+            catch { }
+        }
+
+        private void ServeError(HttpListenerResponse res, int code, string msg)
+        {
+            try
+            {
+                res.StatusCode = code;
+                Serve(res, JsonConvert.SerializeObject(new { error = msg }), "application/json");
+            }
+            catch { }
+        }
+
+        private static string GetMime(string path) => Path.GetExtension(path).ToLower() switch
+        {
+            ".html" or ".htm" => "text/html",
+            ".js" => "application/javascript",
+            ".css" => "text/css",
+            ".json" => "application/json",
+            ".svg" => "image/svg+xml",
+            _ => "application/octet-stream"
+        };
+
+        private void Log(string msg) { try { OnLog?.Invoke(msg); } catch { } }
+
+        #region Embedded Fallback
+        private static string GetEmbeddedIndexHtml() => "<!DOCTYPE html><html><head><title>Voice AI</title></head><body><h1>Voice AI</h1><p>External index.html not found. Place files in wwwroot/webrtc/</p></body></html>";
+        private static string GetEmbeddedClientJs() => "console.log('External client.js not found');";
+        #endregion
 
         private async Task HandleWebSocket(HttpListenerContext ctx, CancellationToken ct)
         {
@@ -720,7 +1013,6 @@ namespace Kinectv1.Voice
                 switch (type)
                 {
                     case "ping":
-                        // Respond to keepalive ping with pong
                         try
                         {
                             long ts = 0;
@@ -751,7 +1043,6 @@ namespace Kinectv1.Voice
                             var speaker = App.SettingsProvider?.Current?.Ollama?.ForcedSpeakerId ?? "User";
                             try { OnWebTextInput?.Invoke(speaker, text); } catch { }
 
-                            // Broadcast once so other web clients see the user prompt; sender dedupes via pendingText.
                             try
                             {
                                 var transcriptionEnabled = App.SettingsProvider?.Current?.Transcription?.Enabled ?? false;
@@ -802,7 +1093,6 @@ namespace Kinectv1.Voice
                             {
                                 var pcmBytes = Convert.FromBase64String(audioData);
                                 
-                                // Log incoming audio details for debugging (every 50 frames)
                                 if (_audioFramesReceived % 50 == 1)
                                 {
                                     int inSamples = pcmBytes.Length / 2;
@@ -822,14 +1112,10 @@ namespace Kinectv1.Voice
                                     }
                                 }
 
-                                // CRITICAL: Resample from browser's native rate to 16kHz for Vosk/DebugAudioCapture
-                                // Browsers typically capture at 44100Hz or 48000Hz
                                 byte[] pcm16kBytes;
                                 if (sampleRate != 16000)
                                 {
                                     pcm16kBytes = AudioUtils.ResampleMonoTo16k(pcmBytes, pcmBytes.Length, sampleRate, "webrtc-client");
-                                    
-                                    // Log resampling result (every 50 frames)
                                     if (_audioFramesReceived % 50 == 1)
                                     {
                                         int outSamples = pcm16kBytes.Length / 2;
@@ -842,13 +1128,12 @@ namespace Kinectv1.Voice
                                     pcm16kBytes = pcmBytes;
                                 }
 
-                                // Convert to short[] for the AudioFrame (normalized to 16kHz)
                                 var pcm16 = new short[pcm16kBytes.Length / 2];
                                 Buffer.BlockCopy(pcm16kBytes, 0, pcm16, 0, pcm16kBytes.Length);
 
                                 var frame = new AudioFrame(
                                     Pcm16: pcm16,
-                                    SampleRate: 16000, // Always 16kHz after resampling
+                                    SampleRate: 16000,
                                     Channels: 1,
                                     TimestampTicks: DateTime.UtcNow.Ticks,
                                     SourceId: "webrtc-client"
@@ -863,61 +1148,40 @@ namespace Kinectv1.Voice
                         }
                         break;
 
-                    case "diag":
-                        // Diagnostic messages from client - just log them
+                    case "image":
+                        string img = (string)msg.data;
+                        string name = null;
+                        string mime = null;
+                        string role = (string)msg.role;
+                        try { name = (string)msg.name; } catch { }
+                        try { mime = (string)msg.mime; } catch { }
+
+                        if (string.IsNullOrWhiteSpace(img)) break;
+                        if (img.Length > 8_000_000)
+                        {
+                            Log("[WebRTC] Image payload too large, dropping");
+                            break;
+                        }
+
+                        _webRtcActive = true;
+                        ExtendWebRtcActive(60);
+
+                        var imageSpeaker = App.SettingsProvider?.Current?.Ollama?.ForcedSpeakerId ?? "User";
+                        Broadcast(new { type = "image", data = img, role = string.IsNullOrWhiteSpace(role) ? "user" : role, speaker = imageSpeaker, name, mime });
                         break;
 
-                    case "offer":
-                    case "ice":
-                        OnWebSocketMessage?.Invoke(ws, message);
+                    case "diag":
                         break;
+
+                     case "offer":
+                     case "ice":
+                         OnWebSocketMessage?.Invoke(ws, message);
+                         break;
                 }
             }
             catch { }
             
             await Task.CompletedTask;
         }
-
-        private void Serve(HttpListenerResponse res, string content, string mime)
-        {
-            try
-            {
-                var bytes = Encoding.UTF8.GetBytes(content ?? "");
-                res.ContentType = mime + "; charset=utf-8";
-                res.ContentLength64 = bytes.Length;
-                res.AddHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-                res.AddHeader("Access-Control-Allow-Origin", "*");
-                res.OutputStream.Write(bytes, 0, bytes.Length);
-                res.Close();
-            }
-            catch { }
-        }
-
-        private void ServeError(HttpListenerResponse res, int code, string msg)
-        {
-            try
-            {
-                res.StatusCode = code;
-                Serve(res, JsonConvert.SerializeObject(new { error = msg }), "application/json");
-            }
-            catch { }
-        }
-
-        private static string GetMime(string path) => Path.GetExtension(path).ToLower() switch
-        {
-            ".html" or ".htm" => "text/html",
-            ".js" => "application/javascript",
-            ".css" => "text/css",
-            ".json" => "application/json",
-            ".svg" => "image/svg+xml",
-            _ => "application/octet-stream"
-        };
-
-        private void Log(string msg) { try { OnLog?.Invoke(msg); } catch { } }
-
-        #region Embedded Fallback
-        private static string GetEmbeddedIndexHtml() => "<!DOCTYPE html><html><head><title>Voice AI</title></head><body><h1>Voice AI</h1><p>External index.html not found. Place files in wwwroot/webrtc/</p></body></html>";
-        private static string GetEmbeddedClientJs() => "console.log('External client.js not found');";
-        #endregion
     }
 }

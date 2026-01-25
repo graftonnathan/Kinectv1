@@ -24,7 +24,7 @@ namespace Kinectv1.Llm
             _getModel = getModel ?? (() => "Meta-Llama-3.1-8B-Instruct-Q4_K_M");
         }
 
-        public async IAsyncEnumerable<string> ChatStreamAsync(string system, string user, [EnumeratorCancellation] CancellationToken ct = default)
+        public async IAsyncEnumerable<string> ChatStreamAsync(string system, string user, [EnumeratorCancellation] CancellationToken ct = default, string[] images = null)
         {
             var reqObj = new
             {
@@ -33,6 +33,7 @@ namespace Kinectv1.Llm
                     new { role = "system", content = system ?? string.Empty },
                     new { role = "user", content = user ?? string.Empty }
                 },
+                images = images != null && images.Length > 0 ? images : null,
                 stream = true,
                 temperature = 0.7,
                 top_p = 0.9,
@@ -116,10 +117,10 @@ namespace Kinectv1.Llm
             catch { return null; }
         }
 
-        public async Task<string> ChatOnceAsync(string system, string user, CancellationToken ct = default)
+        public async Task<string> ChatOnceAsync(string system, string user, CancellationToken ct = default, string[] images = null)
         {
             var sb = new StringBuilder();
-            await foreach (var tok in ChatStreamAsync(system, user, ct))
+            await foreach (var tok in ChatStreamAsync(system, user, ct, images))
             {
                 if (ct.IsCancellationRequested) break;
                 sb.Append(tok);
