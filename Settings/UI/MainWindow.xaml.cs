@@ -147,6 +147,26 @@ namespace Kinectv1
                     Console.WriteLine($"Could not hook OllamaService events: {ex.Message}");
                 }
 
+                // Hook Jeff API for external chat requests
+                try
+                {
+                    Kinectv1.Api.JeffApiServer.OnChatRequest += async (msg) =>
+                    {
+                        var tcs = new TaskCompletionSource<string>();
+                        var handler = new Action<string>(response => tcs.TrySetResult(response));
+                        OllamaService.OnResponseReceived += handler;
+                        await OllamaService.DispatchAsync("Jeff", msg);
+                        var result = await Task.WhenAny(tcs.Task, Task.Delay(30000));
+                        OllamaService.OnResponseReceived -= handler;
+                        return result == tcs.Task ? await tcs.Task : "(no response)";
+                    };
+                    Console.WriteLine("Jeff API chat handler wired to OllamaService");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Could not hook Jeff API events: {ex.Message}");
+                }
+
                 // Hook TTS events
                 try
                 {
@@ -538,6 +558,7 @@ namespace Kinectv1
             _isClosing = true;
             try { _ = StopWebRtcAsync(); } catch { }
             try { _rmsUiTimer?.Stop(); _rmsUiTimer = null; } catch { }
+            try { Kinectv1.Api.JeffApiServer.Stop(); } catch { }
             try { Application.Current.Shutdown(); } catch { }
         }
 

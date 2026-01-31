@@ -174,6 +174,17 @@ namespace Kinectv1
             {
                 Console.WriteLine($"⚠️ Debug audio capture init failed: {ex.Message}");
             }
+
+            // Initialize Jeff API server for external integrations
+            try
+            {
+                Kinectv1.Api.JeffApiServer.Start();
+                Console.WriteLine("🌐 Jeff API server initialized on http://localhost:18790");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"⚠️ Jeff API init failed: {ex.Message}");
+            }
         }
 
         private void SetupGlobalExceptionHandlers()
