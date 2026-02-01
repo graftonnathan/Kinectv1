@@ -144,10 +144,13 @@ async def text_to_speech(request: TTSRequest):
             # Use instruct parameter with custom voice description
             # This works reliably with all Qwen3-TTS models
             combined_instruct = f"{voice_desc}. {request.instruct or ''}".strip()
+            # Use requested speaker as base voice, default to Serena if not specified
+            base_speaker = request.speaker if request.speaker and request.speaker in SPEAKERS else "Serena"
+            logger.info(f"Voice design: base={base_speaker}, description='{voice_desc[:30]}...'")
             wavs, sr = tts_model.generate_custom_voice(
                 text=request.text,
                 language=request.language,
-                speaker="Serena",  # Base voice
+                speaker=base_speaker,  # Use selected base voice
                 instruct=combined_instruct
             )
         else:
