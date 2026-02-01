@@ -110,6 +110,31 @@ namespace Kinectv1.Voice
             _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             await StartHttpServerAsync();
             if (_httpsEnabled) await StartHttpsServerAsync();
+            SubscribeToEvents();
+        }
+        
+        private void SubscribeToEvents()
+        {
+            // Hook up transcription events for WebRTC clients
+            try 
+            { 
+                Headless.HeadlessVoiceRecognizer.Instance.OnTranscription += OnTranscription;
+                Log("[WebRTC] Subscribed to transcription events");
+            }
+            catch (Exception ex) 
+            { 
+                Log($"[WebRTC] Failed to subscribe to transcription: {ex.Message}"); 
+            }
+        }
+        
+        private void OnTranscription(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return;
+            // When WebRTC is active and has clients, broadcast transcription to web clients
+            if (_webRtcModeActive && _clients.Count > 0)
+            {
+                Broadcast(new { type = "transcription", text, speaker = "You" });
+            }
         }
 
         private async Task StartHttpsServerAsync()
@@ -288,6 +313,14 @@ namespace Kinectv1.Voice
 
         public async Task StopAsync()
         {
+            // Unsubscribe from events
+            try 
+            { 
+                Headless.HeadlessVoiceRecognizer.Instance.OnTranscription -= OnTranscription; 
+                Log("[WebRTC] Unsubscribed from transcription events");
+            }
+            catch { }
+            
             try { _cts?.Cancel(); } catch { }
             try { _httpListener?.Stop(); } catch { }
             try { _httpsListener?.Stop(); } catch { }
@@ -355,6 +388,12 @@ namespace Kinectv1.Voice
                         else
                             ServeError(res, 405, "Method not allowed");
                         break;
+                    case "/api/transcription":
+                        if (req.HttpMethod == "POST")
+                            await HandleTranscriptionToggle(req, res);
+                        else
+                            ServeError(res, 405, "Method not allowed");
+                        break;
                     default:
                         ServeError(res, 404, "Not found");
                         break;
@@ -374,6 +413,26 @@ namespace Kinectv1.Voice
 
                 Broadcast(new { type = "status", mode = modeInt });
                 Serve(res, JsonConvert.SerializeObject(new { success = true, mode = modeInt }), "application/json");
+            }
+            catch (Exception ex)
+            {
+                ServeError(res, 500, ex.Message);
+            }
+        }
+
+        private async Task HandleTranscriptionToggle(HttpListenerRequest req, HttpListenerResponse res)
+        {
+            try
+            {
+                using var reader = new StreamReader(req.InputStream, req.ContentEncoding);
+                var body = await reader.ReadToEndAsync();
+                dynamic data = JsonConvert.DeserializeObject(body);
+                bool enabled = (bool)data.enabled;
+
+                // Broadcast to all clients (settings persistence handled by caller)
+                Broadcast(new { type = "transcription_mode", enabled });
+                Serve(res, JsonConvert.SerializeObject(new { success = true, enabled }), "application/json");
+                Log($"[WebRTC] Transcription mode toggled: {enabled}");
             }
             catch (Exception ex)
             {

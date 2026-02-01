@@ -79,7 +79,8 @@
 Last updated: 2026-02-01 10:37 AM
 
 ### Current Status (Jeff - Cron Task)
-- ✅ **Maggie is RUNNING** (PID: 75680)
+- ✅ **Maggie is RUNNING** (PID: refreshed 2026-02-01 11:17 AM)
+- ⚠️ **Note:** Ensure `export PATH="$HOME/.dotnet:$PATH"` before starting
 - ✅ All high-priority tasks complete
 - ✅ Latency optimizations active (lowLatencyMode, embedding cache)
 - ✅ WebRTC fully operational on port 8787
