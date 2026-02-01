@@ -46,6 +46,7 @@ namespace Kinectv1.Tts
 
         /// <summary>
         /// Check if the TTS service is available.
+        /// Accepts both fully loaded model and degraded mode (voice generator only).
         /// </summary>
         public static async Task<bool> IsAvailableAsync()
         {
@@ -56,7 +57,10 @@ namespace Kinectv1.Tts
                 {
                     var content = await response.Content.ReadAsStringAsync();
                     var json = JObject.Parse(content);
-                    return json["model_loaded"]?.Value<bool>() ?? false;
+                    var modelLoaded = json["model_loaded"]?.Value<bool>() ?? false;
+                    var status = json["status"]?.Value<string>() ?? "unknown";
+                    // Available if model is loaded OR in degraded mode (voice generator works)
+                    return modelLoaded || status == "degraded";
                 }
             }
             catch { }

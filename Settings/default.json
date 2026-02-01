@@ -34,7 +34,7 @@
     "bargeInEnabled": true
   },
   "stt": {
-    "modelPath": "models/vosk-model-en-us-0.22",
+    "modelPath": "/home/molten/.openclaw/workspace/maggie/vosk-model-small-en-us-0.15",
     "inputDevice": "Default"
   },
   "app": {

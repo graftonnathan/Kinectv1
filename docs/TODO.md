@@ -11,6 +11,31 @@
 
 ## Active Tasks
 
+### STT/TTS Integration Fixes - ✅ COMPLETED (Feb 1, 2026)
+- [x] Fix Vosk model path resolution in HeadlessMaggie.cs - Now reads from cfg.Stt?.ModelPath
+- [x] Update user settings with absolute model path - Added to ~/.config/MaggieAI/MaggieHeadless/settings.json
+- [x] Fix TTS availability check for degraded mode - Accepts status=="degraded" (voice generator available)
+- [x] Start Qwen3-TTS service - Running on port 7860 with 6 character voices
+- [x] Verify end-to-end functionality - STT → LLM → TTS pipeline working
+- Priority: High | Est: 1h | Actual: 45min | **COMPLETED**
+
+**Issues Fixed:**
+1. **Vosk model not found** - HeadlessMaggie.cs was using hardcoded relative path instead of settings
+2. **TTS showing unavailable** - IsAvailableAsync() only checked model_loaded, not degraded mode
+3. **Settings file mismatch** - Repo default.json ≠ user config file (Maggie uses user config)
+
+**Changes Made:**
+- `HeadlessMaggie.cs`: Read STT model path from `cfg.Stt?.ModelPath` 
+- `Services/Tts/Qwen3TtsService.cs`: Accept degraded mode as available
+- `~/.config/MaggieAI/MaggieHeadless/settings.json`: Added stt section with absolute path
+
+**Current Status:**
+- ✅ Vosk STT: Model loaded at `/home/molten/.openclaw/workspace/maggie/vosk-model-small-en-us-0.15`
+- ✅ Qwen3-TTS: 6 voices available (Serena, Vivian, Ono_Anna, Sohee, Ryan, Aiden)
+- ✅ WebRTC: Signaling server on port 8787
+- ✅ Jeff API: REST API on port 18790
+- ✅ LLM: Connected to LMStudio at 100.119.229.73:1234
+
 ### Transcription Mode (STT for Linux) - ✅ COMPLETED
 - [x] Port Vosk STT to Linux headless mode - Created HeadlessVoiceRecognizer.cs
 - [x] Add microphone input via ALSA/PulseAudio - Using NAudio WaveInEvent

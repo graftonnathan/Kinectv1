@@ -69,7 +69,9 @@ namespace Kinectv1.Headless
 
                 // Initialize Voice Recognition (STT)
                 Console.WriteLine("🎤 Initializing voice recognition (Vosk STT)...");
-                var modelPath = Environment.GetEnvironmentVariable("MAGGIE_VOSK_MODEL") ?? "vosk-model-small-en-us-0.15";
+                var modelPath = Environment.GetEnvironmentVariable("MAGGIE_VOSK_MODEL") 
+                    ?? cfg.Stt?.ModelPath 
+                    ?? "vosk-model-small-en-us-0.15";
                 HeadlessVoiceRecognizer.Instance.Start(modelPath);
                 
                 if (HeadlessVoiceRecognizer.Instance.IsReady)
