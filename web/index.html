@@ -853,13 +853,22 @@
         });
 
         // Update generateTTS to use voice description when in custom mode
-        const originalGenerateTTS = generateTTS;
         generateTTS = async function(text, voice = currentVoice) {
             console.log('Generating TTS:', useVoiceDesign ? 'using voice design' : 'using preset', voice);
             try {
-                const requestBody = useVoiceDesign ? 
-                    { text, voice_description: currentVoiceDescription, language: 'English' } :
-                    { text, speaker: voice, language: 'English' };
+                let requestBody;
+                if (useVoiceDesign && currentVoiceDescription) {
+                    // Custom voice design mode - use description, no speaker
+                    requestBody = { 
+                        text, 
+                        voice_description: currentVoiceDescription, 
+                        language: 'English',
+                        speaker: null  // Explicitly null so backend knows to use voice design
+                    };
+                } else {
+                    // Preset voice mode - use speaker name
+                    requestBody = { text, speaker: voice, language: 'English' };
+                }
                     
                 const response = await fetch(`${CONFIG.maggieApi}/api/tts`, {
                     method: 'POST',
