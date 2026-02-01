@@ -33,6 +33,7 @@
 - [ ] Add audio volume normalization
 
 ### Performance
+- [ ] **Optimize for lower response latency** - Maggie is slow to respond. Check memory settings and pipeline for improvements. | Priority: High | Est: 3h
 - [ ] Profile memory usage during long conversations
 - [ ] Optimize vector memory search speed
 - [ ] Add conversation archiving for old sessions
