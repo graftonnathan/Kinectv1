@@ -66,6 +66,7 @@
     
     <!-- Voice / WebRTC -->
     <Compile Include="Services\Voice\AudioUtils.cs" />
+    <Compile Include="Services\Voice\HttpsHelper.cs" />
     <Compile Include="Services\Voice\IAudioSource.cs" />
     <Compile Include="Services\Voice\NormalizedAudioFrame.cs" />
     <Compile Include="Services\Voice\WebRtcSignalingServerHeadless.cs" />

@@ -57,7 +57,7 @@
     "forceSpeakerOverrideEnabled": false,
     "forcedSpeakerId": "",
     "vectorMemoryEnabled": true,
-    "lowLatencyMode": false,
+    "lowLatencyMode": true,
     "hotContextTokenLimit": 3000,
     "warmSummaryTokenLimit": 300,
     "memoryContextBudget": 800,

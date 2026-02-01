@@ -33,9 +33,14 @@ namespace Kinectv1.Voice
         public event Action<string, string> OnWebTextInput; // (speaker, text)
 
         private readonly int _httpPort;
+        private readonly int _httpsPort;
+        private readonly bool _httpsEnabled;
         private HttpListener _httpListener;
+        private HttpListener _httpsListener;
         private CancellationTokenSource _cts;
         private Task _httpAcceptTask;
+        private Task _httpsAcceptTask;
+        private bool _httpsActuallyStarted = false;
         
         private static WebRtcSignalingServer _instance;
         
@@ -51,9 +56,11 @@ namespace Kinectv1.Voice
             _wwwrootPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "wwwroot", "webrtc");
         }
 
-        public WebRtcSignalingServer(int httpPort)
+        public WebRtcSignalingServer(int httpPort, bool httpsEnabled = false, int httpsPort = 8788)
         {
             _httpPort = httpPort;
+            _httpsEnabled = httpsEnabled;
+            _httpsPort = httpsPort;
         }
 
         public static void BroadcastModeChange(int mode)
@@ -97,6 +104,106 @@ namespace Kinectv1.Voice
             _instance = this;
             _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             await StartHttpServerAsync();
+            if (_httpsEnabled) await StartHttpsServerAsync();
+        }
+
+        private async Task StartHttpsServerAsync()
+        {
+            Log($"[WebRTC] HTTPS is enabled, attempting to start on port {_httpsPort}...");
+            
+            try
+            {
+                var cert = HttpsHelper.GetOrCreateCertificate();
+                var thumbprint = cert.Thumbprint;
+                Log($"[WebRTC] Certificate thumbprint: {thumbprint}");
+                
+                // Try to bind certificate to port using netsh
+                var bindResult = BindCertificateToPort(_httpsPort, thumbprint);
+                if (!bindResult)
+                {
+                    Log($"[WebRTC] *** HTTPS DISABLED: Could not bind certificate to port {_httpsPort} ***");
+                    _httpsActuallyStarted = false;
+                    return;
+                }
+
+                _httpsListener = new HttpListener();
+                _httpsListener.Prefixes.Add($"https://+:{_httpsPort}/");
+
+                try
+                {
+                    _httpsListener.Start();
+                    _httpsActuallyStarted = true;
+                    Log($"[WebRTC] *** HTTPS SERVER STARTED SUCCESSFULLY ***");
+                    var ip = GetLocalIP();
+                    Log($"[WebRTC] HTTPS URL: https://{ip}:{_httpsPort}/");
+                }
+                catch (HttpListenerException ex)
+                {
+                    Log($"[WebRTC] *** HTTPS FAILED TO START *** Error: {ex.Message}");
+                    _httpsActuallyStarted = false;
+                    return;
+                }
+
+                _httpsAcceptTask = Task.Run(() => AcceptLoop(_httpsListener, _cts.Token), _cts.Token);
+            }
+            catch (Exception ex)
+            {
+                Log($"[WebRTC] *** HTTPS SETUP FAILED *** {ex.Message}");
+                _httpsActuallyStarted = false;
+            }
+
+            await Task.CompletedTask;
+        }
+
+        private bool BindCertificateToPort(int port, string thumbprint)
+        {
+            try
+            {
+                // Check if already bound
+                var checkResult = RunNetsh($"http show sslcert ipport=0.0.0.0:{port}");
+                if (checkResult.Contains(thumbprint, StringComparison.OrdinalIgnoreCase))
+                {
+                    Log($"[WebRTC] Certificate already bound to port {port}");
+                    return true;
+                }
+
+                // Add SSL cert binding
+                var addResult = RunNetsh($"http add sslcert ipport=0.0.0.0:{port} certhash={thumbprint} appid={{12345678-1234-1234-1234-123456789012}}");
+                if (addResult.Contains("Error", StringComparison.OrdinalIgnoreCase) && !addResult.Contains("0x183"))
+                {
+                    Log($"[WebRTC] Failed to bind certificate: {addResult}");
+                    return false;
+                }
+                
+                Log($"[WebRTC] Certificate bound to port {port}");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log($"[WebRTC] Certificate binding error: {ex.Message}");
+                return false;
+            }
+        }
+
+        private string RunNetsh(string args)
+        {
+            try
+            {
+                var psi = new System.Diagnostics.ProcessStartInfo("netsh", args)
+                {
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                using var proc = System.Diagnostics.Process.Start(psi);
+                proc.WaitForExit();
+                return proc.StandardOutput.ReadToEnd() + proc.StandardError.ReadToEnd();
+            }
+            catch (Exception ex)
+            {
+                return $"Error: {ex.Message}";
+            }
         }
 
         private async Task StartHttpServerAsync()
@@ -178,12 +285,14 @@ namespace Kinectv1.Voice
         {
             try { _cts?.Cancel(); } catch { }
             try { _httpListener?.Stop(); } catch { }
+            try { _httpsListener?.Stop(); } catch { }
             
             foreach (var client in _clients.Values)
                 try { client.Dispose(); } catch { }
             _clients.Clear();
             
             try { if (_httpAcceptTask != null) await Task.WhenAny(_httpAcceptTask, Task.Delay(1000)); } catch { }
+            try { if (_httpsAcceptTask != null) await Task.WhenAny(_httpsAcceptTask, Task.Delay(1000)); } catch { }
             try { _cts?.Dispose(); } catch { }
         }
 
