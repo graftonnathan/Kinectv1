@@ -192,7 +192,78 @@ namespace Kinectv1.Headless
                     };
                 }
 
+                // Start Discord Bot (if enabled)
+                Console.WriteLine();
+                Console.WriteLine("💬 Starting Discord bot...");
+                bool discordEnabled = false;
+                try
+                {
+                    var discordSettings = cfg.Discord;
+                    if (discordSettings?.Enabled == true && !string.IsNullOrEmpty(discordSettings.Token))
+                    {
+                        // Hook up TTS audio to Discord voice
+                        Tts.Qwen3TtsService.OnTtsAudioChunk += (pcmData, sampleRate) =>
+                        {
+                            var pcmStream = Discord.DiscordNetBotManagerHeadless.GetPcmStream();
+                            if (pcmStream != null && pcmData != null && pcmData.Length > 0)
+                            {
+                                try
+                                {
+                                    // Convert sample rate if needed (Discord expects 48kHz)
+                                    if (sampleRate == 48000)
+                                    {
+                                        pcmStream.Write(pcmData, 0, pcmData.Length);
+                                    }
+                                }
+                                catch (Exception ex)
+                                {
+                                    Console.WriteLine($"   [Discord] TTS audio error: {ex.Message}");
+                                }
+                            }
+                        };
+
+                        // Hook up Discord messages to Maggie's brain
+                        Discord.DiscordNetBotManagerHeadless.OnMessageReceived += (speaker, text) =>
+                        {
+                            Console.WriteLine($"\n💬 Discord [{speaker}]: {text}");
+                            _ = Task.Run(async () =>
+                            {
+                                try
+                                {
+                                    var response = await ProcessChatMessage(speaker, text, ttsAvailable);
+                                    // Send response back to Discord text channel
+                                    await Discord.DiscordNetBotManagerHeadless.SendMessageAsync(response);
+                                }
+                                catch (Exception ex)
+                                {
+                                    Console.WriteLine($"   ⚠️  Discord message error: {ex.Message}");
+                                }
+                            });
+                        };
+
+                        discordEnabled = await Discord.DiscordNetBotManagerHeadless.StartAsync();
+                        if (discordEnabled)
+                        {
+                            Console.WriteLine($"   ✓ Discord bot connected");
+                            Console.WriteLine($"   ℹ️  Commands: !join <channel>, !leave, !status");
+                        }
+                    }
+                    else
+                    {
+                        Console.WriteLine("   ℹ️  Discord bot disabled (set token in Settings/default.json to enable)");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"   ⚠️  Discord bot failed to start: {ex.Message}");
+                    Console.WriteLine($"   ℹ️  This is non-critical; other features will work");
+                }
+
+                Console.WriteLine();
                 Console.WriteLine("🎯 Maggie is ready!");
+                Console.WriteLine($"   🎤 STT:      {(HeadlessVoiceRecognizer.Instance.IsReady ? "✓ Listening" : "✗ No model")}");
+                Console.WriteLine($"   📡 WebRTC:   {(_webRtcEnabled ? $"✓ Port {webRtcPort}" : "✗ Disabled")}");
+                Console.WriteLine($"   💬 Discord:  {(discordEnabled ? "✓ Connected" : "✗ Disabled")}");
                 Console.WriteLine($"   🎤 STT:      {(HeadlessVoiceRecognizer.Instance.IsReady ? "✓ Listening" : "✗ No model")}");
                 Console.WriteLine($"   📡 WebRTC:   {(_webRtcEnabled ? $"✓ Port {webRtcPort}" : "✗ Disabled")}");
                 Console.WriteLine("   💬 Chat via: curl -X POST http://localhost:18790/api/chat");
@@ -251,6 +322,17 @@ namespace Kinectv1.Headless
                     {
                         Console.WriteLine($"   ⚠️  Voice recognizer stop error: {ex.Message}");
                     }
+                }
+                
+                // Stop Discord bot
+                try
+                {
+                    await Discord.DiscordNetBotManagerHeadless.ShutdownAsync();
+                    Console.WriteLine("   ✓ Discord bot stopped");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"   ⚠️  Discord stop error: {ex.Message}");
                 }
                 
                 Api.JeffApiServer.Stop();

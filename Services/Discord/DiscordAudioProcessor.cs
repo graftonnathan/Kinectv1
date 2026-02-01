@@ -1,5 +1,6 @@
 using System;
 using Kinectv1;
+using Kinectv1.Voice;
 
 namespace Kinectv1.Discord
 {

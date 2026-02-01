@@ -58,12 +58,26 @@
 - Browser client files served from `wwwroot/webrtc/` (index.html, client.js)
 - WebRTC audio is fed into Vosk STT pipeline via `AudioFrame` structs
 
-### Discord Bot Restoration
-- [ ] Add Discord.NET to headless project references
-- [ ] Restore Discord voice channel integration
-- [ ] Test bot commands in Discord server
-- [ ] Verify TTS works in Discord voice channels
-- Priority: Medium | Est: 3h
+### Discord Bot Restoration - 🔄 IN PROGRESS
+- [x] Add Discord.NET to headless project references
+- [x] Create simplified Discord bot manager for headless mode
+- [x] Add basic commands (!join, !leave, !status, !say, !help)
+- [ ] Test bot commands in Discord server (needs token + server)
+- [ ] Verify TTS works in Discord voice channels (needs opus/libsodium libs)
+- Priority: Medium | Est: 3h | Actual: 2h | **BUILD SUCCEEDS**
+
+**Implementation Details:**
+- Created `DiscordNetBotManagerHeadless.cs` - Simplified bot manager without WPF dependencies
+- Created `DiscordHeadlessCommands.cs` - Basic commands: join, leave, status, say, help
+- Added Discord.NET NuGet packages (v3.18.0) to MaggieHeadless.csproj
+- Integrated with HeadlessMaggie.cs startup/shutdown sequence
+- TTS audio routing to Discord voice channels (48kHz PCM)
+- Discord messages are routed to Maggie's LLM brain
+
+**To Test:**
+1. Set Discord token in `Settings/default.json`: `"discord": { "enabled": true, "token": "YOUR_TOKEN" }`
+2. Download native voice libraries: `powershell download-discord-natives.ps1`
+3. Run Maggie and test: `!join General`, `!say Hello`, `!status`
 
 ## Backlog
 

@@ -71,6 +71,12 @@
     
     <!-- Voice Recognition (STT) -->
     <Compile Include="Services\Voice\HeadlessVoiceRecognizer.cs" />
+    
+    <!-- Discord Bot -->
+    <Compile Include="Discord\DiscordNetBotManagerHeadless.cs" />
+    <Compile Include="Discord\DiscordHeadlessCommands.cs" />
+    <Compile Include="Discord\DiscordNativeLoader.cs" />
+    <Compile Include="Services\Discord\DiscordAudioProcessor.cs" />
   </ItemGroup>
 
   <ItemGroup>
@@ -80,6 +86,10 @@
     <PackageReference Include="SIPSorcery" Version="6.2.4" />
     <PackageReference Include="Vosk" Version="0.3.38" />
     <PackageReference Include="NAudio" Version="2.2.1" />
+    <PackageReference Include="Discord.Net" Version="3.18.0" />
+    <PackageReference Include="Discord.Net.Commands" Version="3.18.0" />
+    <PackageReference Include="Discord.Net.WebSocket" Version="3.18.0" />
+    <PackageReference Include="System.Threading.Channels" Version="8.0.0" />
   </ItemGroup>
 
   <ItemGroup>

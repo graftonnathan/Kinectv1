@@ -117,5 +117,49 @@ namespace Kinectv1.Voice
             Buffer.BlockCopy(shorts, 0, bytes, 0, bytes.Length);
             return bytes;
         }
+
+        /// <summary>
+        /// Resample 48kHz stereo PCM to 16kHz mono float array.
+        /// Discord sends 48kHz stereo, we need 16kHz mono for STT.
+        /// </summary>
+        /// <param name="input">48kHz stereo PCM16 bytes (interleaved left/right)</param>
+        /// <param name="length">Number of valid bytes</param>
+        /// <returns>16kHz mono float array (values -1.0 to 1.0)</returns>
+        public static float[] Resample48kTo16kMono(byte[] input, int length)
+        {
+            if (input == null || length < 4) return Array.Empty<float>();
+
+            // 48kHz stereo to 16kHz mono:
+            // - Downsample by 3x (48000 -> 16000)
+            // - Convert stereo to mono (average left + right)
+            // - Convert to float [-1, 1]
+
+            int inputSamples = length / 2; // 16-bit samples
+            int outputSamples = inputSamples / 6; // stereo / 2 channels * 1/3 sample rate
+            var output = new float[outputSamples];
+
+            for (int i = 0; i < outputSamples; i++)
+            {
+                // Source index in stereo samples (each frame is 2 samples: L, R)
+                // We take every 3rd frame (for 3x downsampling)
+                int srcFrame = i * 3;
+                int srcIndex = srcFrame * 2; // *2 for stereo
+
+                if (srcIndex + 3 >= inputSamples) break;
+
+                int bi = srcIndex * 2; // byte index
+                if (bi + 3 >= length) break;
+
+                // Read left and right channels
+                short left = (short)(input[bi] | (input[bi + 1] << 8));
+                short right = (short)(input[bi + 2] | (input[bi + 3] << 8));
+
+                // Mono mix and convert to float
+                float mono = ((left + right) / 2.0f) / 32768.0f;
+                output[i] = mono;
+            }
+
+            return output;
+        }
     }
 }
