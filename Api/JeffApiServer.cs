@@ -27,14 +27,28 @@ namespace Kinectv1.Api
 
             _cts = new CancellationTokenSource();
             _listener = new HttpListener();
+            
+            // Always add localhost
             _listener.Prefixes.Add($"http://localhost:{Port}/");
             _listener.Prefixes.Add($"http://127.0.0.1:{Port}/");
             
-            // Enable LAN access
+            // Try LAN access by binding to specific IP
+            string lanIp = null;
             if (lanAccess)
             {
-                _listener.Prefixes.Add($"http://*:{Port}/");
-                Console.WriteLine($"🌐 Web interfaces available on LAN at http://<this-ip>:{Port}");
+                try
+                {
+                    lanIp = GetLocalIpAddress();
+                    if (!string.IsNullOrEmpty(lanIp) && lanIp != "127.0.0.1")
+                    {
+                        _listener.Prefixes.Add($"http://{lanIp}:{Port}/");
+                        Console.WriteLine($"🌐 LAN access enabled at http://{lanIp}:{Port}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"⚠️  Could not enable LAN access: {ex.Message}");
+                }
             }
 
             try
@@ -48,6 +62,26 @@ namespace Kinectv1.Api
                 Console.WriteLine($"❌ Failed to start Jeff API: {ex.Message}");
                 Stop();
             }
+        }
+
+        private static string GetLocalIpAddress()
+        {
+            try
+            {
+                var host = Dns.GetHostEntry(Dns.GetHostName());
+                foreach (var ip in host.AddressList)
+                {
+                    if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+                    {
+                        var ipStr = ip.ToString();
+                        // Skip loopback addresses
+                        if (!ipStr.StartsWith("127."))
+                            return ipStr;
+                    }
+                }
+            }
+            catch { }
+            return null;
         }
 
         public static void Stop()
