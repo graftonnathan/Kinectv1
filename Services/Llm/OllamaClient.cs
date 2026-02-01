@@ -16,6 +16,16 @@ namespace Kinectv1.Llm
         private readonly string _base;
         private readonly string _apiKey;
         private readonly Func<string> _getModel;
+        
+        // OPTIMIZATION: Shared HttpClient handler with connection pooling
+        // This reduces connection overhead while still allowing per-request cancellation
+        private static readonly SocketsHttpHandler _sharedHandler = new SocketsHttpHandler
+        {
+            PooledConnectionLifetime = TimeSpan.FromMinutes(2),
+            PooledConnectionIdleTimeout = TimeSpan.FromMinutes(1),
+            MaxConnectionsPerServer = 10,
+            EnableMultipleHttp2Connections = true
+        };
 
         public OllamaClient(string baseUrl, string apiKey, Func<string> getModel)
         {
@@ -42,8 +52,12 @@ namespace Kinectv1.Llm
 
             var json = JsonConvert.SerializeObject(reqObj);
             
-            // New HttpClient per request for clean cancellation
-            using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
+            // OPTIMIZATION: Use shared handler for connection pooling, but new HttpClient for clean cancellation
+            // The handler pools TCP connections, while the HttpClient instance allows per-request cancellation
+            using var http = new HttpClient(_sharedHandler, disposeHandler: false) 
+            { 
+                Timeout = TimeSpan.FromMinutes(5) 
+            };
             if (!string.IsNullOrWhiteSpace(_apiKey))
                 http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _apiKey);
             

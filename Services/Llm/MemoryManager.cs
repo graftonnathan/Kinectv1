@@ -31,7 +31,7 @@ namespace Kinectv1.Llm
         private const int CHUNK_OVERLAP_TOKENS = 100;
 
         // Search configuration (retrieve more, inject based on budget)
-        private const int SEARCH_TOP_K = 20;       // Retrieve many candidates
+        private const int SEARCH_TOP_K = 10;       // Reduced from 20 - we only inject 8 anyway
         private const int INJECT_TOP_K = 8;        // Inject up to this many
         private const double MIN_SCORE_FLOOR = 0.40; // Low floor, rely on ranking
 
@@ -264,25 +264,13 @@ New info to integrate:
                     }
                 }
 
-                // Vector search with query rewrite
+                // Vector search - OPTIMIZED: Removed query rewrite to reduce latency
                 int remainingBudget = budget - usedTokens;
                 if (remainingBudget > 50 && vectorStore.CentroidCount > 0 && _embeddingClient != null)
                 {
-                    // Try query rewrite for better retrieval
+                    // OPTIMIZATION: Skip query rewrite - adds 500ms-2s latency per query
+                    // The embedding model handles the raw query well enough
                     string searchQuery = userMessage;
-                    try
-                    {
-                        var rewritten = await RewriteQueryForSearchAsync(userMessage, ct).ConfigureAwait(false);
-                        if (!string.IsNullOrWhiteSpace(rewritten))
-                        {
-                            searchQuery = rewritten;
-                            Console.WriteLine($"?? Query rewritten: {searchQuery}");
-                        }
-                    }
-                    catch 
-                    {
-                        // Use original query on failure
-                    }
 
                     // Get embedding for search query
                     float[] queryEmbedding = null;
@@ -346,7 +334,7 @@ New info to integrate:
             {
                 sb.AppendLine("IMPORTANT FACTS:");
                 foreach (var fact in context.PinnedFacts)
-                    sb.AppendLine($"• {fact}");
+                    sb.AppendLine($"ï¿½ {fact}");
                 sb.AppendLine();
             }
 
@@ -355,7 +343,7 @@ New info to integrate:
                 sb.AppendLine("RELEVANT MEMORY:");
                 foreach (var chunk in context.RetrievedChunks)
                 {
-                    sb.AppendLine($"• {chunk.Text}");
+                    sb.AppendLine($"ï¿½ {chunk.Text}");
                 }
                 sb.AppendLine();
             }

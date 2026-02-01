@@ -40,7 +40,7 @@
 - [ ] Add audio volume normalization
 
 ### Performance
-- [ ] **Optimize for lower response latency** - Maggie is slow to respond. Check memory settings and pipeline for improvements. | Priority: High | Est: 3h
+- [x] **Optimize for lower response latency** - COMPLETED: Disabled query rewrite (500ms-2s savings), increased chunk size 150→500, reduced SEARCH_TOP_K 20→10, tuned memory settings. See `docs/latency-optimization-report.md` | Priority: High | Est: 3h | Actual: 2h
 - [ ] Profile memory usage during long conversations
 - [ ] Optimize vector memory search speed
 - [ ] Add conversation archiving for old sessions
