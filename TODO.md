@@ -75,8 +75,11 @@
 - [ ] Implement VAD-based triggering
 - [ ] Add configurable wake phrases
 
-### 7. Teach Maggie About the World
-- [ ] Connect to web search tools
+### 7. Teach Maggie About the World ✅ ACTIVE
+- [x] Connected web search tools (2026-02-01)
+  - WebSearchTool using DuckDuckGo (no API key needed)
+  - Enabled in Settings/default.json (ToolsEnabled: true)
+  - Maggie can now search the web for current events and facts
 - [ ] Show Maggie interesting websites
 - [ ] Build knowledge base
 
