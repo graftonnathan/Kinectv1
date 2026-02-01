@@ -1,6 +1,13 @@
 # Maggie Development Todo List
-# Executed daily via cron job
+# Auto-execution: Jeff will start working on high priority tasks when Nathan is idle >15 mins
 # Format: [ ] Task description | Priority: High/Medium/Low | Est: Xh
+
+## Auto-Execution Rules
+- When Nathan is idle for >15 minutes, Jeff spawns an isolated agent
+- Agent reads this TODO.md and picks highest priority incomplete task
+- Agent works autonomously for up to 30 minutes
+- Agent reports progress back to main session
+- If questions arise, agent asks before proceeding
 
 ## Active Tasks
 
