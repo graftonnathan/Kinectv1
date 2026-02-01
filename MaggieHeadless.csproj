@@ -27,8 +27,9 @@
     <Compile Include="App.cs" />
     <Compile Include="Api\JeffApiServer.cs" />
     
-    <!-- TTS Stub -->
-    <Compile Include="Services\Tts\TtsServiceStub.cs" />
+    <!-- TTS - Qwen3-TTS integration -->
+    <Compile Include="Services\Tts\Qwen3TtsService.cs" />
+    <Compile Include="Services\Tts\TtsService.cs" />
     
     <!-- Settings -->
     <Compile Include="Settings\AppEnums.cs" />
@@ -71,5 +72,10 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Settings\default.json" />
+    
+    <!-- Web frontend files -->
+    <Content Include="web\index.html">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 </Project>

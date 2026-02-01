@@ -1,7 +1,8 @@
-// HeadlessMaggie.cs - Console-based Maggie for Linux
-// Minimal version: LLM brain + Jeff API only (no audio/vision)
+// HeadlessMaggie.cs - Console-based Maggie for Linux with Qwen3-TTS Voice
+// LLM brain + Jeff API + Web Interface + Neural TTS
 
 using System;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Kinectv1.Settings;
@@ -14,8 +15,8 @@ namespace Kinectv1.Headless
         static async Task Main(string[] args)
         {
             Console.WriteLine("╔════════════════════════════════════════════════════════╗");
-            Console.WriteLine("║  🧠 Maggie AI - Headless Mode (Linux Compatible)      ║");
-            Console.WriteLine("║  LLM Brain + Jeff API - No GUI, No Audio              ║");
+            Console.WriteLine("║  🦞 Maggie AI - Voice-Enabled Headless Mode           ║");
+            Console.WriteLine("║  LLM Brain + Qwen3-TTS + Web Interface                ║");
             Console.WriteLine("╚════════════════════════════════════════════════════════╝");
             Console.WriteLine();
 
@@ -24,7 +25,6 @@ namespace Kinectv1.Headless
                 // Initialize settings
                 Console.WriteLine("📋 Loading configuration...");
                 
-                // Create minimal App.SettingsProvider
                 Console.WriteLine($"   ℹ️  Settings path: {SettingsPaths.UserJsonPath}");
                 Console.WriteLine($"   ℹ️  AppDataDir: {SettingsPaths.AppDataDir}");
                 var settingsProvider = new SettingsService();
@@ -39,13 +39,41 @@ namespace Kinectv1.Headless
                 Console.WriteLine($"   ✓ Memory enabled: {cfg.Ollama.MemoryEnabled}");
                 Console.WriteLine();
 
-                // Start Jeff API for communication
-                Console.WriteLine("🌐 Starting Jeff API server...");
-                Api.JeffApiServer.Start();
-                Console.WriteLine($"   ✓ API listening on http://localhost:18790");
+                // Initialize Qwen3-TTS
+                Console.WriteLine("🎙️  Initializing Qwen3-TTS voice...");
+                var ttsUrl = Environment.GetEnvironmentVariable("MAGGIE_TTS_URL") ?? "http://localhost:7860";
+                Tts.Qwen3TtsService.Initialize(ttsUrl);
+                
+                // Check TTS availability
+                var ttsAvailable = await Tts.Qwen3TtsService.IsAvailableAsync();
+                if (ttsAvailable)
+                {
+                    var voices = await Tts.Qwen3TtsService.GetAvailableVoicesAsync();
+                    Console.WriteLine($"   ✓ Qwen3-TTS connected: {ttsUrl}");
+                    Console.WriteLine($"   ✓ Available voices: {string.Join(", ", voices)}");
+                    
+                    // Set default voice to Serena (warm, gentle female)
+                    await Tts.Qwen3TtsService.SetVoiceAsync("Serena");
+                    Console.WriteLine($"   ✓ Default voice: Serena (warm, gentle female)");
+                }
+                else
+                {
+                    Console.WriteLine($"   ⚠️  Qwen3-TTS not available at {ttsUrl}");
+                    Console.WriteLine($"   ℹ️  Start TTS service: python3 tts_service/qwen_tts_service.py");
+                }
                 Console.WriteLine();
 
-                // Hook up Jeff API to Maggie's brain
+                // Start Jeff API for communication (with LAN access)
+                Console.WriteLine("🌐 Starting Jeff API server...");
+                var ip = System.Net.Dns.GetHostAddresses(System.Net.Dns.GetHostName())
+                    .FirstOrDefault(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)?.ToString() ?? "localhost";
+                
+                Api.JeffApiServer.Start(lanAccess: true);
+                Console.WriteLine($"   ✓ API listening on http://localhost:18790");
+                Console.WriteLine($"   ✓ Web interface: http://{ip}:18790");
+                Console.WriteLine();
+
+                // Hook up Jeff API to Maggie's brain with TTS
                 Api.JeffApiServer.OnChatRequest += async (message) =>
                 {
                     Console.WriteLine($"\n📨 Jeff: {message}");
@@ -66,14 +94,42 @@ namespace Kinectv1.Headless
                     {
                         var response = await tcs.Task;
                         Console.WriteLine($"💬 Maggie: {response}");
+                        
+                        // Generate voice if TTS is available
+                        if (ttsAvailable && !string.IsNullOrWhiteSpace(response))
+                        {
+                            _ = Task.Run(async () =>
+                            {
+                                try
+                                {
+                                    await Tts.Qwen3TtsService.SpeakAsync(response);
+                                }
+                                catch (Exception ex)
+                                {
+                                    Console.WriteLine($"   ⚠️  TTS error: {ex.Message}");
+                                }
+                            });
+                        }
+                        
                         return response;
                     }
                     return "(no response)";
                 };
 
-                Console.WriteLine("🎯 Maggie is ready and waiting for Jeff...");
-                Console.WriteLine("   Send messages via: curl -X POST http://localhost:18790/api/chat");
-                Console.WriteLine("   Or use: http://localhost:18790/api/status");
+                // Hook up sentence streaming for real-time TTS
+                OllamaService.OnResponseSentenceReady += (sentence) =>
+                {
+                    if (ttsAvailable && !string.IsNullOrWhiteSpace(sentence))
+                    {
+                        // Queue for streaming TTS
+                        Tts.Qwen3TtsService.QueueSentenceForStreaming(sentence);
+                    }
+                };
+
+                Console.WriteLine("🎯 Maggie is ready!");
+                Console.WriteLine("   💬 Chat via: curl -X POST http://localhost:18790/api/chat");
+                Console.WriteLine("   🌐 Web UI:   http://localhost:18790");
+                Console.WriteLine("   📱 LAN UI:   http://{0}:18790", ip);
                 Console.WriteLine();
                 Console.WriteLine("Press Ctrl+C to exit");
                 Console.WriteLine();

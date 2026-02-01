@@ -21,7 +21,7 @@ namespace Kinectv1.Api
 
         public static bool IsRunning => _listener?.IsListening ?? false;
 
-        public static void Start()
+        public static void Start(bool lanAccess = true)
         {
             if (_listener != null) return;
 
@@ -29,6 +29,13 @@ namespace Kinectv1.Api
             _listener = new HttpListener();
             _listener.Prefixes.Add($"http://localhost:{Port}/");
             _listener.Prefixes.Add($"http://127.0.0.1:{Port}/");
+            
+            // Enable LAN access
+            if (lanAccess)
+            {
+                _listener.Prefixes.Add($"http://*:{Port}/");
+                Console.WriteLine($"🌐 Web interface available on LAN at http://<this-ip>:{Port}");
+            }
 
             try
             {
@@ -89,6 +96,14 @@ namespace Kinectv1.Api
 
                 var path = req.Url.AbsolutePath.ToLowerInvariant();
 
+                // Serve web frontend for root and web paths
+                if (path == "/" || path == "/index.html")
+                {
+                    await ServeWebFile(resp, "index.html", "text/html");
+                    return;
+                }
+                
+                // API routes
                 switch (path)
                 {
                     case "/health":
@@ -114,6 +129,20 @@ namespace Kinectv1.Api
                         break;
 
                     default:
+                        // Try to serve static web files
+                        if (path.StartsWith("/"))
+                        {
+                            var fileName = path.TrimStart('/');
+                            var webDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "web");
+                            var filePath = Path.Combine(webDir, fileName);
+                            
+                            if (File.Exists(filePath))
+                            {
+                                var mimeType = GetMimeType(fileName);
+                                await ServeWebFile(resp, fileName, mimeType);
+                                return;
+                            }
+                        }
                         await WriteJson(resp, 404, new { error = "Not found" });
                         break;
                 }
@@ -166,6 +195,49 @@ namespace Kinectv1.Api
             var bytes = Encoding.UTF8.GetBytes(json);
             await resp.OutputStream.WriteAsync(bytes, 0, bytes.Length);
             resp.Close();
+        }
+
+        private static async Task ServeWebFile(HttpListenerResponse resp, string fileName, string mimeType)
+        {
+            try
+            {
+                var webDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "web");
+                var filePath = Path.Combine(webDir, fileName);
+                
+                if (!File.Exists(filePath))
+                {
+                    resp.StatusCode = 404;
+                    resp.Close();
+                    return;
+                }
+
+                var bytes = File.ReadAllBytes(filePath);
+                resp.StatusCode = 200;
+                resp.ContentType = mimeType;
+                await resp.OutputStream.WriteAsync(bytes, 0, bytes.Length);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[JeffApi] Failed to serve {fileName}: {ex.Message}");
+                resp.StatusCode = 500;
+            }
+            resp.Close();
+        }
+
+        private static string GetMimeType(string fileName)
+        {
+            var ext = Path.GetExtension(fileName).ToLowerInvariant();
+            return ext switch
+            {
+                ".html" => "text/html",
+                ".css" => "text/css",
+                ".js" => "application/javascript",
+                ".json" => "application/json",
+                ".png" => "image/png",
+                ".jpg" => "image/jpeg",
+                ".svg" => "image/svg+xml",
+                _ => "application/octet-stream"
+            };
         }
     }
 }
