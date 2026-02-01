@@ -87,7 +87,11 @@
 - [ ] Add audio volume normalization
 
 ### Performance
-- [x] **Optimize for lower response latency** - COMPLETED: Disabled query rewrite (500ms-2s savings), increased chunk size 150→500, reduced SEARCH_TOP_K 20→10, tuned memory settings. See `docs/latency-optimization-report.md` | Priority: High | Est: 3h | Actual: 2h
+- [x] **Optimize for lower response latency** - COMPLETED: Multiple rounds of optimization
+  - Round 1: Disabled query rewrite (500ms-2s savings), tuned chunk sizes, reduced SEARCH_TOP_K
+  - Round 2: Implemented async history batching, memory check throttling, CancellationToken optimization
+  - See `docs/latency-optimization-report.md` and `docs/LATENCY_OPTIMIZATIONS.md`
+  | Priority: High | Est: 3h | Actual: 3.5h
 - [ ] Profile memory usage during long conversations
 
 ### Voice Design

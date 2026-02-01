@@ -296,6 +296,17 @@ namespace Kinectv1.Headless
 
                 Console.WriteLine("\n👋 Shutting down Maggie...");
                 
+                // Flush pending history writes before stopping
+                try
+                {
+                    await OllamaService.FlushHistoryAsync();
+                    Console.WriteLine("   ✓ Conversation history flushed");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"   ⚠️  History flush error: {ex.Message}");
+                }
+                
                 // Stop WebRTC server
                 if (_webRtcServer != null)
                 {
@@ -349,26 +360,38 @@ namespace Kinectv1.Headless
 
         /// <summary>
         /// Process a chat message through the LLM and optionally speak the response.
+        /// Optimized: Uses CancellationToken instead of Task.WhenAny for better performance.
         /// </summary>
         private static async Task<string> ProcessChatMessage(string speaker, string message, bool ttsAvailable)
         {
-            try
+            // OPTIMIZATION: Use CancellationTokenSource instead of Task.WhenAny
+            // Task.WhenAny creates an extra task allocation; CTS is more efficient
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var tcs = new TaskCompletionSource<string>();
+            
+            // Link the timeout CTS to our TCS
+            using (cts.Token.Register(() => tcs.TrySetCanceled()))
             {
-                var tcs = new TaskCompletionSource<string>();
                 var handler = new Action<string>(response => 
                 {
                     tcs.TrySetResult(response);
                 });
                 
-                OllamaService.OnResponseReceived += handler;
-                await OllamaService.DispatchAsync(speaker, message);
-                
-                var completed = await Task.WhenAny(tcs.Task, Task.Delay(30000));
-                OllamaService.OnResponseReceived -= handler;
-                
-                if (completed == tcs.Task)
+                try
                 {
-                    var response = await tcs.Task;
+                    OllamaService.OnResponseReceived += handler;
+                    await OllamaService.DispatchAsync(speaker, message);
+                    
+                    string response;
+                    try
+                    {
+                        response = await tcs.Task;
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        return "(no response - timeout)";
+                    }
+                    
                     Console.WriteLine($"💬 Maggie: {response}");
                     
                     // Broadcast to WebRTC clients if available
@@ -377,7 +400,7 @@ namespace Kinectv1.Headless
                         _webRtcServer?.BroadcastResponse(response);
                     }
                     
-                    // Generate voice if TTS is available
+                    // Generate voice if TTS is available (fire-and-forget)
                     if (ttsAvailable && !string.IsNullOrWhiteSpace(response))
                     {
                         _ = Task.Run(async () =>
@@ -395,12 +418,10 @@ namespace Kinectv1.Headless
                     
                     return response;
                 }
-                return "(no response - timeout)";
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"❌ Error processing message: {ex.Message}");
-                return $"Error: {ex.Message}";
+                finally
+                {
+                    OllamaService.OnResponseReceived -= handler;
+                }
             }
         }
     }

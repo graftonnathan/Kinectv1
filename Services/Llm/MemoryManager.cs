@@ -33,7 +33,7 @@ namespace Kinectv1.Llm
         // Search configuration (optimized for speed)
         private const int SEARCH_TOP_K = 5;        // Reduced from 10 for faster search
         private const int INJECT_TOP_K = 4;        // Reduced from 8 - fewer chunks = faster processing
-        private const double MIN_SCORE_FLOOR = 0.50; // Higher floor = fewer low-quality results
+        private const double MIN_SCORE_FLOOR = 0.60; // Aligned with settings default (was 0.50)
 
         // Structured summary prompt with entity anchors
         private const string SUMMARIZE_SYSTEM_PROMPT = @"You are a memory summarization assistant. Create a structured summary with:
