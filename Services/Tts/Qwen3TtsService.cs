@@ -21,6 +21,8 @@ namespace Kinectv1.Tts
         private static readonly HttpClient _httpClient = new HttpClient();
         private static string _serviceUrl = "http://localhost:7860";
         private static string _defaultSpeaker = "Serena";  // Warm, gentle female voice
+        private static string _voiceDescription = "Speak in a cheery relaxing female voice";
+        private static bool _useVoiceDesign = true;  // Use custom voice description by default
         private static bool _initialized = false;
 
         // Events for audio streaming
@@ -91,6 +93,7 @@ namespace Kinectv1.Tts
                 if (response.IsSuccessStatusCode)
                 {
                     _defaultSpeaker = speaker;
+                    _useVoiceDesign = false;  // Switch to preset voice
                     Console.WriteLine($"[Qwen3TTS] Voice changed to: {speaker}");
                     return true;
                 }
@@ -103,9 +106,40 @@ namespace Kinectv1.Tts
         }
 
         /// <summary>
+        /// Get the current voice description.
+        /// </summary>
+        public static string GetVoiceDescription() => _voiceDescription;
+
+        /// <summary>
+        /// Set a custom voice description for voice design mode.
+        /// </summary>
+        public static async Task<bool> SetVoiceDescriptionAsync(string description)
+        {
+            if (string.IsNullOrWhiteSpace(description))
+                return false;
+
+            try
+            {
+                var response = await _httpClient.PostAsync($"{_serviceUrl}/voice_description?description={Uri.EscapeDataString(description)}", null);
+                if (response.IsSuccessStatusCode)
+                {
+                    _voiceDescription = description;
+                    _useVoiceDesign = true;
+                    Console.WriteLine($"[Qwen3TTS] Voice description set: {description}");
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Qwen3TTS] Failed to set voice description: {ex.Message}");
+            }
+            return false;
+        }
+
+        /// <summary>
         /// Generate speech from text and return audio data.
         /// </summary>
-        public static async Task<byte[]> GenerateSpeechAsync(string text, string speaker = null, string instruct = null)
+        public static async Task<byte[]> GenerateSpeechAsync(string text, string speaker = null, string instruct = null, string voiceDescription = null)
         {
             if (!_initialized)
                 Initialize();
@@ -115,13 +149,18 @@ namespace Kinectv1.Tts
 
             try
             {
+                // Use voice design if enabled and no specific speaker requested
+                var useDesign = _useVoiceDesign && string.IsNullOrEmpty(speaker) && !string.IsNullOrEmpty(_voiceDescription);
+                var desc = voiceDescription ?? _voiceDescription;
+                
                 var request = new
                 {
                     text = text,
                     speaker = speaker ?? _defaultSpeaker,
                     language = "English",
                     instruct = instruct ?? "",
-                    speed = 1.0
+                    speed = 1.0,
+                    voice_description = useDesign ? desc : null
                 };
 
                 var json = JsonConvert.SerializeObject(request);

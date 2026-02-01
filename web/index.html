@@ -496,7 +496,13 @@
 
         <aside class="sidebar">
             <div class="panel">
-                <h3>🎭 Voice Selection</h3>
+                <h3>🎭 Voice Mode</h3>
+                <div class="voice-mode-tabs" style="display: flex; gap: 0.5rem; margin-bottom: 1rem;">
+                    <button class="voice-tab active" id="tabPreset" style="flex: 1; padding: 0.5rem; background: rgba(233, 69, 96, 0.3); border: 1px solid rgba(233, 69, 96, 0.5); border-radius: 8px; color: #fff; cursor: pointer;">Preset</button>
+                    <button class="voice-tab" id="tabCustom" style="flex: 1; padding: 0.5rem; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; color: #fff; cursor: pointer;">Custom</button>
+                </div>
+                
+                <!-- Preset Voices -->
                 <div class="voice-selector" id="voiceSelector">
                     <div class="voice-option active" data-voice="Serena">
                         <span class="voice-icon">🌸</span>
@@ -519,6 +525,13 @@
                             <div class="voice-desc">Dynamic male voice</div>
                         </div>
                     </div>
+                </div>
+                
+                <!-- Custom Voice Description -->
+                <div class="voice-description" id="voiceDescriptionPanel" style="display: none;">
+                    <label style="font-size: 0.85rem; opacity: 0.8; display: block; margin-bottom: 0.5rem;">Voice Description</label>
+                    <textarea id="voiceDescInput" style="width: 100%; padding: 0.75rem; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; color: #fff; font-size: 0.9rem; resize: vertical; min-height: 80px;" placeholder="Describe how Maggie should speak...">Speak in a cheery relaxing female voice</textarea>
+                    <button id="applyVoiceDesc" style="margin-top: 0.5rem; width: 100%; padding: 0.5rem; background: rgba(233, 69, 96, 0.3); border: 1px solid rgba(233, 69, 96, 0.5); border-radius: 8px; color: #fff; cursor: pointer;">Apply Description</button>
                 </div>
             </div>
 
@@ -760,11 +773,76 @@
             }
         }
 
+        // Voice mode tabs
+        const tabPreset = document.getElementById('tabPreset');
+        const tabCustom = document.getElementById('tabCustom');
+        const voiceSelector = document.getElementById('voiceSelector');
+        const voiceDescriptionPanel = document.getElementById('voiceDescriptionPanel');
+        const voiceDescInput = document.getElementById('voiceDescInput');
+        const applyVoiceDescBtn = document.getElementById('applyVoiceDesc');
+        
+        let useVoiceDesign = false;
+        let currentVoiceDescription = voiceDescInput.value;
+
+        tabPreset.addEventListener('click', () => {
+            tabPreset.classList.add('active');
+            tabPreset.style.background = 'rgba(233, 69, 96, 0.3)';
+            tabPreset.style.borderColor = 'rgba(233, 69, 96, 0.5)';
+            tabCustom.classList.remove('active');
+            tabCustom.style.background = 'rgba(255,255,255,0.1)';
+            tabCustom.style.borderColor = 'rgba(255,255,255,0.2)';
+            voiceSelector.style.display = 'flex';
+            voiceDescriptionPanel.style.display = 'none';
+            useVoiceDesign = false;
+            console.log('Switched to preset voice mode');
+        });
+
+        tabCustom.addEventListener('click', () => {
+            tabCustom.classList.add('active');
+            tabCustom.style.background = 'rgba(233, 69, 96, 0.3)';
+            tabCustom.style.borderColor = 'rgba(233, 69, 96, 0.5)';
+            tabPreset.classList.remove('active');
+            tabPreset.style.background = 'rgba(255,255,255,0.1)';
+            tabPreset.style.borderColor = 'rgba(255,255,255,0.2)';
+            voiceSelector.style.display = 'none';
+            voiceDescriptionPanel.style.display = 'block';
+            useVoiceDesign = true;
+            console.log('Switched to custom voice design mode');
+        });
+
+        applyVoiceDescBtn.addEventListener('click', async () => {
+            currentVoiceDescription = voiceDescInput.value.trim();
+            if (currentVoiceDescription) {
+                statusText.textContent = 'Applying voice description...';
+                try {
+                    const response = await fetch(`${CONFIG.maggieApi}/api/tts/voice_description?description=${encodeURIComponent(currentVoiceDescription)}`, {
+                        method: 'POST'
+                    });
+                    if (response.ok) {
+                        statusText.textContent = 'Voice description applied';
+                        console.log('Voice description set:', currentVoiceDescription);
+                    } else {
+                        statusText.textContent = 'Failed to apply voice';
+                    }
+                } catch (err) {
+                    console.error('Failed to set voice description:', err);
+                    statusText.textContent = 'Error applying voice';
+                }
+            }
+        });
+
         // Test TTS button
         document.getElementById('testTtsBtn').addEventListener('click', async () => {
             initAudio();
             statusText.textContent = 'Testing voice...';
-            const testText = `Hello Nathan, I am Maggie. This is my voice test with ${currentVoice}.`;
+            
+            let testText;
+            if (useVoiceDesign) {
+                testText = `Hello Nathan, I am Maggie speaking with my custom voice.`;
+            } else {
+                testText = `Hello Nathan, I am Maggie. This is my voice test with ${currentVoice}.`;
+            }
+            
             const audioData = await generateTTS(testText, currentVoice);
             if (audioData) {
                 await playAudio(audioData);
@@ -773,6 +851,35 @@
                 statusText.textContent = 'Voice test failed - check console';
             }
         });
+
+        // Update generateTTS to use voice description when in custom mode
+        const originalGenerateTTS = generateTTS;
+        generateTTS = async function(text, voice = currentVoice) {
+            console.log('Generating TTS:', useVoiceDesign ? 'using voice design' : 'using preset', voice);
+            try {
+                const requestBody = useVoiceDesign ? 
+                    { text, voice_description: currentVoiceDescription, language: 'English' } :
+                    { text, speaker: voice, language: 'English' };
+                    
+                const response = await fetch(`${CONFIG.maggieApi}/api/tts`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(requestBody)
+                });
+                
+                if (response.ok) {
+                    const audioData = await response.arrayBuffer();
+                    console.log('TTS received, audio size:', audioData.byteLength);
+                    return audioData;
+                } else {
+                    const errorText = await response.text();
+                    console.error('TTS request failed:', response.status, errorText);
+                }
+            } catch (err) {
+                console.error('TTS error:', err);
+            }
+            return null;
+        };
 
         checkHealth();
         setInterval(checkHealth, 30000);

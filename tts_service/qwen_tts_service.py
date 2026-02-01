@@ -39,6 +39,11 @@ class TTSRequest(BaseModel):
     language: Optional[str] = "English"
     instruct: Optional[str] = None  # e.g., "Speak happily", "Speak softly"
     speed: Optional[float] = 1.0
+    voice_description: Optional[str] = None  # Free-form voice design description
+
+# Default custom voice description (editable)
+DEFAULT_VOICE_DESCRIPTION = "Speak in a cheery relaxing female voice"
+current_voice_description = DEFAULT_VOICE_DESCRIPTION
 
 class TTSResponse(BaseModel):
     success: bool
@@ -127,20 +132,45 @@ async def text_to_speech(request: TTSRequest):
     if not request.text or not request.text.strip():
         raise HTTPException(status_code=400, detail="Text cannot be empty")
     
-    speaker = request.speaker or current_speaker
-    if speaker not in SPEAKERS:
-        raise HTTPException(status_code=400, detail=f"Unknown speaker: {speaker}")
+    # Check if using custom voice description
+    voice_desc = request.voice_description or current_voice_description
+    use_voice_design = voice_desc is not None and voice_desc.strip() != ""
     
     try:
-        logger.info(f"Generating TTS: speaker={speaker}, text='{request.text[:50]}...'")
-        
-        # Generate audio
-        wavs, sr = tts_model.generate_custom_voice(
-            text=request.text,
-            language=request.language,
-            speaker=speaker,
-            instruct=request.instruct or ""
-        )
+        if use_voice_design:
+            # Use voice design mode with free-form description
+            logger.info(f"Generating TTS with voice design: '{voice_desc[:50]}...', text='{request.text[:50]}...'")
+            
+            # Check if model supports voice design
+            if hasattr(tts_model, 'generate_voice_design'):
+                wavs, sr = tts_model.generate_voice_design(
+                    text=request.text,
+                    voice_description=voice_desc,
+                    language=request.language
+                )
+            else:
+                # Fallback: use instruct parameter with custom voice description
+                wavs, sr = tts_model.generate_custom_voice(
+                    text=request.text,
+                    language=request.language,
+                    speaker="Serena",  # Base voice
+                    instruct=f"{voice_desc}. {request.instruct or ''}".strip()
+                )
+        else:
+            # Use predefined speaker
+            speaker = request.speaker or current_speaker
+            if speaker not in SPEAKERS:
+                raise HTTPException(status_code=400, detail=f"Unknown speaker: {speaker}")
+            
+            logger.info(f"Generating TTS: speaker={speaker}, text='{request.text[:50]}...'")
+            
+            # Generate audio with predefined speaker
+            wavs, sr = tts_model.generate_custom_voice(
+                text=request.text,
+                language=request.language,
+                speaker=speaker,
+                instruct=request.instruct or ""
+            )
         
         # Convert to bytes
         audio_data = wavs[0]
@@ -217,14 +247,52 @@ async def text_to_speech_stream(request: TTSRequest):
 @app.post("/set_voice")
 async def set_default_voice(speaker: str):
     """Set the default voice for Maggie"""
-    global current_speaker
+    global current_speaker, current_voice_description
     
     if speaker not in SPEAKERS:
         raise HTTPException(status_code=400, detail=f"Unknown speaker: {speaker}")
     
     current_speaker = speaker
+    current_voice_description = None  # Clear custom description when using preset
     logger.info(f"Default voice changed to: {speaker}")
     return {"success": True, "speaker": speaker, "description": SPEAKERS[speaker]}
+
+@app.get("/voice_description")
+async def get_voice_description():
+    """Get the current custom voice description"""
+    return {
+        "current_description": current_voice_description,
+        "default_description": DEFAULT_VOICE_DESCRIPTION,
+        "using_custom": current_voice_description is not None
+    }
+
+@app.post("/voice_description")
+async def set_voice_description(description: str):
+    """Set a custom voice description for voice design mode"""
+    global current_voice_description
+    
+    if not description or not description.strip():
+        raise HTTPException(status_code=400, detail="Description cannot be empty")
+    
+    current_voice_description = description.strip()
+    logger.info(f"Voice description changed to: {current_voice_description}")
+    return {
+        "success": True,
+        "description": current_voice_description,
+        "message": f"Voice description updated. Maggie will now speak with this voice style."
+    }
+
+@app.post("/reset_voice_description")
+async def reset_voice_description():
+    """Reset to default voice description"""
+    global current_voice_description
+    current_voice_description = DEFAULT_VOICE_DESCRIPTION
+    logger.info(f"Voice description reset to default: {DEFAULT_VOICE_DESCRIPTION}")
+    return {
+        "success": True,
+        "description": current_voice_description,
+        "message": "Voice description reset to default."
+    }
 
 @app.get("/speak")
 async def speak_get(text: str, speaker: Optional[str] = None):

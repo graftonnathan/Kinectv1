@@ -224,6 +224,13 @@ namespace Kinectv1.Api
                         await HandleVoicesProxy(resp);
                         break;
 
+                    case "/api/tts/voice_description":
+                        if (req.HttpMethod == "POST")
+                            await HandleVoiceDescriptionProxy(req, resp);
+                        else if (req.HttpMethod == "GET")
+                            await HandleGetVoiceDescriptionProxy(resp);
+                        break;
+
                     default:
                         await WriteJson(resp, 404, new { error = "Not found" });
                         break;
@@ -368,6 +375,53 @@ namespace Kinectv1.Api
                     new { name = "Ryan", description = "Dynamic male voice", language = "English" }
                 };
                 await WriteJson(resp, 200, defaultVoices);
+                return;
+            }
+            resp.Close();
+        }
+
+        private static async Task HandleVoiceDescriptionProxy(HttpListenerRequest req, HttpListenerResponse resp)
+        {
+            try
+            {
+                var description = req.QueryString["description"] ?? "";
+                var proxyResponse = await _ttsClient.PostAsync($"{_ttsServiceUrl}/voice_description?description={Uri.EscapeDataString(description)}", null);
+                var responseJson = await proxyResponse.Content.ReadAsStringAsync();
+                
+                resp.StatusCode = (int)proxyResponse.StatusCode;
+                resp.ContentType = "application/json";
+                var bytes = Encoding.UTF8.GetBytes(responseJson);
+                await resp.OutputStream.WriteAsync(bytes, 0, bytes.Length);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[JeffApi] Voice description proxy error: {ex.Message}");
+                await WriteJson(resp, 500, new { error = ex.Message });
+                return;
+            }
+            resp.Close();
+        }
+
+        private static async Task HandleGetVoiceDescriptionProxy(HttpListenerResponse resp)
+        {
+            try
+            {
+                var proxyResponse = await _ttsClient.GetAsync($"{_ttsServiceUrl}/voice_description");
+                var responseJson = await proxyResponse.Content.ReadAsStringAsync();
+                
+                resp.StatusCode = (int)proxyResponse.StatusCode;
+                resp.ContentType = "application/json";
+                var bytes = Encoding.UTF8.GetBytes(responseJson);
+                await resp.OutputStream.WriteAsync(bytes, 0, bytes.Length);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[JeffApi] Get voice description proxy error: {ex.Message}");
+                await WriteJson(resp, 200, new { 
+                    current_description = "Speak in a cheery relaxing female voice",
+                    default_description = "Speak in a cheery relaxing female voice",
+                    using_custom = true
+                });
                 return;
             }
             resp.Close();
