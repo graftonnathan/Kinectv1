@@ -137,7 +137,19 @@ namespace Kinectv1.Headless
                             }
                         });
                     };
-                    
+
+                    // Hook up WebRTC audio input to STT pipeline
+                    _webRtcServer.OnWebAudioReceived += (frame) =>
+                    {
+                        if (HeadlessVoiceRecognizer.Instance.IsReady)
+                        {
+                            // Convert short[] PCM to byte[] for Vosk
+                            var pcmBytes = new byte[frame.Pcm16.Length * 2];
+                            System.Buffer.BlockCopy(frame.Pcm16, 0, pcmBytes, 0, pcmBytes.Length);
+                            HeadlessVoiceRecognizer.Instance.ProcessAudio(pcmBytes, pcmBytes.Length, Kinectv1.Voice.AudioSourceType.WebRtc, frame.SourceId);
+                        }
+                    };
+
                     await _webRtcServer.StartAsync(System.Threading.CancellationToken.None);
                     _webRtcEnabled = true;
                     Console.WriteLine($"   ✓ WebRTC signaling on http://localhost:{webRtcPort}");
@@ -166,6 +178,19 @@ namespace Kinectv1.Headless
                         Tts.Qwen3TtsService.QueueSentenceForStreaming(sentence);
                     }
                 };
+
+                // Hook up TTS audio to WebRTC clients
+                if (_webRtcEnabled)
+                {
+                    Tts.Qwen3TtsService.OnTtsAudioChunk += (pcmData, sampleRate) =>
+                    {
+                        _webRtcServer?.BroadcastTtsAudio(pcmData, sampleRate);
+                    };
+                    Tts.Qwen3TtsService.OnTtsSpeakingFinished += () =>
+                    {
+                        _webRtcServer?.BroadcastTtsStop();
+                    };
+                }
 
                 Console.WriteLine("🎯 Maggie is ready!");
                 Console.WriteLine($"   🎤 STT:      {(HeadlessVoiceRecognizer.Instance.IsReady ? "✓ Listening" : "✗ No model")}");

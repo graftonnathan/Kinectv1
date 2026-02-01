@@ -341,8 +341,171 @@ async def speak_get(text: str, speaker: Optional[str] = None):
     request = TTSRequest(text=text, speaker=speaker)
     return await text_to_speech(request)
 
+# ==================== Voice Generator Integration ====================
+
+from voice_generator import MaggieVoiceGenerator, create_default_maggie_voices
+
+# Global voice generator instance
+voice_generator: Optional[MaggieVoiceGenerator] = None
+
+class CreateVoiceRequest(BaseModel):
+    name: str
+    description: str
+    ref_text: str = "Hello, I'm Maggie. How can I help you today?"
+    language: str = "English"
+
+class CreateVoiceResponse(BaseModel):
+    success: bool
+    name: str
+    description: str
+    ref_audio: str
+    message: str
+
+class CharacterVoiceInfo(BaseModel):
+    name: str
+    description: str
+    language: str
+
+@app.on_event("startup")
+async def init_voice_generator():
+    """Initialize voice generator on startup"""
+    global voice_generator
+    try:
+        voice_generator = MaggieVoiceGenerator()
+        logger.info("✅ Voice generator initialized")
+        
+        # Check if default voices exist
+        voices = voice_generator.list_voices()
+        if not voices:
+            logger.info("No character voices found. Run with --create-defaults to create them.")
+        else:
+            logger.info(f"Found {len(voices)} character voices")
+    except Exception as e:
+        logger.error(f"Voice generator init failed: {e}")
+        voice_generator = None
+
+@app.get("/character_voices", response_model=List[CharacterVoiceInfo])
+async def list_character_voices():
+    """List all available custom character voices"""
+    if voice_generator is None:
+        raise HTTPException(status_code=503, detail="Voice generator not available")
+    
+    voices = voice_generator.list_voices()
+    return [CharacterVoiceInfo(**v) for v in voices]
+
+@app.post("/character_voices/create", response_model=CreateVoiceResponse)
+async def create_character_voice(request: CreateVoiceRequest):
+    """
+    Create a new custom character voice using VoiceDesign -> VoiceClone workflow.
+    
+    This creates a reusable voice that can be used for consistent character speech.
+    """
+    if voice_generator is None:
+        raise HTTPException(status_code=503, detail="Voice generator not available")
+    
+    try:
+        # Check if voice already exists
+        existing = voice_generator.list_voices()
+        if any(v["name"] == request.name for v in existing):
+            raise HTTPException(status_code=400, detail=f"Voice '{request.name}' already exists")
+        
+        metadata = voice_generator.create_character_voice(
+            name=request.name,
+            description=request.description,
+            ref_text=request.ref_text,
+            language=request.language
+        )
+        
+        return CreateVoiceResponse(
+            success=True,
+            name=metadata["name"],
+            description=metadata["description"],
+            ref_audio=metadata["ref_audio"],
+            message=f"Character voice '{request.name}' created successfully!"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to create voice: {e}")
+        raise HTTPException(status_code=500, detail=f"Voice creation failed: {str(e)}")
+
+@app.post("/character_voices/{voice_name}/generate")
+async def generate_with_character_voice(
+    voice_name: str,
+    text: str,
+    language: str = "English"
+):
+    """Generate speech using a character voice"""
+    if voice_generator is None:
+        raise HTTPException(status_code=503, detail="Voice generator not available")
+    
+    try:
+        output_path = voice_generator.generate_speech(
+            voice_name=voice_name,
+            text=text,
+            language=language
+        )
+        
+        return FileResponse(
+            output_path,
+            media_type="audio/wav",
+            headers={
+                "X-Voice": voice_name,
+                "Content-Disposition": f"attachment; filename={voice_name}_{hash(text) % 10000}.wav"
+            }
+        )
+        
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Generation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Generation failed: {str(e)}")
+
+@app.post("/character_voices/create_defaults")
+async def create_default_voices():
+    """Create the default set of Maggie character voices"""
+    if voice_generator is None:
+        raise HTTPException(status_code=503, detail="Voice generator not available")
+    
+    try:
+        created = create_default_maggie_voices()
+        return {
+            "success": True,
+            "created": len(created),
+            "voices": [c["name"] for c in created]
+        }
+    except Exception as e:
+        logger.error(f"Failed to create default voices: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/character_voices/{voice_name}")
+async def delete_character_voice(voice_name: str):
+    """Delete a character voice"""
+    if voice_generator is None:
+        raise HTTPException(status_code=503, detail="Voice generator not available")
+    
+    success = voice_generator.delete_voice(voice_name)
+    if success:
+        return {"success": True, "message": f"Voice '{voice_name}' deleted"}
+    else:
+        raise HTTPException(status_code=404, detail=f"Voice '{voice_name}' not found")
+
+
 if __name__ == "__main__":
     import uvicorn
+    import argparse
+    
+    # Check for CLI args
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--create-defaults", action="store_true", help="Create default voices and exit")
+    args, remaining = parser.parse_known_args()
+    
+    if args.create_defaults:
+        logger.info("Creating default Maggie voices...")
+        create_default_maggie_voices()
+        logger.info("Done!")
+        exit(0)
     
     host = os.getenv("TTS_HOST", "0.0.0.0")
     port = int(os.getenv("TTS_PORT", "7860"))
