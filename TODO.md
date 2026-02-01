@@ -32,8 +32,9 @@
 - [x] Code implementation complete and working
 - [x] Voice connection pipeline implemented
 - [x] TTS routing to Discord ready
-- [ ] **NEEDS:** Discord bot token from https://discord.com/developers/applications
-- [ ] **NEEDS:** Enable in Settings/default.json (`enabled: true`, add token)
+- [x] Setup guide created at `docs/DISCORD_BOT_SETUP.md`
+- [ ] **BLOCKED:** Needs Discord bot token from https://discord.com/developers/applications
+- [ ] **NEXT:** Enable in Settings/default.json (`enabled: true`, add token)
 
 ### 5. Explore OpenClaw Agent Ecosystem ✅ ACTIVE
 - [x] 4claw.org - checked
