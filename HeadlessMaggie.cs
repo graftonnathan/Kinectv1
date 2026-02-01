@@ -7,11 +7,15 @@ using System.Threading;
 using System.Threading.Tasks;
 using Kinectv1.Settings;
 using Kinectv1.Llm;
+using Kinectv1.Voice;
+using Kinectv1.Headless;
 
 namespace Kinectv1.Headless
 {
     class Program
     {
+        private static WebRtcSignalingServer _webRtcServer;
+        private static bool _webRtcEnabled = false;
         static async Task Main(string[] args)
         {
             Console.WriteLine("╔════════════════════════════════════════════════════════╗");
@@ -63,6 +67,42 @@ namespace Kinectv1.Headless
                 }
                 Console.WriteLine();
 
+                // Initialize Voice Recognition (STT)
+                Console.WriteLine("🎤 Initializing voice recognition (Vosk STT)...");
+                var modelPath = Environment.GetEnvironmentVariable("MAGGIE_VOSK_MODEL") ?? "vosk-model-small-en-us-0.15";
+                HeadlessVoiceRecognizer.Instance.Start(modelPath);
+                
+                if (HeadlessVoiceRecognizer.Instance.IsReady)
+                {
+                    // Hook up speech transcription to Maggie's brain
+                    HeadlessVoiceRecognizer.Instance.OnTranscription += (text) =>
+                    {
+                        Console.WriteLine($"\n🎤 Heard: \"{text}\"");
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                await ProcessChatMessage("You", text, ttsAvailable);
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"   ⚠️  Speech processing error: {ex.Message}");
+                            }
+                        });
+                    };
+                    
+                    HeadlessVoiceRecognizer.Instance.SetMicrophoneEnabled(true);
+                    Console.WriteLine($"   ✓ Voice recognition ready (model: {modelPath})");
+                    Console.WriteLine($"   ✓ Microphone: enabled");
+                }
+                else
+                {
+                    Console.WriteLine($"   ⚠️  Voice recognition not available");
+                    Console.WriteLine($"   ℹ️  Download model: wget https://alphacephei.com/vosk/models/vosk-model-en-us-0.22.zip");
+                    Console.WriteLine($"   ℹ️  Set path: export MAGGIE_VOSK_MODEL=/path/to/model");
+                }
+                Console.WriteLine();
+
                 // Start Jeff API for communication (with LAN access)
                 Console.WriteLine("🌐 Starting Jeff API server...");
                 var ip = System.Net.Dns.GetHostAddresses(System.Net.Dns.GetHostName())
@@ -73,47 +113,48 @@ namespace Kinectv1.Headless
                 Console.WriteLine($"   ✓ Web interface: http://{ip}:18790");
                 Console.WriteLine();
 
+                // Start WebRTC Signaling Server
+                Console.WriteLine("📡 Starting WebRTC signaling server...");
+                var webRtcPort = cfg.WebRtc?.Port ?? 8787;
+                try
+                {
+                    _webRtcServer = new WebRtcSignalingServer(webRtcPort);
+                    _webRtcServer.OnLog += (msg) => Console.WriteLine($"   [WebRTC] {msg}");
+                    
+                    // Hook up WebRTC text input to Maggie's brain
+                    _webRtcServer.OnWebTextInput += (speaker, text) =>
+                    {
+                        Console.WriteLine($"\n🌐 WebRTC [{speaker}]: {text}");
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                await ProcessChatMessage(speaker, text, ttsAvailable);
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"   ⚠️  WebRTC message error: {ex.Message}");
+                            }
+                        });
+                    };
+                    
+                    await _webRtcServer.StartAsync(System.Threading.CancellationToken.None);
+                    _webRtcEnabled = true;
+                    Console.WriteLine($"   ✓ WebRTC signaling on http://localhost:{webRtcPort}");
+                    Console.WriteLine($"   ✓ WebRTC LAN access: http://{ip}:{webRtcPort}");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"   ⚠️  WebRTC server failed to start: {ex.Message}");
+                    Console.WriteLine($"   ℹ️  This is non-critical; other features will work");
+                }
+                Console.WriteLine();
+
                 // Hook up Jeff API to Maggie's brain with TTS
                 Api.JeffApiServer.OnChatRequest += async (message) =>
                 {
                     Console.WriteLine($"\n📨 Jeff: {message}");
-                    
-                    var tcs = new TaskCompletionSource<string>();
-                    var handler = new Action<string>(response => 
-                    {
-                        tcs.TrySetResult(response);
-                    });
-                    
-                    OllamaService.OnResponseReceived += handler;
-                    await OllamaService.DispatchAsync("Jeff", message);
-                    
-                    var completed = await Task.WhenAny(tcs.Task, Task.Delay(30000));
-                    OllamaService.OnResponseReceived -= handler;
-                    
-                    if (completed == tcs.Task)
-                    {
-                        var response = await tcs.Task;
-                        Console.WriteLine($"💬 Maggie: {response}");
-                        
-                        // Generate voice if TTS is available
-                        if (ttsAvailable && !string.IsNullOrWhiteSpace(response))
-                        {
-                            _ = Task.Run(async () =>
-                            {
-                                try
-                                {
-                                    await Tts.Qwen3TtsService.SpeakAsync(response);
-                                }
-                                catch (Exception ex)
-                                {
-                                    Console.WriteLine($"   ⚠️  TTS error: {ex.Message}");
-                                }
-                            });
-                        }
-                        
-                        return response;
-                    }
-                    return "(no response)";
+                    return await ProcessChatMessage("Jeff", message, ttsAvailable);
                 };
 
                 // Hook up sentence streaming for real-time TTS
@@ -127,9 +168,14 @@ namespace Kinectv1.Headless
                 };
 
                 Console.WriteLine("🎯 Maggie is ready!");
+                Console.WriteLine($"   🎤 STT:      {(HeadlessVoiceRecognizer.Instance.IsReady ? "✓ Listening" : "✗ No model")}");
+                Console.WriteLine($"   📡 WebRTC:   {(_webRtcEnabled ? $"✓ Port {webRtcPort}" : "✗ Disabled")}");
                 Console.WriteLine("   💬 Chat via: curl -X POST http://localhost:18790/api/chat");
                 Console.WriteLine("   🌐 Voice UI: http://localhost:18790/voice/  (Qwen3-TTS chat)");
-                Console.WriteLine("   🌐 WebRTC:   http://localhost:18790/webrtc/ (original voice chat)");
+                if (_webRtcEnabled)
+                {
+                    Console.WriteLine($"   🌐 WebRTC:   http://{ip}:{webRtcPort}/ (browser voice chat)");
+                }
                 Console.WriteLine("   📱 LAN:      http://{0}:18790/", ip);
                 Console.WriteLine();
                 Console.WriteLine("Press Ctrl+C to exit");
@@ -153,6 +199,35 @@ namespace Kinectv1.Headless
                 }
 
                 Console.WriteLine("\n👋 Shutting down Maggie...");
+                
+                // Stop WebRTC server
+                if (_webRtcServer != null)
+                {
+                    try
+                    {
+                        await _webRtcServer.StopAsync();
+                        Console.WriteLine("   ✓ WebRTC server stopped");
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"   ⚠️  WebRTC stop error: {ex.Message}");
+                    }
+                }
+                
+                // Stop voice recognizer
+                if (HeadlessVoiceRecognizer.Instance.IsReady)
+                {
+                    try
+                    {
+                        HeadlessVoiceRecognizer.Instance.Stop();
+                        Console.WriteLine("   ✓ Voice recognizer stopped");
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"   ⚠️  Voice recognizer stop error: {ex.Message}");
+                    }
+                }
+                
                 Api.JeffApiServer.Stop();
                 Console.WriteLine("   ✓ Jeff API stopped");
                 Console.WriteLine("   ✓ Goodbye!");
@@ -162,6 +237,63 @@ namespace Kinectv1.Headless
                 Console.WriteLine($"\n❌ Fatal error: {ex.Message}");
                 Console.WriteLine(ex.StackTrace);
                 Environment.Exit(1);
+            }
+        }
+
+        /// <summary>
+        /// Process a chat message through the LLM and optionally speak the response.
+        /// </summary>
+        private static async Task<string> ProcessChatMessage(string speaker, string message, bool ttsAvailable)
+        {
+            try
+            {
+                var tcs = new TaskCompletionSource<string>();
+                var handler = new Action<string>(response => 
+                {
+                    tcs.TrySetResult(response);
+                });
+                
+                OllamaService.OnResponseReceived += handler;
+                await OllamaService.DispatchAsync(speaker, message);
+                
+                var completed = await Task.WhenAny(tcs.Task, Task.Delay(30000));
+                OllamaService.OnResponseReceived -= handler;
+                
+                if (completed == tcs.Task)
+                {
+                    var response = await tcs.Task;
+                    Console.WriteLine($"💬 Maggie: {response}");
+                    
+                    // Broadcast to WebRTC clients if available
+                    if (_webRtcEnabled)
+                    {
+                        _webRtcServer?.BroadcastResponse(response);
+                    }
+                    
+                    // Generate voice if TTS is available
+                    if (ttsAvailable && !string.IsNullOrWhiteSpace(response))
+                    {
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                await Tts.Qwen3TtsService.SpeakAsync(response);
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"   ⚠️  TTS error: {ex.Message}");
+                            }
+                        });
+                    }
+                    
+                    return response;
+                }
+                return "(no response - timeout)";
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Error processing message: {ex.Message}");
+                return $"Error: {ex.Message}";
             }
         }
     }

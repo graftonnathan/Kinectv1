@@ -369,8 +369,12 @@ FodyWeavers.xsd
 /lib/b7594632-b3db-4bf0-9f4b-a6e03c9e0b65.png
 /libs
 /models
-/history/conversation.json
+/history/
+/memory/
+*.memory.json
+conversation*.json
 /native-libs
+/vosk-model-*/
 /lib
 /prompts/Dasiy.txt
 /cert

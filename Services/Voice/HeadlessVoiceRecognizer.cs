@@ -185,6 +185,15 @@ namespace Kinectv1.Headless
         {
             try
             {
+                // Check if running on Linux (WaveInEvent requires Windows)
+                if (OperatingSystem.IsLinux())
+                {
+                    Console.WriteLine($"[HeadlessVoiceRecognizer] Microphone not supported on Linux (WaveInEvent requires Windows)");
+                    Console.WriteLine($"[HeadlessVoiceRecognizer] STT will work for WebRTC/browser audio input");
+                    _micEnabled = false;
+                    return;
+                }
+                
                 _waveIn = new WaveInEvent
                 {
                     DeviceNumber = 0, // Default device

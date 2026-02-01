@@ -22,6 +22,7 @@ app = FastAPI(title="Maggie TTS Service", version="1.0")
 # Global model instance
 tts_model = None
 current_speaker = "Serena"  # Default feminine voice for Maggie
+model_type = None  # 'custom_voice', 'voice_design', or 'base'
 
 # Speaker options with descriptions
 SPEAKERS = {
@@ -60,7 +61,7 @@ class VoiceInfo(BaseModel):
 @app.on_event("startup")
 async def load_model():
     """Load Qwen3-TTS model on startup"""
-    global tts_model
+    global tts_model, model_type
     
     try:
         from qwen_tts import Qwen3TTSModel
@@ -95,8 +96,24 @@ async def load_model():
             attn_implementation="eager"  # Safer default
         )
         
+        # Detect model type to determine available features
+        model_type = getattr(tts_model.model, "tts_model_type", None)
+        model_size = getattr(tts_model.model, "tts_model_size", "unknown")
+        logger.info(f"Model type: {model_type}, Model size: {model_size}")
+        
+        # Warn about 0.6B model limitations
+        if model_size == "0b6" and model_type == "custom_voice":
+            logger.warning("⚠️  0.6B CustomVoice model detected - voice descriptions/instructions are not supported")
+        
         logger.info("✅ Qwen3-TTS model loaded successfully")
         logger.info(f"Available speakers: {list(SPEAKERS.keys())}")
+        
+        if model_type == "custom_voice":
+            logger.info("Using CustomVoice model - voice design will use speaker + instruction fallback")
+        elif model_type == "voice_design":
+            logger.info("Using VoiceDesign model - full voice design capability available")
+        elif model_type == "base":
+            logger.info("Using Base model - voice cloning capability available")
         
     except Exception as e:
         logger.error(f"❌ Failed to load Qwen3-TTS model: {e}")
@@ -106,9 +123,14 @@ async def load_model():
 @app.get("/health")
 async def health():
     """Health check endpoint"""
+    model_size = getattr(tts_model.model, "tts_model_size", "unknown") if tts_model else None
     return {
         "status": "ok" if tts_model is not None else "degraded",
         "model_loaded": tts_model is not None,
+        "model_type": model_type,
+        "model_size": model_size,
+        "voice_design_supported": model_type == "voice_design",
+        "instructions_supported": not (model_size == "0b6" and model_type == "custom_voice"),
         "current_speaker": current_speaker,
         "available_speakers": list(SPEAKERS.keys())
     }
@@ -137,27 +159,35 @@ async def text_to_speech(request: TTSRequest):
     voice_desc = request.voice_description or current_voice_description
     use_voice_design = voice_desc is not None and voice_desc.strip() != ""
     
+    # Check if model actually supports voice design
+    can_do_voice_design = model_type == "voice_design"
+    
     try:
         if use_voice_design:
             # Use voice design mode with free-form description
             logger.info(f"Generating TTS with voice design: '{voice_desc[:50]}...', text='{request.text[:50]}...'")
             
-            # Use voice design mode - creates voice purely from description
-            # This uses the model's voice design capability without a base speaker
             combined_instruct = f"{voice_desc}. {request.instruct or ''}".strip()
-            logger.info(f"Voice design: description='{voice_desc[:40]}...'")
             
-            try:
-                # Try pure voice design first (no base speaker)
+            if can_do_voice_design:
+                # Model supports pure voice design (VoiceDesign model)
+                logger.info(f"Using pure voice design: description='{voice_desc[:40]}...'")
                 wavs, sr = tts_model.generate_voice_design(
                     text=request.text,
                     instruct=combined_instruct,
                     language=request.language
                 )
-            except Exception as e:
-                logger.warning(f"Pure voice design failed ({e}), falling back to base voice + description")
-                # Fallback: use base voice with description as instruct
+            else:
+                # CustomVoice model - use speaker + voice description as instruction
                 base_speaker = request.speaker if request.speaker and request.speaker in SPEAKERS else "Serena"
+                
+                # Check if instructions are supported (0.6B models don't support them)
+                model_size = getattr(tts_model.model, "tts_model_size", "unknown")
+                if model_size == "0b6":
+                    logger.warning(f"0.6B model: voice description will be ignored. Using speaker '{base_speaker}' only.")
+                else:
+                    logger.info(f"Using CustomVoice fallback: speaker={base_speaker}, instruct='{combined_instruct[:40]}...'")
+                
                 wavs, sr = tts_model.generate_custom_voice(
                     text=request.text,
                     language=request.language,

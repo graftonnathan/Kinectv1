@@ -62,12 +62,24 @@
     <Compile Include="Services\Llm\Tools\ILlmTool.cs" />
     <Compile Include="Services\Llm\Tools\ToolRegistry.cs" />
     <Compile Include="Services\Llm\Tools\WebSearchTool.cs" />
+    
+    <!-- Voice / WebRTC -->
+    <Compile Include="Services\Voice\AudioUtils.cs" />
+    <Compile Include="Services\Voice\IAudioSource.cs" />
+    <Compile Include="Services\Voice\NormalizedAudioFrame.cs" />
+    <Compile Include="Services\Voice\WebRtcSignalingServerHeadless.cs" />
+    
+    <!-- Voice Recognition (STT) -->
+    <Compile Include="Services\Voice\HeadlessVoiceRecognizer.cs" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
     <PackageReference Include="System.Configuration.ConfigurationManager" Version="10.0.2" />
     <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="8.0.0" />
+    <PackageReference Include="SIPSorcery" Version="6.2.4" />
+    <PackageReference Include="Vosk" Version="0.3.38" />
+    <PackageReference Include="NAudio" Version="2.2.1" />
   </ItemGroup>
 
   <ItemGroup>
