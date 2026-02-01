@@ -128,8 +128,9 @@ namespace Kinectv1.Headless
 
                 Console.WriteLine("🎯 Maggie is ready!");
                 Console.WriteLine("   💬 Chat via: curl -X POST http://localhost:18790/api/chat");
-                Console.WriteLine("   🌐 Web UI:   http://localhost:18790");
-                Console.WriteLine("   📱 LAN UI:   http://{0}:18790", ip);
+                Console.WriteLine("   🌐 Voice UI: http://localhost:18790/voice/  (Qwen3-TTS chat)");
+                Console.WriteLine("   🌐 WebRTC:   http://localhost:18790/webrtc/ (original voice chat)");
+                Console.WriteLine("   📱 LAN:      http://{0}:18790/", ip);
                 Console.WriteLine();
                 Console.WriteLine("Press Ctrl+C to exit");
                 Console.WriteLine();

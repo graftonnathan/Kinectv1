@@ -27,31 +27,45 @@ check_tts() {
     return 1
 }
 
+# Setup Python virtual environment for TTS
+setup_venv() {
+    if [ ! -d "${SCRIPT_DIR}/tts_service/venv" ]; then
+        echo -e "${YELLOW}📦 Creating Python virtual environment for TTS...${NC}"
+        cd "${SCRIPT_DIR}/tts_service"
+        python3 -m venv venv
+        echo -e "${GREEN}✅ Virtual environment created${NC}"
+    fi
+    
+    # Check if dependencies are installed
+    if ! "${SCRIPT_DIR}/tts_service/venv/bin/python" -c "import qwen_tts" 2>/dev/null; then
+        echo -e "${YELLOW}📦 Installing Qwen3-TTS dependencies (this may take a few minutes)...${NC}"
+        "${SCRIPT_DIR}/tts_service/venv/bin/pip" install -q qwen-tts soundfile numpy fastapi uvicorn
+        echo -e "${GREEN}✅ Dependencies installed${NC}"
+    fi
+}
+
 # Start Qwen3-TTS service
 start_tts() {
     echo -e "${YELLOW}🎙️  Starting Qwen3-TTS service on port ${TTS_PORT}...${NC}"
     
-    # Check if Python and qwen-tts are available
+    # Check if Python is available
     if ! command -v python3 &> /dev/null; then
         echo -e "${RED}❌ Python 3 not found. Please install Python 3.12+${NC}"
         exit 1
     fi
     
-    # Check if qwen-tts is installed
-    if ! python3 -c "import qwen_tts" 2>/dev/null; then
-        echo -e "${YELLOW}⚠️  qwen-tts not installed. Installing...${NC}"
-        pip install -q qwen-tts soundfile numpy fastapi uvicorn
-    fi
+    # Setup virtual environment
+    setup_venv
     
-    # Start TTS service in background
+    # Start TTS service in background using venv
     cd "${SCRIPT_DIR}/tts_service"
     QWEN_TTS_DEVICE="cuda:0" QWEN_TTS_MODEL="Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice" \
-        python3 qwen_tts_service.py > /tmp/maggie-tts.log 2>&1 &
+        ./venv/bin/python qwen_tts_service.py > /tmp/maggie-tts.log 2>&1 &
     TTS_PID=$!
     
     # Wait for TTS to be ready
     echo -n "⏳ Waiting for TTS service to start"
-    for i in {1..60}; do
+    for i in {1..120}; do
         if check_tts; then
             echo ""
             echo -e "${GREEN}✅ Qwen3-TTS service ready (PID: ${TTS_PID})${NC}"
@@ -90,9 +104,10 @@ echo ""
 echo -e "${GREEN}═══════════════════════════════════════════════════════${NC}"
 echo -e "${GREEN}  Maggie is starting up!${NC}"
 echo ""
-echo -e "  🌐 Web Interface: ${YELLOW}http://${IP_ADDR}:${MAGGIE_PORT}${NC}"
-echo -e "  🌐 Local:          ${YELLOW}http://localhost:${MAGGIE_PORT}${NC}"
-echo -e "  🎙️  TTS Service:    ${YELLOW}http://localhost:${TTS_PORT}${NC}"
+echo -e "  🌐 Voice Web UI:  ${YELLOW}http://${IP_ADDR}:${MAGGIE_PORT}/voice/${NC}"
+echo -e "  🌐 WebRTC UI:     ${YELLOW}http://${IP_ADDR}:${MAGGIE_PORT}/webrtc/${NC}"
+echo -e "  💬 Chat API:      ${YELLOW}http://${IP_ADDR}:${MAGGIE_PORT}/api/chat${NC}"
+echo -e "  🎙️  TTS Service:   ${YELLOW}http://localhost:${TTS_PORT}${NC}"
 echo ""
 echo -e "  Press Ctrl+C to stop"
 echo -e "${GREEN}═══════════════════════════════════════════════════════${NC}"

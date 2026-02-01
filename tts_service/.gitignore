@@ -1,0 +1,18 @@
+# Python virtual environment
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Model files (large)
+*.onnx
+*.bin
+models/
+
+# Temporary files
+*.tmp
+*.log
+.DS_Store

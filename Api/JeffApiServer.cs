@@ -34,7 +34,7 @@ namespace Kinectv1.Api
             if (lanAccess)
             {
                 _listener.Prefixes.Add($"http://*:{Port}/");
-                Console.WriteLine($"🌐 Web interface available on LAN at http://<this-ip>:{Port}");
+                Console.WriteLine($"🌐 Web interfaces available on LAN at http://<this-ip>:{Port}");
             }
 
             try
@@ -96,10 +96,47 @@ namespace Kinectv1.Api
 
                 var path = req.Url.AbsolutePath.ToLowerInvariant();
 
-                // Serve web frontend for root and web paths
-                if (path == "/" || path == "/index.html")
+                // Root path - serve voice UI
+                if (path == "/")
                 {
-                    await ServeWebFile(resp, "index.html", "text/html");
+                    // Redirect to voice UI by default
+                    resp.StatusCode = 302;
+                    resp.Headers.Add("Location", "/voice/");
+                    resp.Close();
+                    return;
+                }
+
+                // Voice UI at /voice/
+                if (path == "/voice" || path == "/voice/")
+                {
+                    await ServeWebFile(resp, "web/index.html", "text/html");
+                    return;
+                }
+                if (path.StartsWith("/voice/"))
+                {
+                    var fileName = path.Substring(7); // Remove /voice/
+                    await ServeWebFile(resp, $"web/{fileName}", GetMimeType(fileName));
+                    return;
+                }
+
+                // Existing WebRTC UI at /webrtc/
+                if (path == "/webrtc" || path == "/webrtc/")
+                {
+                    await ServeWebFile(resp, "wwwroot/webrtc/index.html", "text/html");
+                    return;
+                }
+                if (path.StartsWith("/webrtc/"))
+                {
+                    var fileName = path.Substring(8); // Remove /webrtc/
+                    await ServeWebFile(resp, $"wwwroot/webrtc/{fileName}", GetMimeType(fileName));
+                    return;
+                }
+
+                // Direct access to wwwroot files
+                if (path.StartsWith("/wwwroot/"))
+                {
+                    var fileName = path.Substring(9);
+                    await ServeWebFile(resp, $"wwwroot/{fileName}", GetMimeType(fileName));
                     return;
                 }
                 
@@ -129,20 +166,6 @@ namespace Kinectv1.Api
                         break;
 
                     default:
-                        // Try to serve static web files
-                        if (path.StartsWith("/"))
-                        {
-                            var fileName = path.TrimStart('/');
-                            var webDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "web");
-                            var filePath = Path.Combine(webDir, fileName);
-                            
-                            if (File.Exists(filePath))
-                            {
-                                var mimeType = GetMimeType(fileName);
-                                await ServeWebFile(resp, fileName, mimeType);
-                                return;
-                            }
-                        }
                         await WriteJson(resp, 404, new { error = "Not found" });
                         break;
                 }
@@ -197,15 +220,16 @@ namespace Kinectv1.Api
             resp.Close();
         }
 
-        private static async Task ServeWebFile(HttpListenerResponse resp, string fileName, string mimeType)
+        private static async Task ServeWebFile(HttpListenerResponse resp, string relativePath, string mimeType)
         {
             try
             {
-                var webDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "web");
-                var filePath = Path.Combine(webDir, fileName);
+                var baseDir = AppDomain.CurrentDomain.BaseDirectory;
+                var filePath = Path.Combine(baseDir, relativePath);
                 
                 if (!File.Exists(filePath))
                 {
+                    Console.WriteLine($"[JeffApi] File not found: {filePath}");
                     resp.StatusCode = 404;
                     resp.Close();
                     return;
@@ -218,7 +242,7 @@ namespace Kinectv1.Api
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[JeffApi] Failed to serve {fileName}: {ex.Message}");
+                Console.WriteLine($"[JeffApi] Failed to serve {relativePath}: {ex.Message}");
                 resp.StatusCode = 500;
             }
             resp.Close();
