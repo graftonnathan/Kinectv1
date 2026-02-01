@@ -1,0 +1,75 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <PlatformTarget>x64</PlatformTarget>
+    <Platforms>x64</Platforms>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <LangVersion>10.0</LangVersion>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <Company>MaggieAI</Company>
+    <Product>MaggieHeadless</Product>
+    <AssemblyTitle>Maggie Headless</AssemblyTitle>
+    <AssemblyProduct>MaggieHeadless</AssemblyProduct>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <NuGetAudit>False</NuGetAudit>
+    <ImplicitUsings>disable</ImplicitUsings>
+  </PropertyGroup>
+
+  <!-- Core files for headless operation (LLM only, no audio/vision) -->
+  <ItemGroup>
+    <Compile Include="HeadlessMaggie.cs" />
+    <Compile Include="App.cs" />
+    <Compile Include="Api\JeffApiServer.cs" />
+    
+    <!-- TTS Stub -->
+    <Compile Include="Services\Tts\TtsServiceStub.cs" />
+    
+    <!-- Settings -->
+    <Compile Include="Settings\AppEnums.cs" />
+    <Compile Include="Settings\AppSettings.cs" />
+    <Compile Include="Settings\IsExternalInit.cs" />
+    <Compile Include="Settings\SettingsPaths.cs" />
+    <Compile Include="Settings\SettingsService.cs" />
+    
+    <!-- LLM Core -->
+    <Compile Include="Services\Llm\ConversationManager.cs" />
+    <Compile Include="Services\Llm\ILlmClient.cs" />
+    <Compile Include="Services\Llm\LlmRouter.cs" />
+    <Compile Include="Services\Llm\LmStudioClient.cs" />
+    <Compile Include="Services\Llm\LmStudioEmbeddingClient.cs" />
+    <Compile Include="Services\Llm\OllamaClient.cs" />
+    <Compile Include="Services\Llm\MemoryManager.cs" />
+    <Compile Include="Services\Llm\MemoryModels.cs" />
+    <Compile Include="Services\Llm\TokenEstimator.cs" />
+    <Compile Include="Services\Llm\VectorStore.cs" />
+    
+    <!-- Transcription (for conversation recall) -->
+    <Compile Include="Services\Transcription\TranscriptRecallModels.cs" />
+    <Compile Include="Services\Transcription\TranscriptRecallService.cs" />
+    <Compile Include="Services\Transcription\TokenBudget.cs" />
+    <Compile Include="Services\Transcription\TranscriptIntent.cs" />
+    <Compile Include="Services\Transcription\TranscriptSegmentIndexModels.cs" />
+    <Compile Include="Services\Transcription\TranscriptSegmentIndexStore.cs" />
+    
+    <!-- Tools -->
+    <Compile Include="Services\Llm\Tools\ILlmTool.cs" />
+    <Compile Include="Services\Llm\Tools\ToolRegistry.cs" />
+    <Compile Include="Services\Llm\Tools\WebSearchTool.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
+    <PackageReference Include="System.Configuration.ConfigurationManager" Version="10.0.2" />
+    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="8.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Settings\default.json" />
+  </ItemGroup>
+</Project>
