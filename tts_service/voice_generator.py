@@ -43,28 +43,54 @@ class MaggieVoiceGenerator:
         if self.voice_design_model is None:
             from qwen_tts import Qwen3TTSModel
             logger.info("Loading VoiceDesign model...")
+            # Use auto device map to enable CPU offloading for layers that don't fit
             self.voice_design_model = Qwen3TTSModel.from_pretrained(
                 "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
-                device_map=self.device,
+                device_map="auto",
                 dtype=self.dtype,
-                attn_implementation="eager"
+                attn_implementation="eager",
+                low_cpu_mem_usage=True
             )
             logger.info("✅ VoiceDesign model loaded")
         return self.voice_design_model
+    
+    def _unload_voice_design_model(self):
+        """Unload VoiceDesign to free GPU memory"""
+        if self.voice_design_model is not None:
+            logger.info("Unloading VoiceDesign model to free memory...")
+            import gc
+            del self.voice_design_model
+            self.voice_design_model = None
+            gc.collect()
+            torch.cuda.empty_cache()
+            logger.info("✅ VoiceDesign model unloaded")
     
     def _load_voice_clone_model(self):
         """Lazy load VoiceClone (Base) model"""
         if self.voice_clone_model is None:
             from qwen_tts import Qwen3TTSModel
             logger.info("Loading VoiceClone (Base) model...")
+            # Use auto device map for CPU offloading
             self.voice_clone_model = Qwen3TTSModel.from_pretrained(
                 "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
-                device_map=self.device,
+                device_map="auto",
                 dtype=self.dtype,
-                attn_implementation="eager"
+                attn_implementation="eager",
+                low_cpu_mem_usage=True
             )
             logger.info("✅ VoiceClone model loaded")
         return self.voice_clone_model
+    
+    def _unload_voice_clone_model(self):
+        """Unload VoiceClone to free GPU memory"""
+        if self.voice_clone_model is not None:
+            logger.info("Unloading VoiceClone model to free memory...")
+            import gc
+            del self.voice_clone_model
+            self.voice_clone_model = None
+            gc.collect()
+            torch.cuda.empty_cache()
+            logger.info("✅ VoiceClone model unloaded")
     
     def create_character_voice(
         self,
@@ -88,15 +114,15 @@ class MaggieVoiceGenerator:
         logger.info(f"Creating character voice: '{name}'")
         logger.info(f"Description: {description[:60]}...")
         
-        # Step 1: Generate reference audio with VoiceDesign
-        vd_model = self._load_voice_design_model()
-        
         voice_dir = self.voices_dir / name
         voice_dir.mkdir(exist_ok=True)
         
         ref_audio_path = voice_dir / "reference.wav"
         
+        # Step 1: Generate reference audio with VoiceDesign
         logger.info("Step 1/3: Generating reference audio with VoiceDesign...")
+        vd_model = self._load_voice_design_model()
+        
         ref_wavs, sr = vd_model.generate_voice_design(
             text=ref_text,
             language=language,
@@ -105,7 +131,11 @@ class MaggieVoiceGenerator:
         sf.write(str(ref_audio_path), ref_wavs[0], sr)
         logger.info(f"✅ Reference audio saved: {ref_audio_path}")
         
+        # Unload VoiceDesign to free memory before loading VoiceClone
+        self._unload_voice_design_model()
+        
         # Step 2: Create reusable voice clone prompt
+        logger.info("Step 2/3: Creating reusable voice clone prompt...")
         base_model = self._load_voice_clone_model()
         
         logger.info("Step 2/3: Creating reusable voice clone prompt...")
@@ -114,6 +144,9 @@ class MaggieVoiceGenerator:
             ref_text=ref_text,
             x_vector_only_mode=False
         )
+        
+        # Unload VoiceClone to free memory
+        self._unload_voice_clone_model()
         
         # Save the prompt
         prompt_path = voice_dir / "voice_prompt.pt"

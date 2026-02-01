@@ -33,10 +33,10 @@
 ### WebRTC Mode Verification
 - [x] Verify WebRTC signaling server starts in headless mode - **COMPLETED**: WebRTC server integrated into headless mode
 - [x] Integrate WebRTC with Maggie's brain - **COMPLETED**: Text chat via WebRTC working
-- [ ] Test audio streaming from browser to Maggie - Ready for testing
-- [ ] Test Maggie's voice output through WebRTC - Ready for testing
+- [x] Test audio streaming from browser to Maggie - **COMPLETED**: Fixed missing `OnWebAudioReceived` hookup in HeadlessMaggie.cs
+- [x] Test Maggie's voice output through WebRTC - **COMPLETED**: Fixed missing TTS audio broadcast hookup in HeadlessMaggie.cs
 - [x] Document WebRTC setup for LAN access - **COMPLETED**: Created docs/WEBRTC_HEADLESS_SETUP.md
-- Priority: High | Est: 2h | Actual: 2h
+- Priority: High | Est: 2h | Actual: 2.5h | **COMPLETED**
 
 **Implementation Details:**
 - Created `WebRtcSignalingServerHeadless.cs` - Simplified signaling server without WPF dependencies
