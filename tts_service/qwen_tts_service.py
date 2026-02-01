@@ -141,18 +141,28 @@ async def text_to_speech(request: TTSRequest):
             # Use voice design mode with free-form description
             logger.info(f"Generating TTS with voice design: '{voice_desc[:50]}...', text='{request.text[:50]}...'")
             
-            # Use instruct parameter with custom voice description
-            # This works reliably with all Qwen3-TTS models
+            # Use voice design mode - creates voice purely from description
+            # This uses the model's voice design capability without a base speaker
             combined_instruct = f"{voice_desc}. {request.instruct or ''}".strip()
-            # Use requested speaker as base voice, default to Serena if not specified
-            base_speaker = request.speaker if request.speaker and request.speaker in SPEAKERS else "Serena"
-            logger.info(f"Voice design: base={base_speaker}, description='{voice_desc[:30]}...'")
-            wavs, sr = tts_model.generate_custom_voice(
-                text=request.text,
-                language=request.language,
-                speaker=base_speaker,  # Use selected base voice
-                instruct=combined_instruct
-            )
+            logger.info(f"Voice design: description='{voice_desc[:40]}...'")
+            
+            try:
+                # Try pure voice design first (no base speaker)
+                wavs, sr = tts_model.generate_voice_design(
+                    text=request.text,
+                    instruct=combined_instruct,
+                    language=request.language
+                )
+            except Exception as e:
+                logger.warning(f"Pure voice design failed ({e}), falling back to base voice + description")
+                # Fallback: use base voice with description as instruct
+                base_speaker = request.speaker if request.speaker and request.speaker in SPEAKERS else "Serena"
+                wavs, sr = tts_model.generate_custom_voice(
+                    text=request.text,
+                    language=request.language,
+                    speaker=base_speaker,
+                    instruct=combined_instruct
+                )
         else:
             # Use predefined speaker
             speaker = request.speaker or current_speaker

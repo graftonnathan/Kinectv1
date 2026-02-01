@@ -529,16 +529,9 @@
                 
                 <!-- Custom Voice Description -->
                 <div class="voice-description" id="voiceDescriptionPanel" style="display: none;">
-                    <label style="font-size: 0.85rem; opacity: 0.8; display: block; margin-bottom: 0.5rem;">Base Voice</label>
-                    <select id="baseVoiceSelect" style="width: 100%; padding: 0.5rem; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; color: #fff; margin-bottom: 1rem;">
-                        <option value="Serena">Serena (Female)</option>
-                        <option value="Vivian">Vivian (Female)</option>
-                        <option value="Ryan">Ryan (Male)</option>
-                        <option value="Aiden">Aiden (Male)</option>
-                    </select>
-                    
                     <label style="font-size: 0.85rem; opacity: 0.8; display: block; margin-bottom: 0.5rem;">Voice Description</label>
-                    <textarea id="voiceDescInput" style="width: 100%; padding: 0.75rem; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; color: #fff; font-size: 0.9rem; resize: vertical; min-height: 80px;" placeholder="Describe how Maggie should speak...">Speak in a cheery relaxing female voice</textarea>
+                    <textarea id="voiceDescInput" style="width: 100%; padding: 0.75rem; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; color: #fff; font-size: 0.9rem; resize: vertical; min-height: 80px;" placeholder="Describe the voice (e.g., 'A cheery female voice with a British accent')...">Speak in a cheery relaxing female voice</textarea>
+                    <p style="font-size: 0.75rem; opacity: 0.6; margin-top: 0.5rem; margin-bottom: 0.5rem;">Describe the voice naturally - the AI will create it from your description.</p>
                     <button id="applyVoiceDesc" style="margin-top: 0.5rem; width: 100%; padding: 0.5rem; background: rgba(233, 69, 96, 0.3); border: 1px solid rgba(233, 69, 96, 0.5); border-radius: 8px; color: #fff; cursor: pointer;">Apply Description</button>
                 </div>
             </div>
@@ -787,12 +780,10 @@
         const voiceSelector = document.getElementById('voiceSelector');
         const voiceDescriptionPanel = document.getElementById('voiceDescriptionPanel');
         const voiceDescInput = document.getElementById('voiceDescInput');
-        const baseVoiceSelect = document.getElementById('baseVoiceSelect');
         const applyVoiceDescBtn = document.getElementById('applyVoiceDesc');
         
         let useVoiceDesign = false;
         let currentVoiceDescription = voiceDescInput.value;
-        let baseVoice = baseVoiceSelect.value;
 
         tabPreset.addEventListener('click', () => {
             tabPreset.classList.add('active');
@@ -862,24 +853,18 @@
             }
         });
 
-        // Handle base voice selection change
-        baseVoiceSelect.addEventListener('change', () => {
-            baseVoice = baseVoiceSelect.value;
-            console.log('Base voice changed to:', baseVoice);
-        });
-
         // Update generateTTS to use voice description when in custom mode
         generateTTS = async function(text, voice = currentVoice) {
             console.log('Generating TTS:', useVoiceDesign ? 'using voice design' : 'using preset', voice);
             try {
                 let requestBody;
                 if (useVoiceDesign && currentVoiceDescription) {
-                    // Custom voice design mode - use description with selected base voice
+                    // Custom voice design mode - pure voice from description
                     requestBody = { 
                         text, 
                         voice_description: currentVoiceDescription, 
-                        language: 'English',
-                        speaker: baseVoice  // Use selected base voice
+                        language: 'English'
+                        // No speaker - creates voice purely from description
                     };
                 } else {
                     // Preset voice mode - use speaker name
