@@ -141,21 +141,15 @@ async def text_to_speech(request: TTSRequest):
             # Use voice design mode with free-form description
             logger.info(f"Generating TTS with voice design: '{voice_desc[:50]}...', text='{request.text[:50]}...'")
             
-            # Check if model supports voice design
-            if hasattr(tts_model, 'generate_voice_design'):
-                wavs, sr = tts_model.generate_voice_design(
-                    text=request.text,
-                    voice_description=voice_desc,
-                    language=request.language
-                )
-            else:
-                # Fallback: use instruct parameter with custom voice description
-                wavs, sr = tts_model.generate_custom_voice(
-                    text=request.text,
-                    language=request.language,
-                    speaker="Serena",  # Base voice
-                    instruct=f"{voice_desc}. {request.instruct or ''}".strip()
-                )
+            # Use instruct parameter with custom voice description
+            # This works reliably with all Qwen3-TTS models
+            combined_instruct = f"{voice_desc}. {request.instruct or ''}".strip()
+            wavs, sr = tts_model.generate_custom_voice(
+                text=request.text,
+                language=request.language,
+                speaker="Serena",  # Base voice
+                instruct=combined_instruct
+            )
         else:
             # Use predefined speaker
             speaker = request.speaker or current_speaker
@@ -186,11 +180,14 @@ async def text_to_speech(request: TTSRequest):
         sf.write(buffer, audio_data, sr, format='WAV')
         buffer.seek(0)
         
+        # Determine speaker name for headers
+        header_speaker = "Custom" if use_voice_design else (request.speaker or current_speaker)
+        
         return StreamingResponse(
             buffer,
             media_type="audio/wav",
             headers={
-                "X-Speaker": speaker,
+                "X-Speaker": header_speaker,
                 "X-Sample-Rate": str(sr),
                 "Content-Disposition": "attachment; filename=speech.wav"
             }
