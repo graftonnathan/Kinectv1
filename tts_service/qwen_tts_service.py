@@ -61,23 +61,39 @@ async def load_model():
         from qwen_tts import Qwen3TTSModel
         
         model_name = os.getenv("QWEN_TTS_MODEL", "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice")
-        device = os.getenv("QWEN_TTS_DEVICE", "cuda:0" if torch.cuda.is_available() else "cpu")
+        
+        # Check CUDA availability
+        cuda_available = torch.cuda.is_available()
+        cuda_device_count = torch.cuda.device_count() if cuda_available else 0
+        
+        if cuda_available:
+            device = os.getenv("QWEN_TTS_DEVICE", "cuda:0")
+            # RTX 2080 needs float32 for stability
+            # float16/bfloat16 can cause CUDA errors
+            dtype = torch.float32
+            logger.info(f"✅ CUDA is available! Found {cuda_device_count} GPU(s)")
+            logger.info(f"   Using device: {device}")
+            logger.info(f"   GPU: {torch.cuda.get_device_name(0)}")
+            logger.info(f"   dtype: {dtype} (float32 for stability)")
+        else:
+            device = "cpu"
+            dtype = torch.float32
+            logger.warning("⚠️  CUDA not available, using CPU (will be slow)")
         
         logger.info(f"Loading Qwen3-TTS model: {model_name}")
-        logger.info(f"Using device: {device}")
         
         tts_model = Qwen3TTSModel.from_pretrained(
             model_name,
             device_map=device,
-            dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+            dtype=dtype,
             attn_implementation="eager"  # Safer default
         )
         
-        logger.info("Qwen3-TTS model loaded successfully")
+        logger.info("✅ Qwen3-TTS model loaded successfully")
         logger.info(f"Available speakers: {list(SPEAKERS.keys())}")
         
     except Exception as e:
-        logger.error(f"Failed to load Qwen3-TTS model: {e}")
+        logger.error(f"❌ Failed to load Qwen3-TTS model: {e}")
         logger.error("TTS will be unavailable until model is loaded")
         tts_model = None
 
