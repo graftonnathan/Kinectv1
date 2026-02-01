@@ -46,6 +46,9 @@ namespace Kinectv1.Voice
         
         // Track connected clients
         private readonly ConcurrentDictionary<string, WebSocket> _clients = new();
+        
+        // Track if WebRTC is active (has connected clients)
+        private static volatile bool _webRtcModeActive = false;
         private readonly ConcurrentDictionary<string, SemaphoreSlim> _clientSendLocks = new();
         private int _clientId = 0;
  
@@ -95,6 +98,8 @@ namespace Kinectv1.Voice
 
         public static int GetCurrentMode()
         {
+            // When WebRTC has active clients, report WebRTC mode regardless of settings
+            if (_webRtcModeActive) return (int)AudioInMode.WebRtcVoice;
             try { return (int)(App.SettingsProvider?.Current?.App?.InputMode ?? AudioInMode.LocalMic); }
             catch { return 0; }
         }
@@ -413,6 +418,15 @@ namespace Kinectv1.Voice
             var id = $"c{Interlocked.Increment(ref _clientId)}";
             _clients[id] = ws;
             _clientSendLocks[id] = new SemaphoreSlim(1, 1);
+            
+            // Activate WebRTC mode when first client connects
+            var wasActive = _webRtcModeActive;
+            _webRtcModeActive = true;
+            if (!wasActive)
+            {
+                Log("[WebRTC] First client connected - activating WebRTC mode");
+                BroadcastModeChange((int)AudioInMode.WebRtcVoice);
+            }
 
             try
             {
@@ -455,6 +469,13 @@ namespace Kinectv1.Voice
                 if (_clientSendLocks.TryRemove(id, out var sendLock))
                     try { sendLock.Dispose(); } catch { }
                 try { ws.Dispose(); } catch { }
+                
+                // Deactivate WebRTC mode when last client disconnects
+                if (_clients.IsEmpty && _webRtcModeActive)
+                {
+                    _webRtcModeActive = false;
+                    Log("[WebRTC] Last client disconnected - deactivating WebRTC mode");
+                }
             }
         }
 
