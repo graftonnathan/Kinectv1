@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Jeff Signal Link</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <style>
+        body { font-family: sans-serif; text-align: center; padding: 50px; background: #1a1a1a; color: #fff; }
+        #qrcode { margin: 30px auto; padding: 20px; background: #fff; display: inline-block; border-radius: 10px; }
+        .link { word-break: break-all; color: #4fc3f7; font-size: 12px; max-width: 600px; margin: 20px auto; }
+    </style>
+</head>
+<body>
+    <h1>🔗 Link Jeff to Signal</h1>
+    <p>Scan this QR code with Signal:</p>
+    <div id="qrcode"></div>
+    <p class="link" id="link"></p>
+    <p><small>Go to Signal → Settings → Linked Devices → Link New Device</small></p>
+    
+    <script>
+        const link = "sgnl://linkdevice?uuid=Tf1vOFtHEiOtYSV9arp1mA%3D%3D&pub_key=BZEDiZETpoMjYfCx7h5DTOxfuQtCofaqDNERsa2x38Nu";
+        document.getElementById("link").textContent = link;
+        new QRCode(document.getElementById("qrcode"), {
+            text: link,
+            width: 256,
+            height: 256,
+            colorDark: "#000000",
+            colorLight: "#ffffff",
+            correctLevel: QRCode.CorrectLevel.M
+        });
+    </script>
+</body>
+</html>

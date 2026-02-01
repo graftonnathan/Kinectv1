@@ -561,10 +561,10 @@
     </footer>
 
     <script>
-        // Configuration
+        // Configuration - use same origin for all APIs (works for localhost and LAN)
         const CONFIG = {
-            maggieApi: window.location.origin.includes('localhost') ? 'http://localhost:18790' : '',
-            ttsApi: window.location.origin.includes('localhost') ? 'http://localhost:7860' : '/tts',
+            maggieApi: '',  // Empty = use same origin (works for both localhost and LAN)
+            ttsApi: '',     // TTS is now proxied through /api/tts
             defaultVoice: 'Serena'
         };
 
@@ -644,10 +644,10 @@
             }
         }
 
-        // Generate TTS audio
+        // Generate TTS audio via Maggie's API (proxied to TTS service)
         async function generateTTS(text, voice = currentVoice) {
             try {
-                const response = await fetch(`${CONFIG.ttsApi}/tts`, {
+                const response = await fetch(`${CONFIG.maggieApi}/api/tts`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ text, speaker: voice, language: 'English' })
@@ -656,6 +656,8 @@
                 if (response.ok) {
                     const audioData = await response.arrayBuffer();
                     return audioData;
+                } else {
+                    console.error('TTS request failed:', response.status);
                 }
             } catch (err) {
                 console.error('TTS error:', err);
@@ -713,12 +715,8 @@
                 option.classList.add('active');
                 currentVoice = option.dataset.voice;
                 
-                // Update on server
-                try {
-                    await fetch(`${CONFIG.ttsApi}/set_voice?speaker=${currentVoice}`, { method: 'POST' });
-                } catch (err) {
-                    console.error('Failed to set voice:', err);
-                }
+                // Voice is set per-request, no server update needed for proxy mode
+                console.log('Voice changed to:', currentVoice);
             });
         });
 
@@ -744,9 +742,8 @@
         async function checkHealth() {
             try {
                 const maggieHealth = await fetch(`${CONFIG.maggieApi}/health`).then(r => r.ok).catch(() => false);
-                const ttsHealth = await fetch(`${CONFIG.ttsApi}/health`).then(r => r.ok).catch(() => false);
                 
-                if (maggieHealth && ttsHealth) {
+                if (maggieHealth) {
                     document.querySelector('.status span').textContent = 'Connected';
                     document.querySelector('.status-dot').style.background = '#4ade80';
                 } else {

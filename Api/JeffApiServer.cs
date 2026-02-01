@@ -1,6 +1,8 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Net;
+using System.Net.Http;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -199,6 +201,29 @@ namespace Kinectv1.Api
                         });
                         break;
 
+                    // TTS proxy endpoints - forward to Qwen3-TTS service
+                    case "/api/tts":
+                        if (req.HttpMethod != "POST")
+                        {
+                            await WriteJson(resp, 405, new { error = "Method not allowed" });
+                            return;
+                        }
+                        await HandleTtsProxy(req, resp);
+                        break;
+
+                    case "/api/tts/speak":
+                        if (req.HttpMethod != "GET")
+                        {
+                            await WriteJson(resp, 405, new { error = "Method not allowed" });
+                            return;
+                        }
+                        await HandleTtsSpeakProxy(req, resp);
+                        break;
+
+                    case "/api/voices":
+                        await HandleVoicesProxy(resp);
+                        break;
+
                     default:
                         await WriteJson(resp, 404, new { error = "Not found" });
                         break;
@@ -242,6 +267,110 @@ namespace Kinectv1.Api
                 received = message,
                 response 
             });
+        }
+
+        private static readonly HttpClient _ttsClient = new HttpClient();
+        private static string _ttsServiceUrl = Environment.GetEnvironmentVariable("MAGGIE_TTS_URL") ?? "http://localhost:7860";
+
+        private static async Task HandleTtsProxy(HttpListenerRequest req, HttpListenerResponse resp)
+        {
+            try
+            {
+                // Read the incoming request body
+                string body;
+                using (var sr = new StreamReader(req.InputStream, req.ContentEncoding))
+                    body = await sr.ReadToEndAsync();
+
+                // Forward to TTS service
+                var content = new StringContent(body, Encoding.UTF8, "application/json");
+                var ttsResponse = await _ttsClient.PostAsync($"{_ttsServiceUrl}/tts", content);
+
+                // Copy response status and headers
+                resp.StatusCode = (int)ttsResponse.StatusCode;
+                resp.ContentType = "audio/wav";
+                
+                // Copy TTS response headers
+                if (ttsResponse.Headers.Contains("X-Speaker"))
+                    resp.Headers.Add("X-Speaker", ttsResponse.Headers.GetValues("X-Speaker").FirstOrDefault());
+                if (ttsResponse.Headers.Contains("X-Sample-Rate"))
+                    resp.Headers.Add("X-Sample-Rate", ttsResponse.Headers.GetValues("X-Sample-Rate").FirstOrDefault());
+
+                // Stream the audio data back
+                var audioData = await ttsResponse.Content.ReadAsByteArrayAsync();
+                await resp.OutputStream.WriteAsync(audioData, 0, audioData.Length);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[JeffApi] TTS proxy error: {ex.Message}");
+                resp.StatusCode = 500;
+                var errorBytes = Encoding.UTF8.GetBytes($"{{\"error\": \"{ex.Message}\"}}");
+                resp.ContentType = "application/json";
+                await resp.OutputStream.WriteAsync(errorBytes, 0, errorBytes.Length);
+            }
+            resp.Close();
+        }
+
+        private static async Task HandleTtsSpeakProxy(HttpListenerRequest req, HttpListenerResponse resp)
+        {
+            try
+            {
+                var text = req.QueryString["text"] ?? "";
+                var speaker = req.QueryString["speaker"] ?? "Serena";
+
+                if (string.IsNullOrWhiteSpace(text))
+                {
+                    await WriteJson(resp, 400, new { error = "Missing 'text' parameter" });
+                    return;
+                }
+
+                // Build request to TTS service
+                var requestObj = new { text, speaker, language = "English" };
+                var json = JsonConvert.SerializeObject(requestObj);
+                var content = new StringContent(json, Encoding.UTF8, "application/json");
+
+                var ttsResponse = await _ttsClient.PostAsync($"{_ttsServiceUrl}/tts", content);
+
+                resp.StatusCode = (int)ttsResponse.StatusCode;
+                resp.ContentType = "audio/wav";
+                resp.Headers.Add("Content-Disposition", "attachment; filename=speech.wav");
+
+                var audioData = await ttsResponse.Content.ReadAsByteArrayAsync();
+                await resp.OutputStream.WriteAsync(audioData, 0, audioData.Length);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[JeffApi] TTS speak proxy error: {ex.Message}");
+                await WriteJson(resp, 500, new { error = ex.Message });
+                return;
+            }
+            resp.Close();
+        }
+
+        private static async Task HandleVoicesProxy(HttpListenerResponse resp)
+        {
+            try
+            {
+                var voicesResponse = await _ttsClient.GetAsync($"{_ttsServiceUrl}/voices");
+                var voicesJson = await voicesResponse.Content.ReadAsStringAsync();
+                
+                resp.StatusCode = (int)voicesResponse.StatusCode;
+                resp.ContentType = "application/json";
+                var bytes = Encoding.UTF8.GetBytes(voicesJson);
+                await resp.OutputStream.WriteAsync(bytes, 0, bytes.Length);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[JeffApi] Voices proxy error: {ex.Message}");
+                // Return default voices if TTS service unavailable
+                var defaultVoices = new[] {
+                    new { name = "Serena", description = "Warm, gentle young female", language = "Chinese" },
+                    new { name = "Vivian", description = "Bright, slightly edgy female", language = "Chinese" },
+                    new { name = "Ryan", description = "Dynamic male voice", language = "English" }
+                };
+                await WriteJson(resp, 200, defaultVoices);
+                return;
+            }
+            resp.Close();
         }
 
         private static async Task WriteJson(HttpListenerResponse resp, int status, object data)
