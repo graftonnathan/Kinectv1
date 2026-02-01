@@ -1,0 +1,10 @@
+{
+  "name": "Maggie_Tech",
+  "description": "Clear, precise female voice with technical confidence. Slightly faster, efficient delivery. Like a brilliant engineer explaining complex systems.",
+  "ref_text": "Analyzing the system architecture. I've identified the bottleneck in the pipeline and have three optimization strategies.",
+  "language": "English",
+  "ref_audio": "voices/Maggie_Tech/reference.wav",
+  "voice_prompt": "voices/Maggie_Tech/voice_prompt.pt",
+  "sample_rate": 24000,
+  "created": "<torch.cuda.Event uninitialized>"
+}

@@ -1,0 +1,10 @@
+{
+  "name": "Maggie_Warm",
+  "description": "Warm, gentle female voice, mid-30s, soft-spoken and caring. American accent with a hint of thoughtfulness. Speak like a helpful friend who genuinely listens.",
+  "ref_text": "Hey there. I'm here to help however I can. What would you like to work on today?",
+  "language": "English",
+  "ref_audio": "voices/Maggie_Warm/reference.wav",
+  "voice_prompt": "voices/Maggie_Warm/voice_prompt.pt",
+  "sample_rate": 24000,
+  "created": "<torch.cuda.Event uninitialized>"
+}

@@ -1,0 +1,10 @@
+{
+  "name": "Maggie_Professional",
+  "description": "Professional female voice, clear articulation, confident but approachable. American accent. Like a skilled executive assistant who gets things done.",
+  "ref_text": "Good day. I've reviewed your schedule and identified three priority items that require attention.",
+  "language": "English",
+  "ref_audio": "voices/Maggie_Professional/reference.wav",
+  "voice_prompt": "voices/Maggie_Professional/voice_prompt.pt",
+  "sample_rate": 24000,
+  "created": "<torch.cuda.Event uninitialized>"
+}

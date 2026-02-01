@@ -23,7 +23,7 @@ class MaggieVoiceGenerator:
     3. Generate: Use prompt to generate consistent speech
     """
     
-    def __init__(self, voices_dir: str = "tts_service/voices"):
+    def __init__(self, voices_dir: str = "voices"):
         self.voices_dir = Path(voices_dir)
         self.voices_dir.mkdir(parents=True, exist_ok=True)
         
@@ -43,10 +43,22 @@ class MaggieVoiceGenerator:
         if self.voice_design_model is None:
             from qwen_tts import Qwen3TTSModel
             logger.info("Loading VoiceDesign model...")
-            # Use auto device map to enable CPU offloading for layers that don't fit
+            # Check available VRAM - use CPU if less than 10GB free
+            import torch
+            if torch.cuda.is_available():
+                free_memory = torch.cuda.mem_get_info()[0] / (1024**3)  # GB
+                logger.info(f"GPU free memory: {free_memory:.2f} GB")
+                if free_memory < 10:
+                    logger.warning("Less than 10GB VRAM available. Using CPU for VoiceDesign (slower but reliable)")
+                    device_map = "cpu"
+                else:
+                    device_map = "auto"
+            else:
+                device_map = "cpu"
+            
             self.voice_design_model = Qwen3TTSModel.from_pretrained(
                 "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
-                device_map="auto",
+                device_map=device_map,
                 dtype=self.dtype,
                 attn_implementation="eager",
                 low_cpu_mem_usage=True
@@ -70,10 +82,22 @@ class MaggieVoiceGenerator:
         if self.voice_clone_model is None:
             from qwen_tts import Qwen3TTSModel
             logger.info("Loading VoiceClone (Base) model...")
-            # Use auto device map for CPU offloading
+            # Check available VRAM - use CPU if less than 8GB free
+            import torch
+            if torch.cuda.is_available():
+                free_memory = torch.cuda.mem_get_info()[0] / (1024**3)  # GB
+                logger.info(f"GPU free memory: {free_memory:.2f} GB")
+                if free_memory < 8:
+                    logger.warning("Less than 8GB VRAM available. Using CPU for VoiceClone (slower but reliable)")
+                    device_map = "cpu"
+                else:
+                    device_map = "auto"
+            else:
+                device_map = "cpu"
+            
             self.voice_clone_model = Qwen3TTSModel.from_pretrained(
                 "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
-                device_map="auto",
+                device_map=device_map,
                 dtype=self.dtype,
                 attn_implementation="eager",
                 low_cpu_mem_usage=True

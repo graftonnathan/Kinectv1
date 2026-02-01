@@ -1,0 +1,10 @@
+{
+  "name": "Maggie_Playful",
+  "description": "Young, energetic female voice with a playful tone. Slightly faster pace, warm enthusiasm. Like a creative collaborator who brings fresh ideas.",
+  "ref_text": "Ooh, this is exciting! Let's figure this out together. I have some ideas!",
+  "language": "English",
+  "ref_audio": "voices/Maggie_Playful/reference.wav",
+  "voice_prompt": "voices/Maggie_Playful/voice_prompt.pt",
+  "sample_rate": 24000,
+  "created": "<torch.cuda.Event uninitialized>"
+}

@@ -1,0 +1,10 @@
+{
+  "name": "Maggie_Calm",
+  "description": "Calm, soothing female voice, slow and measured pace. Meditative quality, very gentle. Like a mindfulness guide or gentle narrator.",
+  "ref_text": "Take a breath with me. There's no rush. We have plenty of time to work through this.",
+  "language": "English",
+  "ref_audio": "voices/Maggie_Calm/reference.wav",
+  "voice_prompt": "voices/Maggie_Calm/voice_prompt.pt",
+  "sample_rate": 24000,
+  "created": "<torch.cuda.Event uninitialized>"
+}
