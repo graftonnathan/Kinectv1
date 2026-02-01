@@ -26,6 +26,29 @@ namespace Kinectv1.Llm
         private bool _disposed;
         private readonly object _initLock = new object();
 
+        // Low latency mode - disables expensive features for faster responses
+        private bool _lowLatencyMode = false;
+        
+        /// <summary>
+        /// Enable low-latency mode which disables expensive operations like:
+        /// - LLM-based summary rewriting on merge
+        /// - Query embedding caching
+        /// - Detailed debug logging
+        /// </summary>
+        public bool LowLatencyMode
+        {
+            get => _lowLatencyMode;
+            set
+            {
+                _lowLatencyMode = value;
+                // Disable embedding cache in low latency mode to save memory
+                if (_embeddingClient != null)
+                {
+                    _embeddingClient.CacheEnabled = !value;
+                }
+            }
+        }
+
         // Chunking configuration (smaller chunks for faster embedding + retrieval)
         private const int TARGET_CHUNK_TOKENS = 300;   // Reduced from 800 for lower latency
         private const int CHUNK_OVERLAP_TOKENS = 50;   // Reduced from 100
@@ -97,6 +120,9 @@ New info to integrate:
             if (settings == null || !settings.VectorMemoryEnabled)
                 return;
 
+            // Apply low latency mode from settings
+            _lowLatencyMode = settings.LowLatencyMode;
+
             var memoryKey = CurrentMemoryKey;
             
             lock (_initLock)
@@ -109,10 +135,12 @@ New info to integrate:
 
                 if (_embeddingClient == null)
                 {
+                    var cacheEnabled = settings.EmbeddingCacheEnabled && !_lowLatencyMode;
                     _embeddingClient = new LmStudioEmbeddingClient(
                         settings.LmStudioBaseUrl,
                         settings.ApiKey,
-                        () => _getSettings()?.EmbeddingsModel
+                        () => _getSettings()?.EmbeddingsModel,
+                        enableCache: cacheEnabled
                     );
                 }
 
@@ -520,7 +548,15 @@ New info to integrate:
             string summary;
             try
             {
-                summary = await GenerateStructuredSummaryAsync(chunk.Text, ct).ConfigureAwait(false);
+                // In low-latency mode, skip LLM-based summary generation
+                if (_lowLatencyMode)
+                {
+                    summary = CreateFallbackSummary(chunk.Text);
+                }
+                else
+                {
+                    summary = await GenerateStructuredSummaryAsync(chunk.Text, ct).ConfigureAwait(false);
+                }
             }
             catch (Exception ex)
             {
@@ -532,12 +568,15 @@ New info to integrate:
                 ? chunk.Speakers 
                 : new[] { speaker ?? "Unknown" };
 
+            // In low-latency mode, skip LLM-based rewrite on merge
+            var rewriteFunc = _lowLatencyMode ? null : RewriteCentroidSummaryAsync;
+
             await vectorStore.AddOrMergeCentroidAsync(
                 embedding,
                 summary,
                 speakers,
                 0.6,
-                RewriteCentroidSummaryAsync
+                rewriteFunc
             ).ConfigureAwait(false);
         }
 

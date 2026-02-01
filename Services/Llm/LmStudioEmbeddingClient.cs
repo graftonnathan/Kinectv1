@@ -17,7 +17,18 @@ namespace Kinectv1.Llm
         private readonly HttpClient _http;
         private readonly string _baseUrl;
         private readonly Func<string> _getModel;
+        private readonly EmbeddingCache _cache;
         private bool _disposed;
+        private bool _cacheEnabled = true;
+
+        /// <summary>
+        /// Enable or disable embedding caching. Default: true.
+        /// </summary>
+        public bool CacheEnabled
+        {
+            get => _cacheEnabled;
+            set => _cacheEnabled = value;
+        }
 
         /// <summary>
         /// Create a new LM Studio embedding client.
@@ -25,26 +36,39 @@ namespace Kinectv1.Llm
         /// <param name="baseUrl">LM Studio base URL (e.g., http://127.0.0.1:1234)</param>
         /// <param name="apiKey">Optional API key</param>
         /// <param name="getModel">Function to get the current embedding model name</param>
-        public LmStudioEmbeddingClient(string baseUrl, string apiKey, Func<string> getModel)
+        /// <param name="enableCache">Enable LRU caching for embeddings (default: true)</param>
+        public LmStudioEmbeddingClient(string baseUrl, string apiKey, Func<string> getModel, bool enableCache = true)
         {
             _baseUrl = (baseUrl ?? "http://127.0.0.1:1234").TrimEnd('/');
             _getModel = getModel ?? (() => "text-embedding-nomic-embed-text-v1.5");
             _http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+            _cacheEnabled = enableCache;
 
             if (!string.IsNullOrWhiteSpace(apiKey))
             {
                 _http.DefaultRequestHeaders.Authorization =
                     new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
             }
+
+            if (enableCache)
+            {
+                _cache = new EmbeddingCache(maxSize: 100, ttlMinutes: 10);
+            }
         }
 
         /// <summary>
-        /// Get embedding vector for a single text.
+        /// Get embedding vector for a single text. Uses LRU cache to avoid redundant API calls.
         /// </summary>
         public async Task<float[]> GetEmbeddingAsync(string text, CancellationToken ct = default)
         {
             if (string.IsNullOrWhiteSpace(text))
                 return Array.Empty<float>();
+
+            // Check cache first
+            if (_cacheEnabled && _cache != null && _cache.TryGet(text, out var cached))
+            {
+                return cached;
+            }
 
             var model = _getModel();
             if (string.IsNullOrWhiteSpace(model))
@@ -70,7 +94,15 @@ namespace Kinectv1.Llm
                 if (embedding == null)
                     throw new InvalidOperationException("No embedding returned from LM Studio");
 
-                return embedding.ToObject<float[]>();
+                var embeddingArray = embedding.ToObject<float[]>();
+                
+                // Store in cache
+                if (_cacheEnabled && _cache != null)
+                {
+                    _cache.Set(text, embeddingArray);
+                }
+                
+                return embeddingArray;
             }
         }
 
@@ -141,11 +173,29 @@ namespace Kinectv1.Llm
             return embedding?.Length ?? 0;
         }
 
+        /// <summary>
+        /// Clear the embedding cache.
+        /// </summary>
+        public void ClearCache()
+        {
+            _cache?.Clear();
+        }
+
+        /// <summary>
+        /// Get cache statistics (count, maxSize, ttl).
+        /// </summary>
+        public (int count, int maxSize, TimeSpan ttl) GetCacheStats()
+        {
+            if (_cache == null) return (0, 0, TimeSpan.Zero);
+            return _cache.GetStats();
+        }
+
         public void Dispose()
         {
             if (!_disposed)
             {
                 _http?.Dispose();
+                _cache?.Clear();
                 _disposed = true;
             }
         }

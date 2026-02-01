@@ -19,7 +19,7 @@ namespace Kinectv1.Settings
         [property: Required] DebugSettings Debug
     );
 
-    // Unified audio settings – removed legacy VadThreshold (RMS gating now derived from VoiceThreshold)
+    // Unified audio settings ï¿½ removed legacy VadThreshold (RMS gating now derived from VoiceThreshold)
     public sealed record AudioSettings(
         [property: Range(0, 1)] double VoiceThreshold,
         [property: Range(1, int.MaxValue)] int BufferSize,
@@ -94,6 +94,7 @@ namespace Kinectv1.Settings
         string ForcedSpeakerId,
         // Vector memory (3-layer: hot/warm/cold)
         bool VectorMemoryEnabled,
+        bool LowLatencyMode, // When true, disables expensive operations like LLM-based summary rewriting
         [property: Range(1000, 128000)] int HotContextTokenLimit,
         [property: Range(100, 4000)] int WarmSummaryTokenLimit,
         [property: Range(200, 4000)] int MemoryContextBudget, // Total tokens allowed for all memory injection
@@ -105,7 +106,13 @@ namespace Kinectv1.Settings
         [property: Range(0.0, 1.0)] double RecencyBoostFactor,
         [property: Range(0.0, 1.0)] double MinRetrievalScore, // Minimum similarity to include a chunk
         // Tool use (web search, etc.)
-        bool ToolsEnabled
+        bool ToolsEnabled,
+        // Maximum tool iterations to prevent loops
+        [property: Range(0, 10)] int ToolIterationsMax,
+        // Embedding cache settings for latency optimization
+        bool EmbeddingCacheEnabled,
+        [property: Range(10, 1000)] int EmbeddingCacheSize,
+        [property: Range(1, 60)] int EmbeddingCacheTtlMinutes
     );
 
     // New: Discord settings for bot configuration
