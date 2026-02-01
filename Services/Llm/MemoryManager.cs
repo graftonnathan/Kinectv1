@@ -569,7 +569,7 @@ New info to integrate:
                 : new[] { speaker ?? "Unknown" };
 
             // In low-latency mode, skip LLM-based rewrite on merge
-            var rewriteFunc = _lowLatencyMode ? null : RewriteCentroidSummaryAsync;
+            Func<string, string, Task<string>> rewriteFunc = _lowLatencyMode ? null : RewriteCentroidSummaryAsync;
 
             await vectorStore.AddOrMergeCentroidAsync(
                 embedding,

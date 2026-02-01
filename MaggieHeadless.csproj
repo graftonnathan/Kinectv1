@@ -40,6 +40,7 @@
     
     <!-- LLM Core -->
     <Compile Include="Services\Llm\ConversationManager.cs" />
+    <Compile Include="Services\Llm\EmbeddingCache.cs" />
     <Compile Include="Services\Llm\ILlmClient.cs" />
     <Compile Include="Services\Llm\LlmRouter.cs" />
     <Compile Include="Services\Llm\LmStudioClient.cs" />
