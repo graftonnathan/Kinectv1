@@ -57,6 +57,22 @@
     <Compile Include="Services\Transcription\TranscriptIntent.cs" />
     <Compile Include="Services\Transcription\TranscriptSegmentIndexModels.cs" />
     <Compile Include="Services\Transcription\TranscriptSegmentIndexStore.cs" />
+    <Compile Include="Services\Transcription\TranscriptionService.cs" />
+    <Compile Include="Services\Transcription\SpeakerDiarizer.cs" />
+    
+    <!-- Voice Recognition (Vosk STT) -->
+    <Compile Include="Services\Voice\VoiceRecognizer.cs" />
+    <Compile Include="Services\Voice\NormalizedAudioFrame.cs" />
+    <Compile Include="Services\Voice\AudioDeviceManager.cs" />
+    <Compile Include="Services\Voice\AudioUtils.cs" />
+    <Compile Include="Services\Audio\AudioPreprocessor.cs" />
+    
+    <!-- Speaker recognition -->
+    <Compile Include="Services\Speaker\SpeakerEmbedder.cs" />
+    <Compile Include="Services\Speaker\SpeakerEmbeddingFrame.cs" />
+    <Compile Include="Services\Speaker\SpeakerIdentifier.cs" />
+    <Compile Include="Services\Speaker\VoiceEnrollmentManager.cs" />
+    <Compile Include="Services\Speaker\WordAlignedEmbedder.cs" />
     
     <!-- Tools -->
     <Compile Include="Services\Llm\Tools\ILlmTool.cs" />
@@ -68,6 +84,9 @@
     <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
     <PackageReference Include="System.Configuration.ConfigurationManager" Version="10.0.2" />
     <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="8.0.0" />
+    <PackageReference Include="NAudio" Version="2.2.1" />
+    <PackageReference Include="Vosk" Version="0.3.38" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.22.1" />
   </ItemGroup>
 
   <ItemGroup>

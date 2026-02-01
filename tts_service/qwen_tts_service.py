@@ -65,7 +65,8 @@ async def load_model():
     try:
         from qwen_tts import Qwen3TTSModel
         
-        model_name = os.getenv("QWEN_TTS_MODEL", "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice")
+        # Use VoiceDesign model for custom voice creation, fallback to CustomVoice
+        model_name = os.getenv("QWEN_TTS_MODEL", "Qwen/Qwen3-TTS-12Hz-0.6B-VoiceDesign")
         
         # Check CUDA availability
         cuda_available = torch.cuda.is_available()

@@ -42,6 +42,9 @@
 ### Performance
 - [x] **Optimize for lower response latency** - COMPLETED: Disabled query rewrite (500ms-2s savings), increased chunk size 150→500, reduced SEARCH_TOP_K 20→10, tuned memory settings. See `docs/latency-optimization-report.md` | Priority: High | Est: 3h | Actual: 2h
 - [ ] Profile memory usage during long conversations
+
+### Voice Design
+- [ ] **Fix pure voice design** - Currently falling back to base voice because 0.6B CustomVoice model doesn't support generate_voice_design(). Need to either switch to VoiceDesign model, load both models, or find alternative approach | Priority: High | Est: 2h
 - [ ] Optimize vector memory search speed
 - [ ] Add conversation archiving for old sessions
 
