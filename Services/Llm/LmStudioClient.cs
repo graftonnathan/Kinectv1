@@ -37,7 +37,7 @@ namespace Kinectv1.Llm
                 stream = true,
                 temperature = 0.7,
                 top_p = 0.9,
-                max_tokens = 1024
+                max_tokens = 2048
             };
 
             var json = JsonConvert.SerializeObject(reqObj);

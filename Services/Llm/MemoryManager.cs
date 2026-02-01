@@ -26,14 +26,14 @@ namespace Kinectv1.Llm
         private bool _disposed;
         private readonly object _initLock = new object();
 
-        // Chunking configuration (larger chunks for better context)
-        private const int TARGET_CHUNK_TOKENS = 800;
-        private const int CHUNK_OVERLAP_TOKENS = 100;
+        // Chunking configuration (smaller chunks for faster embedding + retrieval)
+        private const int TARGET_CHUNK_TOKENS = 300;   // Reduced from 800 for lower latency
+        private const int CHUNK_OVERLAP_TOKENS = 50;   // Reduced from 100
 
-        // Search configuration (retrieve more, inject based on budget)
-        private const int SEARCH_TOP_K = 10;       // Reduced from 20 - we only inject 8 anyway
-        private const int INJECT_TOP_K = 8;        // Inject up to this many
-        private const double MIN_SCORE_FLOOR = 0.40; // Low floor, rely on ranking
+        // Search configuration (optimized for speed)
+        private const int SEARCH_TOP_K = 5;        // Reduced from 10 for faster search
+        private const int INJECT_TOP_K = 4;        // Reduced from 8 - fewer chunks = faster processing
+        private const double MIN_SCORE_FLOOR = 0.50; // Higher floor = fewer low-quality results
 
         // Structured summary prompt with entity anchors
         private const string SUMMARIZE_SYSTEM_PROMPT = @"You are a memory summarization assistant. Create a structured summary with:
