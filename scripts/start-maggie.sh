@@ -29,17 +29,18 @@ check_tts() {
 
 # Setup Python virtual environment for TTS
 setup_venv() {
-    if [ ! -d "${SCRIPT_DIR}/tts_service/venv" ]; then
+    local TTS_DIR="${SCRIPT_DIR}/../tts_service"
+    if [ ! -d "${TTS_DIR}/venv" ]; then
         echo -e "${YELLOW}📦 Creating Python virtual environment for TTS...${NC}"
-        cd "${SCRIPT_DIR}/tts_service"
+        cd "${TTS_DIR}"
         python3 -m venv venv
         echo -e "${GREEN}✅ Virtual environment created${NC}"
     fi
     
     # Check if dependencies are installed
-    if ! "${SCRIPT_DIR}/tts_service/venv/bin/python" -c "import qwen_tts" 2>/dev/null; then
+    if ! "${TTS_DIR}/venv/bin/python" -c "import qwen_tts" 2>/dev/null; then
         echo -e "${YELLOW}📦 Installing Qwen3-TTS dependencies (this may take a few minutes)...${NC}"
-        "${SCRIPT_DIR}/tts_service/venv/bin/pip" install -q qwen-tts soundfile numpy fastapi uvicorn
+        "${TTS_DIR}/venv/bin/pip" install -q qwen-tts soundfile numpy fastapi uvicorn
         echo -e "${GREEN}✅ Dependencies installed${NC}"
     fi
 }
@@ -58,7 +59,8 @@ start_tts() {
     setup_venv
     
     # Start TTS service in background using venv
-    cd "${SCRIPT_DIR}/tts_service"
+    local TTS_DIR="${SCRIPT_DIR}/../tts_service"
+    cd "${TTS_DIR}"
     QWEN_TTS_DEVICE="cuda:0" QWEN_TTS_MODEL="Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice" \
         ./venv/bin/python qwen_tts_service.py > /tmp/maggie-tts.log 2>&1 &
     TTS_PID=$!
@@ -114,5 +116,5 @@ echo -e "${GREEN}═════════════════════
 echo ""
 
 # Start Maggie
-cd "$SCRIPT_DIR"
+cd "$SCRIPT_DIR/.."
 exec dotnet run --project MaggieHeadless.csproj
