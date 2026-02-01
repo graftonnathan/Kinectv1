@@ -454,7 +454,7 @@ namespace Kinectv1.Voice
 
         private void OnTtsCancelled()
         {
-            if (GetCurrentMode() != 3 && !IsWebRtcActive) return;
+            if (GetCurrentMode() != 2 && !IsWebRtcActive) return;
             _ttsSpeaking = false;
             _ttsEndTime = DateTime.UtcNow;
             Broadcast(new { type = "tts_stop" });
@@ -462,7 +462,7 @@ namespace Kinectv1.Voice
 
         private void OnPartial(string text)
         {
-            if (GetCurrentMode() != 3) return;
+            if (GetCurrentMode() != 2) return;
             Broadcast(new { type = "partial", text });
         }
 
@@ -483,14 +483,14 @@ namespace Kinectv1.Voice
         private string _buffer = "";
         private void OnChunk(string chunk)
         {
-            if (GetCurrentMode() != 3 && !IsWebRtcActive) return;
+            if (GetCurrentMode() != 2 && !IsWebRtcActive) return;
             _buffer += chunk;
             Broadcast(new { type = "response_chunk", text = _buffer });
         }
 
         private void OnResponse(string response)
         {
-            if (GetCurrentMode() != 3 && !IsWebRtcActive) return;
+            if (GetCurrentMode() != 2 && !IsWebRtcActive) return;
             _buffer = "";
 
             if (!string.IsNullOrWhiteSpace(response))
@@ -507,7 +507,7 @@ namespace Kinectv1.Voice
 
         private void OnSpeakerIdentified(string speaker, string text)
         {
-            if (GetCurrentMode() != 3 && !IsWebRtcActive) return;
+            if (GetCurrentMode() != 2 && !IsWebRtcActive) return;
             Broadcast(new { type = "transcription_diarized", speaker, text });
         }
 
@@ -517,7 +517,7 @@ namespace Kinectv1.Voice
             _lastTtsAudioTime = DateTime.UtcNow;
             
             var currentMode = GetCurrentMode();
-            if (currentMode != 3 && !IsWebRtcActive) return;
+            if (currentMode != 2 && !IsWebRtcActive) return;
             if (pcmData == null || pcmData.Length == 0) return;
             if (_clients.Count == 0) return;
             
