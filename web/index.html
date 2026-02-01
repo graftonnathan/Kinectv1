@@ -552,6 +552,7 @@
                     <span>Maggie is speaking...</span>
                 </div>
                 <div id="statusText" style="font-size: 0.85rem; opacity: 0.7;">Ready</div>
+                <button id="testTtsBtn" style="margin-top: 10px; width: 100%; padding: 8px; background: rgba(233, 69, 96, 0.2); border: 1px solid rgba(233, 69, 96, 0.5); border-radius: 8px; color: #fff; cursor: pointer;">🎙️ Test Voice</button>
             </div>
         </aside>
     </main>
@@ -646,6 +647,7 @@
 
         // Generate TTS audio via Maggie's API (proxied to TTS service)
         async function generateTTS(text, voice = currentVoice) {
+            console.log('Generating TTS for:', text.substring(0, 50) + '...');
             try {
                 const response = await fetch(`${CONFIG.maggieApi}/api/tts`, {
                     method: 'POST',
@@ -655,9 +657,11 @@
                 
                 if (response.ok) {
                     const audioData = await response.arrayBuffer();
+                    console.log('TTS received, audio size:', audioData.byteLength);
                     return audioData;
                 } else {
-                    console.error('TTS request failed:', response.status);
+                    const errorText = await response.text();
+                    console.error('TTS request failed:', response.status, errorText);
                 }
             } catch (err) {
                 console.error('TTS error:', err);
@@ -755,6 +759,20 @@
                 document.querySelector('.status-dot').style.background = '#ef4444';
             }
         }
+
+        // Test TTS button
+        document.getElementById('testTtsBtn').addEventListener('click', async () => {
+            initAudio();
+            statusText.textContent = 'Testing voice...';
+            const testText = `Hello Nathan, I am Maggie. This is my voice test with ${currentVoice}.`;
+            const audioData = await generateTTS(testText, currentVoice);
+            if (audioData) {
+                await playAudio(audioData);
+                statusText.textContent = 'Voice test complete';
+            } else {
+                statusText.textContent = 'Voice test failed - check console';
+            }
+        });
 
         checkHealth();
         setInterval(checkHealth, 30000);
