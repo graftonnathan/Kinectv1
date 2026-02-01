@@ -420,6 +420,10 @@ namespace Kinectv1.Voice
             }
         }
 
+        // Static flag to track transcription mode state (accessible from HeadlessMaggie)
+        private static volatile bool _transcriptionModeEnabled = false;
+        public static bool IsTranscriptionModeEnabled => _transcriptionModeEnabled;
+
         private async Task HandleTranscriptionToggle(HttpListenerRequest req, HttpListenerResponse res)
         {
             try
@@ -429,7 +433,10 @@ namespace Kinectv1.Voice
                 dynamic data = JsonConvert.DeserializeObject(body);
                 bool enabled = (bool)data.enabled;
 
-                // Broadcast to all clients (settings persistence handled by caller)
+                // Store the transcription mode state
+                _transcriptionModeEnabled = enabled;
+
+                // Broadcast to all clients
                 Broadcast(new { type = "transcription_mode", enabled });
                 Serve(res, JsonConvert.SerializeObject(new { success = true, enabled }), "application/json");
                 Log($"[WebRTC] Transcription mode toggled: {enabled}");

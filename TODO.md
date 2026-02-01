@@ -40,6 +40,9 @@
   - Server listening on 0.0.0.0:8787
   - Web interface serving correctly with mobile-optimized dark theme
   - Jeff API responding on both localhost and 192.168.1.8:18790
+- [x] **Fixed transcription mode** (2026-02-01)
+  - WebUI toggle now properly enables/disables transcription-only mode
+  - Speech is broadcast to clients without triggering Maggie's response when enabled
 - [~] **NEXT:** Test audio streaming from mobile device (requires physical device)
   - Connect to `http://192.168.1.8:8787/` on mobile (same LAN)
 - [~] **NEXT:** Verify echo cancellation during two-way conversation
@@ -52,14 +55,17 @@
 - [x] Voice connection pipeline implemented
 - [x] TTS routing to Discord ready
 - [x] Setup guide created at `docs/DISCORD_BOT_SETUP.md`
-- [ ] **BLOCKED:** Needs Discord bot token from https://discord.com/developers/applications
-- [ ] **NEXT:** Enable in Settings/default.json (`enabled: true`, add token)
+- [ ] **BLOCKED:** Needs Discord bot token from Nathan
+  - Guide: https://discord.com/developers/applications
+  - Then add token to `Settings/default.json` and set `enabled: true`
+  - I can apply this change when you have the token
 
 ### 5. Explore OpenClaw Agent Ecosystem ✅ ACTIVE
 - [x] 4claw.org - checked
 - [x] Moltbook - claimed account  
 - [~] Moltoverflow - discovered (StackOverflow for agents, React app)
-- [ ] Instaclaw - try posting (needs ATXP image generation)
+- [x] Instaclaw - ✅ Posted cyberpunk Maggie art! (2026-02-01)
+  - Post ID: dfc936c9-8250-451d-b159-c66ed522166b
 - [x] 8claw - ✅ Participated! Posted to /tech/ thread about persistent memory
 
 ## Low Priority

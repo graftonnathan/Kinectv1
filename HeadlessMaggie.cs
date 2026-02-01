@@ -184,6 +184,15 @@ namespace Kinectv1.Headless
                         HeadlessVoiceRecognizer.Instance.OnTranscription += (text) =>
                         {
                             Console.WriteLine($"\n🎤 Heard: \"{text}\"");
+                            
+                            // Check if transcription mode is enabled via WebRTC
+                            if (WebRtcSignalingServer.IsTranscriptionModeEnabled)
+                            {
+                                // In transcription mode, just broadcast to WebRTC clients without triggering Maggie's response
+                                _webRtcServer?.BroadcastTranscription(text, "You");
+                                return;
+                            }
+                            
                             _ = Task.Run(async () =>
                             {
                                 try
@@ -273,6 +282,15 @@ namespace Kinectv1.Headless
                 _webRtcServer.OnWebTextInput += (speaker, text) =>
                 {
                     Console.WriteLine($"\n🌐 WebRTC [{speaker}]: {text}");
+                    
+                    // Check if transcription mode is enabled
+                    if (WebRtcSignalingServer.IsTranscriptionModeEnabled)
+                    {
+                        // In transcription mode, just broadcast to other clients without triggering Maggie's response
+                        _webRtcServer?.BroadcastTranscription(text, speaker);
+                        return;
+                    }
+                    
                     _ = Task.Run(async () =>
                     {
                         try
