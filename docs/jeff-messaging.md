@@ -109,12 +109,17 @@ Api.JeffApiServer.OnChatRequest += async (message) =>
 Added case for `jeff_message`:
 ```javascript
 case 'jeff_message':
-    if (msg.text) {
+    // Skip during transcription mode to avoid cluttering the transcript
+    if (msg.text && !transcriptionMode) {
         addMsg(msg.text, 'jeff', msg.speaker || 'Jeff');
         console.log('[WS] Jeff message received:', msg.text);
+    } else if (transcriptionMode) {
+        console.log('[WS] Jeff message skipped (transcription mode)');
     }
     break;
 ```
+
+**Note:** Jeff messages are automatically disabled during transcription mode to avoid cluttering the transcript.
 
 #### client.js - Deduplication
 ```javascript
@@ -196,6 +201,15 @@ Direct endpoint for queuing Jeff messages.
 - **Duration**: 10 seconds
 - **Purpose**: Allows multiple clients to receive messages via polling
 - **Location**: `JeffApiServer.cs` - `MessageRetentionMs`
+
+### Transcription Mode Behavior
+When Maggie is in **Transcription Mode** (live captioning):
+- Jeff messages are **not displayed** in the chat window
+- WebSocket broadcasts are ignored
+- HTTP polling is skipped
+- Messages are logged to console instead: `[Jeff] Polling skipped (transcription mode)`
+
+This prevents Jeff's messages from cluttering the live transcription stream.
 
 ### Polling Interval
 - **Interval**: 2000ms (2 seconds)

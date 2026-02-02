@@ -938,9 +938,12 @@ function connect() {
                 
             case 'jeff_message':
                 // Jeff message received via WebSocket - display immediately
-                if (msg.text) {
+                // Skip during transcription mode to avoid cluttering the transcript
+                if (msg.text && !transcriptionMode) {
                     addMsg(msg.text, 'jeff', msg.speaker || 'Jeff');
                     console.log('[WS] Jeff message received:', msg.text);
+                } else if (transcriptionMode) {
+                    console.log('[WS] Jeff message skipped (transcription mode)');
                 }
                 break;
                 
@@ -1446,6 +1449,12 @@ function pollJeffMessages() {
     // Skip if chat not initialized yet
     if (!chat) {
         console.log('[Jeff] Chat not ready, skipping poll');
+        return;
+    }
+    
+    // Skip during transcription mode
+    if (transcriptionMode) {
+        console.log('[Jeff] Polling skipped (transcription mode)');
         return;
     }
     
