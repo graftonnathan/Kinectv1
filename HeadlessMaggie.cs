@@ -248,6 +248,10 @@ namespace Kinectv1.Headless
                     Api.JeffApiServer.OnChatRequest += async (message) =>
                     {
                         Console.WriteLine($"\n📨 Jeff: {message}");
+                        // Queue for web UI polling (backup)
+                        Api.JeffApiServer.QueueJeffMessage(message);
+                        // Broadcast immediately via WebSocket for instant display
+                        Kinectv1.Voice.WebRtcSignalingServer.BroadcastJeffMessage(message);
                         return await ProcessChatMessage("Jeff", message, true);
                     };
                     

@@ -31,6 +31,9 @@ namespace Kinectv1.Api
             public string Text { get; set; }
             public long Timestamp { get; set; } = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         }
+        
+        // Simple retention: keep messages for 10 seconds before removing
+        private const int MessageRetentionMs = 10000;
 
         public static bool IsRunning => _listener?.IsListening ?? false;
 
@@ -104,6 +107,24 @@ namespace Kinectv1.Api
             try { _listener?.Close(); } catch { }
             _listener = null;
             Console.WriteLine("🌐 Jeff API server stopped");
+        }
+
+        /// <summary>
+        /// Queue a message from Jeff for display in the web UI.
+        /// Called by HeadlessMaggie when Jeff sends a message to Maggie.
+        /// </summary>
+        public static void QueueJeffMessage(string message)
+        {
+            if (string.IsNullOrWhiteSpace(message)) return;
+            
+            var jeffMsg = new JeffMessage { Text = message };
+            _jeffMessages.Enqueue(jeffMsg);
+            
+            // Trim old messages
+            while (_jeffMessages.Count > MaxJeffMessages)
+            {
+                _jeffMessages.TryDequeue(out _);
+            }
         }
 
         private static async Task RunLoop(CancellationToken ct)
@@ -274,17 +295,7 @@ namespace Kinectv1.Api
                 return;
             }
 
-            // If Jeff is speaking, queue his message for web UI display
-            if (speaker.Equals("Jeff", StringComparison.OrdinalIgnoreCase))
-            {
-                var jeffMsg = new JeffMessage { Text = message };
-                _jeffMessages.Enqueue(jeffMsg);
-                while (_jeffMessages.Count > MaxJeffMessages)
-                {
-                    _jeffMessages.TryDequeue(out _);
-                }
-            }
-
+            // Notify that a chat was received
             OnChatReceived?.Invoke(speaker, message);
 
             string response = null;
@@ -341,9 +352,12 @@ namespace Kinectv1.Api
 
         private static async Task HandleGetJeffMessages(HttpListenerResponse resp)
         {
-            // Return all messages and clear the queue (simple polling approach)
-            var messages = _jeffMessages.ToArray();
-            _jeffMessages.Clear();
+            var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var cutoff = now - MessageRetentionMs;
+            
+            // Return all messages newer than retention period (10 seconds)
+            // All clients polling within this window will see the messages
+            var messages = _jeffMessages.Where(m => m.Timestamp > cutoff).ToArray();
             
             await WriteJson(resp, 200, new { 
                 messages,

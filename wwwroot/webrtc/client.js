@@ -152,9 +152,11 @@ function addMsg(text, type, speaker) {
     var div = document.createElement('div');
     div.className = 'msg ' + type;
     
-    // For transcription messages, show speaker label
-    if (type === 'transcription' && speaker) {
+    // For transcription and Jeff messages, show speaker label
+    if ((type === 'transcription' || type === 'jeff') && speaker) {
         div.innerHTML = '<strong>' + escapeHtml(speaker) + ':</strong> ' + escapeHtml(text);
+    } else if (type === 'jeff') {
+        div.innerHTML = '<strong>Jeff:</strong> ' + escapeHtml(text);
     } else {
         div.textContent = text;
     }
@@ -934,6 +936,14 @@ function connect() {
                 }
                 break;
                 
+            case 'jeff_message':
+                // Jeff message received via WebSocket - display immediately
+                if (msg.text) {
+                    addMsg(msg.text, 'jeff', msg.speaker || 'Jeff');
+                    console.log('[WS] Jeff message received:', msg.text);
+                }
+                break;
+                
             case 'tts_audio':
                 if (msg.data && !transcriptionMode) {
                     playTtsAudio(msg.data, msg.sampleRate || 24000);
@@ -1303,6 +1313,12 @@ function init() {
             setStatus('Connecting...', 'warn');
             connect();
         });
+    
+    // Start polling for Jeff messages after init completes
+    if (!jeffPollIntervalId) {
+        jeffPollIntervalId = setInterval(pollJeffMessages, JEFF_POLL_INTERVAL_MS);
+        console.log('[Jeff] Polling started');
+    }
 }
 
 // Handle tap on status indicator to force reconnect
@@ -1419,21 +1435,67 @@ function sendImageFile(file) {
     reader.readAsDataURL(file);
 }
 
-// Jeff message polling (same origin to avoid mixed content issues)
+// Jeff message polling (via Maggie's proxy to avoid mixed content)
 var JEFF_POLL_INTERVAL_MS = 2000;
 var jeffPollUrl = '/api/jeff/messages';
 
+// Track displayed Jeff message IDs to prevent duplicates
+var _displayedJeffMessageIds = new Set();
+
 function pollJeffMessages() {
+    // Skip if chat not initialized yet
+    if (!chat) {
+        console.log('[Jeff] Chat not ready, skipping poll');
+        return;
+    }
+    
     fetch(jeffPollUrl)
         .then(function(response) {
             if (response.ok) return response.json();
             throw new Error('Jeff API error: ' + response.status);
         })
         .then(function(data) {
+            console.log('[Jeff] Poll response:', data);
             if (data.messages && data.messages.length > 0) {
+                console.log('[Jeff] Found', data.messages.length, 'messages');
+                var newMessages = 0;
+                // Track unique messages in this poll to prevent duplicates within same response
+                var seenInThisPoll = new Set();
                 data.messages.forEach(function(msg) {
-                    addMsg(msg.Text, 'jeff');
+                    // Get message ID (handle both PascalCase and camelCase)
+                    var msgId = msg.Id || msg.id;
+                    var timestamp = msg.Timestamp || msg.timestamp;
+                    var text = msg.Text || msg.text;
+                    
+                    // Create unique key (ID + timestamp, or text+timestamp if no ID)
+                    var uniqueKey = msgId ? (msgId + '_' + timestamp) : (text + '_' + timestamp);
+                    
+                    // Skip if already displayed globally
+                    if (msgId && _displayedJeffMessageIds.has(msgId)) {
+                        console.log('[Jeff] Skipping already-displayed message:', msgId);
+                        return;
+                    }
+                    
+                    // Skip if seen in this poll (prevents duplicates within same response)
+                    if (seenInThisPoll.has(uniqueKey)) {
+                        console.log('[Jeff] Skipping duplicate within poll:', uniqueKey);
+                        return;
+                    }
+                    seenInThisPoll.add(uniqueKey);
+                    
+                    // Mark as displayed globally
+                    if (msgId) {
+                        _displayedJeffMessageIds.add(msgId);
+                    }
+                    
+                    console.log('[Jeff] Processing message:', msg, 'text=', text);
+                    if (text) {
+                        addMsg(text, 'jeff', 'Jeff');
+                        newMessages++;
+                        console.log('[Jeff] Added message to chat:', text);
+                    }
                 });
+                console.log('[Jeff] Displayed', newMessages, 'new messages');
             }
         })
         .catch(function(err) {
@@ -1442,8 +1504,8 @@ function pollJeffMessages() {
         });
 }
 
-// Start polling for Jeff messages
-setInterval(pollJeffMessages, JEFF_POLL_INTERVAL_MS);
+// Start polling for Jeff messages (will be called after init)
+var jeffPollIntervalId = null;
 
 // Initialize when DOM is ready
 if (document.readyState === 'loading') {

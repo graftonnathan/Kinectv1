@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Net;
+using System.Net.Http;
 using System.Net.WebSockets;
 using System.Text;
 using System.Threading;
@@ -70,6 +71,16 @@ namespace Kinectv1.Voice
         {
             if (_instance == null) return;
             _instance?.Broadcast(new { type = "status", mode });
+        }
+        
+        /// <summary>
+        /// Broadcast a Jeff message to all connected WebRTC clients immediately.
+        /// This ensures Jeff's messages appear instantly without waiting for polling.
+        /// </summary>
+        public static void BroadcastJeffMessage(string message)
+        {
+            if (_instance == null) return;
+            _instance?.Broadcast(new { type = "jeff_message", text = message, speaker = "Jeff" });
         }
 
         private string ReadWebFile(string filename)
@@ -394,6 +405,12 @@ namespace Kinectv1.Voice
                         else
                             ServeError(res, 405, "Method not allowed");
                         break;
+                    case "/api/jeff/messages":
+                        if (req.HttpMethod == "GET")
+                            await ProxyJeffMessages(res);
+                        else
+                            ServeError(res, 405, "Method not allowed");
+                        break;
                     default:
                         ServeError(res, 404, "Not found");
                         break;
@@ -470,6 +487,23 @@ namespace Kinectv1.Voice
                 Serve(res, JsonConvert.SerializeObject(new { error = msg }), "application/json");
             }
             catch { }
+        }
+
+        private static readonly HttpClient _jeffHttpClient = new HttpClient();
+
+        private async Task ProxyJeffMessages(HttpListenerResponse res)
+        {
+            try
+            {
+                var jeffResponse = await _jeffHttpClient.GetAsync("http://localhost:18790/api/jeff/messages");
+                var content = await jeffResponse.Content.ReadAsStringAsync();
+                res.StatusCode = (int)jeffResponse.StatusCode;
+                Serve(res, content, "application/json");
+            }
+            catch (Exception ex)
+            {
+                ServeError(res, 500, "Jeff API error: " + ex.Message);
+            }
         }
 
         private void Log(string msg) { try { OnLog?.Invoke(msg); } catch { } }

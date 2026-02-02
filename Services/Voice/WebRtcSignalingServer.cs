@@ -51,6 +51,21 @@ namespace Kinectv1.Voice
             Console.WriteLine($"[WebRTC] Broadcasting mode change: {mode} to {_instance._clients.Count} clients");
             _instance?.Broadcast(new { type = "status", mode });
         }
+        
+        /// <summary>
+        /// Broadcast a Jeff message to all connected WebRTC clients immediately.
+        /// This ensures Jeff's messages appear instantly without waiting for polling.
+        /// </summary>
+        public static void BroadcastJeffMessage(string message)
+        {
+            if (_instance == null)
+            {
+                Console.WriteLine($"[WebRTC] BroadcastJeffMessage skipped - server not started yet");
+                return;
+            }
+            Console.WriteLine($"[WebRTC] Broadcasting Jeff message to {_instance._clients.Count} clients");
+            _instance?.Broadcast(new { type = "jeff_message", text = message, speaker = "Jeff" });
+        }
 
         private readonly ConcurrentDictionary<string, WebSocket> _clients = new();
         private readonly ConcurrentDictionary<string, SemaphoreSlim> _clientSendLocks = new();
