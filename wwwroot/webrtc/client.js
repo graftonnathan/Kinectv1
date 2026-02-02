@@ -1219,6 +1219,9 @@ function init() {
         };
     }
 
+    // Settings menu
+    initSettingsMenu();
+
     // Allow tapping status indicator to force reconnect
     var statusEl = document.getElementById('status');
     if (statusEl) {
@@ -1511,6 +1514,202 @@ function pollJeffMessages() {
             // Silently fail - Jeff messages are optional
             console.log('[Jeff] Poll error:', err.message);
         });
+}
+
+// Settings Menu Functions
+function initSettingsMenu() {
+    var settingsBtn = document.getElementById('settingsBtn');
+    var closeSettings = document.getElementById('closeSettings');
+    var settingsPanel = document.getElementById('settingsPanel');
+    
+    // Open settings
+    if (settingsBtn) {
+        settingsBtn.ontouchend = function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            openSettings();
+        };
+        settingsBtn.onclick = function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            openSettings();
+        };
+    }
+    
+    // Close settings
+    if (closeSettings) {
+        closeSettings.ontouchend = function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            closeSettingsPanel();
+        };
+        closeSettings.onclick = function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            closeSettingsPanel();
+        };
+    }
+    
+    // Close when clicking outside
+    document.addEventListener('click', function(e) {
+        if (settingsPanel && settingsPanel.classList.contains('open')) {
+            if (!settingsPanel.contains(e.target) && e.target !== settingsBtn) {
+                closeSettingsPanel();
+            }
+        }
+    });
+    
+    // Initialize voice select
+    initVoiceSelect();
+    
+    // Initialize DSP toggles
+    initDspToggles();
+    
+    // Initialize barge-in toggle
+    initBargeInToggle();
+    
+    // Initialize gain slider
+    initGainSlider();
+}
+
+function openSettings() {
+    var panel = document.getElementById('settingsPanel');
+    if (panel) {
+        panel.classList.add('open');
+        console.log('[Settings] Panel opened');
+    }
+}
+
+function closeSettingsPanel() {
+    var panel = document.getElementById('settingsPanel');
+    if (panel) {
+        panel.classList.remove('open');
+        console.log('[Settings] Panel closed');
+    }
+}
+
+function initVoiceSelect() {
+    var voiceSelect = document.getElementById('voiceSelect');
+    if (!voiceSelect) return;
+    
+    // Load current voice from server
+    fetch('/api/tts/voice_description')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.current_speaker) {
+                voiceSelect.value = data.current_speaker;
+            }
+        })
+        .catch(function() {});
+    
+    // Handle voice change
+    voiceSelect.onchange = function() {
+        var voice = voiceSelect.value;
+        console.log('[Settings] Changing voice to:', voice);
+        
+        // Map voice to description
+        var descriptions = {
+            'Serena': 'Speak in a cheery relaxing female voice',
+            'Vivian': 'Speak in a bright slightly edgy female voice',
+            'Ono_Anna': 'Speak in a cutesy anime girl voice',
+            'Sohee': 'Speak in a casual Korean female voice',
+            'Ryan': 'Speak in a dynamic male voice',
+            'Aiden': 'Speak in a calm American male voice'
+        };
+        
+        fetch('/api/tts/voice_description?description=' + encodeURIComponent(descriptions[voice] || descriptions['Serena']), {
+            method: 'POST'
+        })
+        .then(function() {
+            console.log('[Settings] Voice changed to:', voice);
+        })
+        .catch(function(err) {
+            console.error('[Settings] Failed to change voice:', err);
+        });
+    };
+}
+
+function initDspToggles() {
+    var echoToggle = document.getElementById('echoCancelToggle');
+    var noiseToggle = document.getElementById('noiseSuppressToggle');
+    var gainToggle = document.getElementById('autoGainToggle');
+    
+    // Set initial values from current settings
+    if (echoToggle) echoToggle.checked = CAPTURE_ECHO_CANCELLATION;
+    if (noiseToggle) noiseToggle.checked = CAPTURE_NOISE_SUPPRESSION;
+    if (gainToggle) gainToggle.checked = CAPTURE_AUTO_GAIN;
+    
+    // Handle changes
+    function updateDsp() {
+        CAPTURE_ECHO_CANCELLATION = echoToggle ? echoToggle.checked : false;
+        CAPTURE_NOISE_SUPPRESSION = noiseToggle ? noiseToggle.checked : false;
+        CAPTURE_AUTO_GAIN = gainToggle ? gainToggle.checked : false;
+        
+        // Send to server
+        fetch('/api/settings/dsp', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                echoCancellation: CAPTURE_ECHO_CANCELLATION,
+                noiseSuppression: CAPTURE_NOISE_SUPPRESSION,
+                autoGainControl: CAPTURE_AUTO_GAIN
+            })
+        }).catch(function() {});
+        
+        console.log('[Settings] DSP updated:', {
+            echo: CAPTURE_ECHO_CANCELLATION,
+            noise: CAPTURE_NOISE_SUPPRESSION,
+            gain: CAPTURE_AUTO_GAIN
+        });
+    }
+    
+    if (echoToggle) echoToggle.onchange = updateDsp;
+    if (noiseToggle) noiseToggle.onchange = updateDsp;
+    if (gainToggle) gainToggle.onchange = updateDsp;
+}
+
+function initBargeInToggle() {
+    var bargeToggle = document.getElementById('bargeInToggle');
+    if (!bargeToggle) return;
+    
+    // Set initial value
+    bargeToggle.checked = bargeInEnabled;
+    
+    bargeToggle.onchange = function() {
+        bargeInEnabled = bargeToggle.checked;
+        
+        // Send to server
+        fetch('/api/settings/barge_in', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled: bargeInEnabled })
+        }).catch(function() {});
+        
+        console.log('[Settings] Barge-in:', bargeInEnabled ? 'enabled' : 'disabled');
+    };
+}
+
+function initGainSlider() {
+    var gainSlider = document.getElementById('gainSlider');
+    var gainValue = document.getElementById('gainValue');
+    
+    if (!gainSlider || !gainValue) return;
+    
+    // Set initial value
+    gainSlider.value = CAPTURE_INPUT_GAIN || 2.0;
+    gainValue.textContent = (CAPTURE_INPUT_GAIN || 2.0).toFixed(1) + 'x';
+    
+    gainSlider.oninput = function() {
+        var value = parseFloat(gainSlider.value);
+        CAPTURE_INPUT_GAIN = value;
+        gainValue.textContent = value.toFixed(1) + 'x';
+    };
+    
+    gainSlider.onchange = function() {
+        var value = parseFloat(gainSlider.value);
+        console.log('[Settings] Input gain set to:', value + 'x');
+        // Note: This is client-side only, applied during audio capture
+    };
 }
 
 // Start polling for Jeff messages (will be called after init)
