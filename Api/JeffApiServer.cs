@@ -20,6 +20,17 @@ namespace Kinectv1.Api
 
         public static event Action<string, string> OnChatReceived;
         public static event Func<string, Task<string>> OnChatRequest;
+        
+        // Jeff message queue for web UI display
+        private static readonly System.Collections.Concurrent.ConcurrentQueue<JeffMessage> _jeffMessages = new();
+        private static readonly int MaxJeffMessages = 100;
+        
+        public class JeffMessage
+        {
+            public string Id { get; set; } = Guid.NewGuid().ToString();
+            public string Text { get; set; }
+            public long Timestamp { get; set; } = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        }
 
         public static bool IsRunning => _listener?.IsListening ?? false;
 
@@ -132,30 +143,16 @@ namespace Kinectv1.Api
 
                 var path = req.Url.AbsolutePath.ToLowerInvariant();
 
-                // Root path - serve voice UI
+                // Root path - redirect to WebRTC UI
                 if (path == "/")
                 {
-                    // Redirect to voice UI by default
                     resp.StatusCode = 302;
-                    resp.Headers.Add("Location", "/voice/");
+                    resp.Headers.Add("Location", "/webrtc/");
                     resp.Close();
                     return;
                 }
 
-                // Voice UI at /voice/
-                if (path == "/voice" || path == "/voice/")
-                {
-                    await ServeWebFile(resp, "web/index.html", "text/html");
-                    return;
-                }
-                if (path.StartsWith("/voice/"))
-                {
-                    var fileName = path.Substring(7); // Remove /voice/
-                    await ServeWebFile(resp, $"web/{fileName}", GetMimeType(fileName));
-                    return;
-                }
-
-                // Existing WebRTC UI at /webrtc/
+                // WebRTC UI at /webrtc/
                 if (path == "/webrtc" || path == "/webrtc/")
                 {
                     await ServeWebFile(resp, "wwwroot/webrtc/index.html", "text/html");
@@ -190,6 +187,24 @@ namespace Kinectv1.Api
                             return;
                         }
                         await HandleChat(req, resp);
+                        break;
+
+                    case "/api/jeff/message":
+                        if (req.HttpMethod != "POST")
+                        {
+                            await WriteJson(resp, 405, new { error = "Method not allowed" });
+                            return;
+                        }
+                        await HandleJeffMessage(req, resp);
+                        break;
+                    
+                    case "/api/jeff/messages":
+                        if (req.HttpMethod != "GET")
+                        {
+                            await WriteJson(resp, 405, new { error = "Method not allowed" });
+                            return;
+                        }
+                        await HandleGetJeffMessages(resp);
                         break;
 
                     case "/api/status":
@@ -259,6 +274,17 @@ namespace Kinectv1.Api
                 return;
             }
 
+            // If Jeff is speaking, queue his message for web UI display
+            if (speaker.Equals("Jeff", StringComparison.OrdinalIgnoreCase))
+            {
+                var jeffMsg = new JeffMessage { Text = message };
+                _jeffMessages.Enqueue(jeffMsg);
+                while (_jeffMessages.Count > MaxJeffMessages)
+                {
+                    _jeffMessages.TryDequeue(out _);
+                }
+            }
+
             OnChatReceived?.Invoke(speaker, message);
 
             string response = null;
@@ -273,6 +299,55 @@ namespace Kinectv1.Api
                 speaker,
                 received = message,
                 response 
+            });
+        }
+
+        private static async Task HandleJeffMessage(HttpListenerRequest req, HttpListenerResponse resp)
+        {
+            string body;
+            using (var sr = new StreamReader(req.InputStream, req.ContentEncoding))
+                body = await sr.ReadToEndAsync();
+
+            var json = JObject.Parse(body);
+            var message = json["message"]?.ToString();
+            var text = json["text"]?.ToString();
+            var msgText = message ?? text; // Accept either field
+
+            if (string.IsNullOrWhiteSpace(msgText))
+            {
+                await WriteJson(resp, 400, new { error = "Missing 'message' or 'text' field" });
+                return;
+            }
+
+            // Add to queue for web clients to poll
+            var jeffMsg = new JeffMessage { Text = msgText };
+            _jeffMessages.Enqueue(jeffMsg);
+            
+            // Trim old messages
+            while (_jeffMessages.Count > MaxJeffMessages)
+            {
+                _jeffMessages.TryDequeue(out _);
+            }
+
+            Console.WriteLine($"[JeffApi] Jeff message queued: {msgText.Substring(0, Math.Min(50, msgText.Length))}...");
+
+            await WriteJson(resp, 200, new { 
+                success = true, 
+                id = jeffMsg.Id,
+                message = msgText,
+                queued = true
+            });
+        }
+
+        private static async Task HandleGetJeffMessages(HttpListenerResponse resp)
+        {
+            // Return all messages and clear the queue (simple polling approach)
+            var messages = _jeffMessages.ToArray();
+            _jeffMessages.Clear();
+            
+            await WriteJson(resp, 200, new { 
+                messages,
+                count = messages.Length
             });
         }
 

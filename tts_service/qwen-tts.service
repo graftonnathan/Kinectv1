@@ -1,0 +1,14 @@
+[Unit]
+Description=Qwen3-TTS Service for Maggie
+After=network.target
+
+[Service]
+Type=simple
+User=molten
+WorkingDirectory=/home/molten/workspace/maggie/tts_service
+ExecStart=/home/molten/workspace/maggie/tts_service/venv/bin/python qwen_tts_service.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

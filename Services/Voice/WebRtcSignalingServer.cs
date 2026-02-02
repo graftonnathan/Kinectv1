@@ -643,6 +643,12 @@ namespace Kinectv1.Voice
                         else
                             ServeError(res, 405, "Method not allowed");
                         break;
+                    case "/api/jeff/messages":
+                        if (req.HttpMethod == "GET")
+                            await ProxyJeffMessages(res);
+                        else
+                            ServeError(res, 405, "Method not allowed");
+                        break;
                     default:
                         var file = Path.Combine(_wwwrootPath, path.TrimStart('/'));
                         if (File.Exists(file))
@@ -929,6 +935,23 @@ namespace Kinectv1.Voice
                 Serve(res, JsonConvert.SerializeObject(new { error = msg }), "application/json");
             }
             catch { }
+        }
+
+        private static readonly HttpClient _jeffHttpClient = new HttpClient();
+
+        private async Task ProxyJeffMessages(HttpListenerResponse res)
+        {
+            try
+            {
+                var jeffResponse = await _jeffHttpClient.GetAsync("http://localhost:18790/api/jeff/messages");
+                var content = await jeffResponse.Content.ReadAsStringAsync();
+                res.StatusCode = (int)jeffResponse.StatusCode;
+                Serve(res, content, "application/json");
+            }
+            catch (Exception ex)
+            {
+                ServeError(res, 500, "Jeff API error: " + ex.Message);
+            }
         }
 
         private static string GetMime(string path) => Path.GetExtension(path).ToLower() switch

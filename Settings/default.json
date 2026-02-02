@@ -68,7 +68,7 @@
     "vectorSearchTopK": 3,
     "recencyBoostFactor": 0.15,
     "minRetrievalScore": 0.60,
-    "toolsEnabled": true,
+    "toolsEnabled": false,
     "toolIterationsMax": 3,
     "embeddingCacheEnabled": true,
     "embeddingCacheSize": 100,

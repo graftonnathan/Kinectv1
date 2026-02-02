@@ -97,11 +97,13 @@
   <ItemGroup>
     <EmbeddedResource Include="Settings\default.json" />
     
-    <!-- Web frontend files -->
-    <Content Include="web\index.html">
+    <!-- Prompts -->
+    <Content Include="prompts\**">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
-    <Content Include="wwwroot\webrtc\**">
+    
+    <!-- Web frontend files -->
+    <Content Include="wwwroot/webrtc/**">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>

@@ -1419,6 +1419,32 @@ function sendImageFile(file) {
     reader.readAsDataURL(file);
 }
 
+// Jeff message polling (same origin to avoid mixed content issues)
+var JEFF_POLL_INTERVAL_MS = 2000;
+var jeffPollUrl = '/api/jeff/messages';
+
+function pollJeffMessages() {
+    fetch(jeffPollUrl)
+        .then(function(response) {
+            if (response.ok) return response.json();
+            throw new Error('Jeff API error: ' + response.status);
+        })
+        .then(function(data) {
+            if (data.messages && data.messages.length > 0) {
+                data.messages.forEach(function(msg) {
+                    addMsg(msg.Text, 'jeff');
+                });
+            }
+        })
+        .catch(function(err) {
+            // Silently fail - Jeff messages are optional
+            console.log('[Jeff] Poll error:', err.message);
+        });
+}
+
+// Start polling for Jeff messages
+setInterval(pollJeffMessages, JEFF_POLL_INTERVAL_MS);
+
 // Initialize when DOM is ready
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init);

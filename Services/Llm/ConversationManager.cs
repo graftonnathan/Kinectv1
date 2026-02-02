@@ -1467,20 +1467,32 @@ namespace Kinectv1
                 if ((DateTime.UtcNow - _lastSystemPromptLoadUtc).TotalSeconds < 2 && !string.IsNullOrWhiteSpace(_systemPromptCache))
                     return _systemPromptCache;
                 var path = Snap?.Ollama?.SystemPromptPath;
+                Console.WriteLine($"[DEBUG] SystemPromptPath from settings: '{path}'");
                 if (!string.IsNullOrWhiteSpace(path))
                 {
                     if (!Path.IsPathRooted(path))
                     {
                         try { path = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, path)); } catch { path = null; }
                     }
+                    Console.WriteLine($"[DEBUG] Resolved path: '{path}'");
+                    Console.WriteLine($"[DEBUG] File exists: {File.Exists(path)}");
                     if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
                     {
                         _systemPromptCache = File.ReadAllText(path);
                         _lastSystemPromptLoadUtc = DateTime.UtcNow;
+                        Console.WriteLine($"[DEBUG] Loaded system prompt: {_systemPromptCache.Length} chars");
+                    }
+                    else
+                    {
+                        Console.WriteLine($"[DEBUG] System prompt file not found at: '{path}'");
                     }
                 }
+                else
+                {
+                    Console.WriteLine($"[DEBUG] SystemPromptPath is null or empty");
+                }
             }
-            catch (Exception ex) { LogErr($"System prompt load failed: {ex.Message}"); }
+            catch (Exception ex) { LogErr($"System prompt load failed: {ex.Message}"); Console.WriteLine($"[DEBUG] Exception: {ex}"); }
             return _systemPromptCache ?? string.Empty;
         }
 

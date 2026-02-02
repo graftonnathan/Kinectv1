@@ -137,6 +137,12 @@
             border-bottom-left-radius: 4px;
         }
         
+        .message.jeff {
+            align-self: flex-start;
+            background: linear-gradient(135deg, #22c55e, #16a34a);
+            border-bottom-left-radius: 4px;
+        }
+        
         .message-header {
             font-size: 0.8rem;
             opacity: 0.7;
@@ -470,6 +476,10 @@
                     <div class="message-header">Maggie</div>
                     <div>Hello! I'm Maggie, your AI assistant. I can now speak with a natural voice thanks to Qwen3-TTS. How can I help you today?</div>
                 </div>
+                <div class="message jeff">
+                    <div class="message-header">Jeff</div>
+                    <div>Hey Maggie! I'm Jeff, your AI partner. I'll be helping out too. My messages will appear in green like this. 🦞</div>
+                </div>
             </div>
             
             <div class="typing-indicator hidden" id="typing">
@@ -609,8 +619,9 @@
         function addMessage(text, sender = 'user') {
             const msg = document.createElement('div');
             msg.className = `message ${sender}`;
+            const headerText = sender === 'user' ? 'You' : sender === 'jeff' ? 'Jeff' : 'Maggie';
             msg.innerHTML = `
-                <div class="message-header">${sender === 'user' ? 'You' : 'Maggie'}</div>
+                <div class="message-header">${headerText}</div>
                 <div>${escapeHtml(text)}</div>
             `;
             messagesEl.appendChild(msg);
@@ -891,6 +902,26 @@
             return null;
         };
 
+        // Poll for Jeff messages
+        async function pollJeffMessages() {
+            try {
+                const response = await fetch(`${CONFIG.maggieApi}/api/jeff/messages`);
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.messages && data.messages.length > 0) {
+                        data.messages.forEach(msg => {
+                            addMessage(msg.Text, 'jeff');
+                        });
+                    }
+                }
+            } catch (err) {
+                // Silently fail - Jeff messages are optional
+            }
+        }
+
+        // Start polling for Jeff messages every 2 seconds
+        setInterval(pollJeffMessages, 2000);
+        
         checkHealth();
         setInterval(checkHealth, 30000);
     </script>
