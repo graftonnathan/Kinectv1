@@ -365,70 +365,150 @@ namespace Kinectv1.Llm.Tools
         {
             var results = new List<SearchResult>();
             var encodedQuery = HttpUtility.UrlEncode(query);
-            var url = $"https://html.duckduckgo.com/html/?q={encodedQuery}";
 
-            try
+            // DuckDuckGo HTML markup changes frequently. The lite endpoint is simpler and tends to be more stable.
+            // Fall back to the html endpoint if lite fails.
+            var urlsToTry = new[]
             {
-                var response = await _httpClient.GetStringAsync(url).ConfigureAwait(false);
-                
-                // Parse results with multiple patterns for robustness
-                var resultRegex = new Regex(
-                    @"<a[^>]*class=""result__a""[^>]*href=""([^""]+)""[^>]*>([^<]+)</a>.*?<a[^>]*class=""result__snippet""[^>]*>([^<]*)</a>",
-                    RegexOptions.Singleline | RegexOptions.IgnoreCase);
+                $"https://lite.duckduckgo.com/lite/?q={encodedQuery}",
+                $"https://html.duckduckgo.com/html/?q={encodedQuery}"
+            };
 
-                var matches = resultRegex.Matches(response);
-                
-                foreach (Match match in matches)
+            foreach (var url in urlsToTry)
+            {
+                if (ct.IsCancellationRequested) break;
+
+                try
                 {
-                    if (results.Count >= MaxSearchResults) break;
-
-                    var rawUrl = match.Groups[1].Value;
-                    var title = HttpUtility.HtmlDecode(match.Groups[2].Value.Trim());
-                    var snippet = HttpUtility.HtmlDecode(match.Groups[3].Value.Trim());
-                    var actualUrl = ExtractActualUrl(rawUrl);
-
-                    if (!string.IsNullOrWhiteSpace(title) && !string.IsNullOrWhiteSpace(actualUrl))
+                    string response;
+                    using (var req = new HttpRequestMessage(HttpMethod.Get, url))
+                    using (var resp = await _httpClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false))
                     {
-                        results.Add(new SearchResult
-                        {
-                            Title = CleanText(title),
-                            Snippet = CleanText(snippet),
-                            Url = actualUrl
-                        });
+                        resp.EnsureSuccessStatusCode();
+                        response = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
                     }
-                }
 
-                // Fallback pattern
-                if (results.Count == 0)
-                {
-                    var fallbackRegex = new Regex(
-                        @"<a[^>]*class=""[^""]*result[^""]*""[^>]*href=""([^""]+)""[^>]*>.*?<[^>]*>([^<]+)</",
+                    // Try multiple parsing strategies. We intentionally keep parsing permissive.
+                    // 1) Standard 'result__a' pattern (html endpoint)
+                    var htmlResultRegex = new Regex(
+                        @"<a[^>]*class=""result__a""[^>]*href=""([^""]+)""[^>]*>([\s\S]*?)</a>",
                         RegexOptions.Singleline | RegexOptions.IgnoreCase);
 
-                    matches = fallbackRegex.Matches(response);
-                    foreach (Match match in matches)
+                    foreach (Match match in htmlResultRegex.Matches(response))
                     {
                         if (results.Count >= MaxSearchResults) break;
-                        
+
                         var rawUrl = match.Groups[1].Value;
-                        var title = HttpUtility.HtmlDecode(match.Groups[2].Value.Trim());
+                        var titleHtml = match.Groups[2].Value;
+                        var title = CleanText(titleHtml);
                         var actualUrl = ExtractActualUrl(rawUrl);
 
-                        if (!string.IsNullOrWhiteSpace(title) && title.Length > 5 && !string.IsNullOrWhiteSpace(actualUrl))
+                        if (!string.IsNullOrWhiteSpace(title) && !string.IsNullOrWhiteSpace(actualUrl))
                         {
                             results.Add(new SearchResult
                             {
-                                Title = CleanText(title),
+                                Title = title,
                                 Url = actualUrl
                             });
                         }
                     }
+
+                    // 2) Lite endpoint: results are in <a rel="nofollow" class="result-link" href="...">Title</a>
+                    if (results.Count == 0)
+                    {
+                        var liteRegex = new Regex(
+                            @"<a[^>]*class=""result-link""[^>]*href=""([^""]+)""[^>]*>([\s\S]*?)</a>",
+                            RegexOptions.Singleline | RegexOptions.IgnoreCase);
+
+                        foreach (Match match in liteRegex.Matches(response))
+                        {
+                            if (results.Count >= MaxSearchResults) break;
+
+                            var rawUrl = match.Groups[1].Value;
+                            var titleHtml = match.Groups[2].Value;
+                            var title = CleanText(titleHtml);
+                            var actualUrl = ExtractActualUrl(rawUrl);
+
+                            if (!string.IsNullOrWhiteSpace(title) && !string.IsNullOrWhiteSpace(actualUrl))
+                            {
+                                results.Add(new SearchResult
+                                {
+                                    Title = title,
+                                    Url = actualUrl
+                                });
+                            }
+                        }
+                    }
+
+                    // 3) Last-ditch pattern: any link that looks like an external http(s) URL
+                    if (results.Count == 0)
+                    {
+                        var genericLink = new Regex(
+                            @"<a[^>]*href=""(https?://[^""]+)""[^>]*>([\s\S]*?)</a>",
+                            RegexOptions.Singleline | RegexOptions.IgnoreCase);
+
+                        foreach (Match match in genericLink.Matches(response))
+                        {
+                            if (results.Count >= MaxSearchResults) break;
+
+                            var actualUrl = match.Groups[1].Value;
+                            var title = CleanText(match.Groups[2].Value);
+
+                            if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(actualUrl))
+                                continue;
+
+                            // Skip obvious DDG internal links
+                            if (actualUrl.Contains("duckduckgo.com", StringComparison.OrdinalIgnoreCase))
+                                continue;
+
+                            results.Add(new SearchResult
+                            {
+                                Title = title,
+                                Url = actualUrl
+                            });
+                        }
+                    }
+
+                    if (results.Count > 0)
+                    {
+                        // Attempt to enrich snippets for the html endpoint when present.
+                        // (Not required for functionality; tool can work with titles+urls.)
+                        try
+                        {
+                            var snippetRegex = new Regex(
+                                @"<a[^>]*class=""result__snippet""[^>]*>([\s\S]*?)</a>",
+                                RegexOptions.Singleline | RegexOptions.IgnoreCase);
+                            var snippetMatches = snippetRegex.Matches(response);
+                            for (int i = 0; i < Math.Min(results.Count, snippetMatches.Count); i++)
+                            {
+                                var snip = CleanText(snippetMatches[i].Groups[1].Value);
+                                if (!string.IsNullOrWhiteSpace(snip))
+                                    results[i].Snippet = snip;
+                            }
+                        }
+                        catch { }
+
+                        return results;
+                    }
                 }
-            }
-            catch (HttpRequestException ex)
-            {
-                Console.WriteLine($"[WebSearch] HTTP error: {ex.Message}");
-                throw;
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (HttpRequestException ex)
+                {
+                    Console.WriteLine($"[WebSearch] HTTP error for {url}: {ex.Message}");
+                    // Try next URL
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[WebSearch] Parse error for {url}: {ex.Message}");
+                    // Try next URL
+                }
+                finally
+                {
+                    results.Clear();
+                }
             }
 
             return results;

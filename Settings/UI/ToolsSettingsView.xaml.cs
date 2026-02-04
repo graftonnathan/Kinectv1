@@ -5,6 +5,7 @@ using System.Windows.Controls;
 using System.Windows.Media;
 using Kinectv1.Settings;
 using Kinectv1.Llm.Tools;
+using Newtonsoft.Json.Linq;
 
 namespace Kinectv1.UI.Settings
 {
@@ -72,7 +73,8 @@ namespace Kinectv1.UI.Settings
                 TestSearchResultText.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x8C, 0x00));
 
                 var tool = new WebSearchTool();
-                var result = await Task.Run(() => tool.ExecuteAsync($"{{\"query\": \"{query}\"}}"));
+                var parameters = new JObject { ["query"] = query }.ToString(Newtonsoft.Json.Formatting.None);
+                var result = await Task.Run(() => tool.ExecuteAsync(parameters));
 
                 // Show truncated result
                 var displayResult = result;

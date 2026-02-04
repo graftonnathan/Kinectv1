@@ -1,4 +1,4 @@
-// ConversationManager.cs (conversation + context only)
+﻿// ConversationManager.cs (conversation + context only)
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -876,135 +876,171 @@ namespace Kinectv1
              bool toolsUsed = false;
              int toolIterations = 0;
              const int maxToolIterations = 3; // Prevent infinite tool loops
-
-             string currentPrompt = userPrompt;
-
-             while (toolIterations < maxToolIterations)
+            
+             static bool IsWebSearchNoResults(string toolName, string toolResult)
              {
-                 fullResponse.Clear();
-                 sentenceBuffer.Clear();
-
-                 try
-                 {
-                     await foreach (var chunk in _router.ChatStreamAsync(system, currentPrompt, ct, images))
-                     {
-                         if (ct.IsCancellationRequested) break;
-                         if (string.IsNullOrEmpty(chunk)) continue;
-                         
-                         fullResponse.Append(chunk);
-                         sentenceBuffer.Append(chunk);
-                         
-                         // Only fire chunk events on the final iteration (when no more tools)
-                         // For tool iterations, we buffer silently
-                         if (toolIterations == 0 || !toolRegistry.HasToolCalls(fullResponse.ToString()))
-                         {
-                             try { OnResponseChunk?.Invoke(chunk); } catch { }
-                         }
-                         
-                         // Extract and fire sentences for TTS (only if not a tool call response)
-                         if (!toolRegistry.HasToolCalls(fullResponse.ToString()))
-                         {
-                             var bufferedText = sentenceBuffer.ToString();
-                             var sentences = ExtractCompleteSentences(ref bufferedText);
-                             sentenceBuffer.Clear();
-                             sentenceBuffer.Append(bufferedText);
-                             
-
-                            foreach (var sentence in sentences)
-                            {
-                                if (ct.IsCancellationRequested) break;
-                                var cleaned = SanitizeAssistantText(sentence);
-                                if (!string.IsNullOrWhiteSpace(cleaned))
-                                {
-                                    try { OnResponseSentenceReady?.Invoke(cleaned); } catch { }
-                                }
-                            }
-                         }
-                     }
-                 }
-                 catch (OperationCanceledException)
-                 {
-                     return (fullResponse.ToString(), toolsUsed);
-                 }
-
-                if (ct.IsCancellationRequested) break;
-
-                var responseText = fullResponse.ToString();
-
-                // Check for tool calls
-                if (toolRegistry.IsEnabled && toolRegistry.HasToolCalls(responseText))
-                {
-                    var toolCalls = toolRegistry.ParseToolCalls(responseText);
-                    if (toolCalls.Count > 0)
-                    {
-                        toolsUsed = true;
-                        toolIterations++;
-
-                        // Execute all tool calls
-                        var toolResults = new StringBuilder();
-                        foreach (var (toolName, parameters) in toolCalls)
-                        {
-                            try
-                            {
-                                // Extract query for display
-                                string queryDisplay = parameters;
-                                try
-                                {
-                                    var paramObj = JObject.Parse(parameters);
-                                    queryDisplay = paramObj["query"]?.ToString() ?? parameters;
-                                }
-                                catch { }
-
-                                Console.WriteLine($"[OllamaService] Tool call: {toolName}({queryDisplay})");
-                                try { OnToolExecutionStarted?.Invoke(toolName, queryDisplay); } catch { }
-
-                                var result = await toolRegistry.ExecuteToolAsync(toolName, parameters, ct).ConfigureAwait(false);
-                                
-
-                                // Summarize result for event
-                                var resultSummary = result?.Length > 100 ? result.Substring(0, 100) + "..." : result;
-                                try { OnToolExecutionCompleted?.Invoke(toolName, resultSummary); } catch { }
-
-                                toolResults.AppendLine($"[Tool Result: {toolName}]");
-                                toolResults.AppendLine(result);
-                                toolResults.AppendLine();
-                            }
-                            catch (Exception ex)
-                            {
-                                toolResults.AppendLine($"[Tool Error: {toolName}]");
-                                toolResults.AppendLine($"Error: {ex.Message}");
-                                toolResults.AppendLine();
-                            }
-                        }
-
-                        // Build continuation prompt with tool results
-                        var cleanedResponse = toolRegistry.RemoveToolCalls(responseText);
-                        currentPrompt = $"{userPrompt}\n\nASSISTANT: {cleanedResponse}\n\n{toolResults}\n\nPlease continue your response, incorporating the tool results naturally. Do not use any more tools.";
-                        
-                        Console.WriteLine($"[OllamaService] Continuing with tool results (iteration {toolIterations})");
-                        continue;
-                    }
-                }
-
-                // No tool calls, we're done
-                // Flush any remaining buffer
-                var remaining = sentenceBuffer.ToString().Trim();
-                if (!string.IsNullOrWhiteSpace(remaining) && remaining.Length > 1)
-                {
-                    var cleaned = SanitizeAssistantText(remaining);
-                    if (!string.IsNullOrWhiteSpace(cleaned) && cleaned.Length > 1)
-                    {
-                        try { OnResponseSentenceReady?.Invoke(cleaned); } catch { }
-                    }
-                }
-
-                return (responseText, toolsUsed);
+                 if (!string.Equals(toolName, "web_search", StringComparison.OrdinalIgnoreCase)) return false;
+                 if (string.IsNullOrWhiteSpace(toolResult)) return false;
+                 return toolResult.TrimStart().StartsWith("No search results found for:", StringComparison.OrdinalIgnoreCase);
              }
 
-            // Max iterations reached
-            Console.WriteLine($"[OllamaService] Max tool iterations ({maxToolIterations}) reached");
-            return (fullResponse.ToString(), toolsUsed);
-        }
+              string currentPrompt = userPrompt;
+
+              while (toolIterations < maxToolIterations)
+              {
+                  fullResponse.Clear();
+                  sentenceBuffer.Clear();
+
+                  try
+                  {
+                      await foreach (var chunk in _router.ChatStreamAsync(system, currentPrompt, ct, images))
+                      {
+                          if (ct.IsCancellationRequested) break;
+                          if (string.IsNullOrEmpty(chunk)) continue;
+                          
+                          fullResponse.Append(chunk);
+                          sentenceBuffer.Append(chunk);
+                          
+                          // Only fire chunk events on the final iteration (when no more tools)
+                          // For tool iterations, we buffer silently
+                          if (toolIterations == 0 || !toolRegistry.HasToolCalls(fullResponse.ToString()))
+                          {
+                              try { OnResponseChunk?.Invoke(chunk); } catch { }
+                          }
+                          
+                          // Extract and fire sentences for TTS (only if not a tool call response)
+                          var fullSoFar = fullResponse.ToString();
+                          if (!toolRegistry.HasToolCalls(fullSoFar))
+                          {
+                              var bufferedText = sentenceBuffer.ToString();
+                              var sentences = ExtractCompleteSentences(ref bufferedText);
+                              sentenceBuffer.Clear();
+                              sentenceBuffer.Append(bufferedText);
+                              
+
+                             foreach (var sentence in sentences)
+                             {
+                                 if (ct.IsCancellationRequested) break;
+                                 var cleaned = SanitizeAssistantText(sentence);
+                                 if (!string.IsNullOrWhiteSpace(cleaned))
+                                 {
+                                     try { OnResponseSentenceReady?.Invoke(cleaned); } catch { }
+                                 }
+                             }
+                          }
+                          else
+                          {
+                             // Tool calls often start with natural language like "Searching...".
+                             // Suppress partial sentence emission so the user doesn't hear a placeholder
+                             // before the tool result-informed continuation.
+                             sentenceBuffer.Clear();
+                          }
+                      }
+                  }
+                  catch (OperationCanceledException)
+                  {
+                      return (fullResponse.ToString(), toolsUsed);
+                  }
+
+                 if (ct.IsCancellationRequested) break;
+
+                 var responseText = fullResponse.ToString();
+
+                 // Check for tool calls
+                 if (toolRegistry.IsEnabled && toolRegistry.HasToolCalls(responseText))
+                 {
+                     var toolCalls = toolRegistry.ParseToolCalls(responseText);
+                     if (toolCalls.Count > 0)
+                     {
+                         toolsUsed = true;
+                         toolIterations++;
+
+                         // Execute all tool calls
+                         var toolResults = new StringBuilder();
+                        bool webSearchNoResults = false;
+                        string webSearchNoResultsRaw = null;
+                         foreach (var (toolName, parameters) in toolCalls)
+                         {
+                             try
+                             {
+                                 // Extract query for display
+                                 string queryDisplay = parameters;
+                                 try
+                                 {
+                                     var paramObj = JObject.Parse(parameters);
+                                     queryDisplay = paramObj["query"]?.ToString() ?? parameters;
+                                 }
+                                 catch { }
+
+                                 Console.WriteLine($"[OllamaService] Tool call: {toolName}({queryDisplay})");
+                                 try { OnToolExecutionStarted?.Invoke(toolName, queryDisplay); } catch { }
+
+                                 var result = await toolRegistry.ExecuteToolAsync(toolName, parameters, ct).ConfigureAwait(false);
+                                
+                                if (IsWebSearchNoResults(toolName, result))
+                                {
+                                    webSearchNoResults = true;
+                                    webSearchNoResultsRaw = result;
+                                }
+                                 // Summarize result for event
+                                 var resultSummary = result?.Length > 100 ? result.Substring(0, 100) + "..." : result;
+                                 try { OnToolExecutionCompleted?.Invoke(toolName, resultSummary); } catch { }
+
+                                 toolResults.AppendLine($"[Tool Result: {toolName}]");
+                                 toolResults.AppendLine(result);
+                                 toolResults.AppendLine();
+                             }
+                             catch (Exception ex)
+                             {
+                                 toolResults.AppendLine($"[Tool Error: {toolName}]");
+                                 toolResults.AppendLine($"Error: {ex.Message}");
+                                 toolResults.AppendLine();
+                             }
+                         }
+                        // Hard-fail: if web_search yielded no results, do not let the LLM guess.
+                        if (webSearchNoResults)
+                        {
+                            var msg = "Web search returned no results (blocked/interstitial).";
+                            if (!string.IsNullOrWhiteSpace(webSearchNoResultsRaw))
+                                msg += " " + webSearchNoResultsRaw.Trim();
+
+                            try { OnResponseReceived?.Invoke(msg); } catch { }
+                             return (msg, toolsUsed);
+                        }
+
+                         // Build continuation prompt with tool results
+                         var cleanedResponse = toolRegistry.RemoveToolCalls(responseText);
+
+                         // If the model produced only a tool call or a short placeholder, don't treat it as a user-visible response.
+                         // Clear any partial UI that might have been emitted before tool execution.
+                         try { OnResponseReceived?.Invoke(string.Empty); } catch { }
+
+                         currentPrompt = $"{userPrompt}\n\nASSISTANT: {cleanedResponse}\n\n{toolResults}\n\nPlease continue your response, incorporating the tool results naturally. Do not use any more tools.";
+                         
+                         Console.WriteLine($"[OllamaService] Continuing with tool results (iteration {toolIterations})");
+                         continue;
+                     }
+                 }
+
+                 // No tool calls, we're done
+                 // Flush any remaining buffer
+                 var remaining = sentenceBuffer.ToString().Trim();
+                 if (!string.IsNullOrWhiteSpace(remaining) && remaining.Length > 1)
+                 {
+                     var cleaned = SanitizeAssistantText(remaining);
+                     if (!string.IsNullOrWhiteSpace(cleaned) && cleaned.Length > 1)
+                     {
+                         try { OnResponseSentenceReady?.Invoke(cleaned); } catch { }
+                     }
+                 }
+
+                 return (responseText, toolsUsed);
+              }
+
+             // Max iterations reached
+             Console.WriteLine($"[OllamaService] Max tool iterations ({maxToolIterations}) reached");
+             return (fullResponse.ToString(), toolsUsed);
+         }
 
         /// <summary>
         /// Original non-streaming version for backward compatibility.
@@ -1392,7 +1428,7 @@ namespace Kinectv1
                 char c = bufferText[i];
                 
                 // Check for sentence-ending punctuation
-                if (c == '.' || c == '!' || c == '?' || c == '�')
+                if (c == '.' || c == '!' || c == '?' || c == '…')
                 {
                     // Handle ellipsis (...) as single unit
                     int punctEnd = i;
@@ -1495,3 +1531,5 @@ namespace Kinectv1
         }
     }
 }
+
+

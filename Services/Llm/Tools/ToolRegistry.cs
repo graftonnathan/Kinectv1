@@ -124,48 +124,82 @@ namespace Kinectv1.Llm.Tools
 
             foreach (Match match in matches)
             {
-                try
-                {
-                    var json = match.Groups[1].Value.Trim();
-                    var obj = JObject.Parse(json);
-                    var toolName = obj["tool"]?.ToString();
-                    var parameters = obj["parameters"]?.ToString() ?? "{}";
+                TryParseToolJson(match.Groups[1].Value, results);
+            }
 
-                    if (!string.IsNullOrWhiteSpace(toolName))
-                    {
-                        results.Add((toolName, parameters));
-                    }
-                }
-                catch (Exception ex)
+            // Some models emit <toolcall>...</toolcall>
+            if (results.Count == 0)
+            {
+                var tagRegex = new Regex(@"<toolcall[^>]*>([\s\S]*?)</toolcall>", RegexOptions.Singleline | RegexOptions.IgnoreCase);
+                var tagMatches = tagRegex.Matches(response);
+                foreach (Match match in tagMatches)
                 {
-                    Console.WriteLine($"[ToolRegistry] Failed to parse tool call: {ex.Message}");
+                    TryParseToolJson(match.Groups[1].Value, results);
                 }
             }
 
-            // Also try to match inline JSON tool calls (some models don't use code blocks)
+            // Also try to match inline JSON tool calls
             if (results.Count == 0)
             {
-                var inlineRegex = new Regex(@"\{[^{}]*""tool""\s*:\s*""([^""]+)""[^{}]*""parameters""\s*:\s*(\{[^{}]*\})[^{}]*\}", RegexOptions.IgnoreCase);
+                // Accept either {"tool":"x","parameters":{...}} or {"tool":"x","parameters":"..."}
+                var inlineRegex = new Regex(
+                    @"\{[\s\S]*?""tool""\s*:\s*""([^""\\]+)""[\s\S]*?""parameters""\s*:\s*([\s\S]*?)\}",
+                    RegexOptions.IgnoreCase);
+
                 var inlineMatches = inlineRegex.Matches(response);
                 foreach (Match match in inlineMatches)
                 {
-                    try
-                    {
-                        var fullJson = match.Value;
-                        var obj = JObject.Parse(fullJson);
-                        var toolName = obj["tool"]?.ToString();
-                        var parameters = obj["parameters"]?.ToString() ?? "{}";
-
-                        if (!string.IsNullOrWhiteSpace(toolName))
-                        {
-                            results.Add((toolName, parameters));
-                        }
-                    }
-                    catch { }
+                    TryParseToolJson(match.Value, results);
                 }
             }
 
+            // Last resort: if the entire response is a JSON object containing tool/parameters
+            if (results.Count == 0 && response.TrimStart().StartsWith("{", StringComparison.Ordinal))
+            {
+                TryParseToolJson(response, results);
+            }
+
             return results;
+        }
+
+        private static void TryParseToolJson(string jsonLike, List<(string toolName, string parameters)> results)
+        {
+            try
+            {
+                var json = (jsonLike ?? string.Empty).Trim();
+                if (string.IsNullOrWhiteSpace(json)) return;
+
+                // Strip possible surrounding code fences/tags
+                json = Regex.Replace(json, @"^```(?:json|tool)?\s*", string.Empty, RegexOptions.IgnoreCase).Trim();
+                json = Regex.Replace(json, @"```$", string.Empty, RegexOptions.IgnoreCase).Trim();
+
+                var obj = JObject.Parse(json);
+                var toolName = obj["tool"]?.ToString();
+
+                string parameters;
+                var pTok = obj["parameters"];
+                if (pTok == null)
+                {
+                    // Allow { tool: "web_search", query: "..." }
+                    var q = obj["query"]?.ToString();
+                    parameters = string.IsNullOrWhiteSpace(q) ? "{}" : new JObject { ["query"] = q }.ToString(Formatting.None);
+                }
+                else if (pTok.Type == JTokenType.Object)
+                {
+                    parameters = pTok.ToString(Formatting.None);
+                }
+                else
+                {
+                    // string or other primitive
+                    parameters = pTok.ToString();
+                }
+
+                if (!string.IsNullOrWhiteSpace(toolName))
+                {
+                    results.Add((toolName, parameters ?? "{}"));
+                }
+            }
+            catch { }
         }
 
         /// <summary>
@@ -177,10 +211,21 @@ namespace Kinectv1.Llm.Tools
 
             // Remove ```tool ... ``` blocks
             var result = Regex.Replace(response, @"```tool\s*\n?.*?\n?```", "", RegexOptions.Singleline | RegexOptions.IgnoreCase);
-            
+
+            // Remove <toolcall>...</toolcall>
+            result = Regex.Replace(result, @"<toolcall[^>]*>[\s\S]*?</toolcall>", "", RegexOptions.Singleline | RegexOptions.IgnoreCase);
+
             // Clean up extra whitespace
             result = Regex.Replace(result, @"\n{3,}", "\n\n");
             return result.Trim();
+        }
+
+        public bool HasToolCalls(string response)
+        {
+            if (string.IsNullOrWhiteSpace(response)) return false;
+            return response.Contains("```tool", StringComparison.OrdinalIgnoreCase) ||
+                   response.Contains("<toolcall", StringComparison.OrdinalIgnoreCase) ||
+                   Regex.IsMatch(response, @"\{[^{}]*""tool""\s*:", RegexOptions.IgnoreCase);
         }
 
         /// <summary>
@@ -206,16 +251,6 @@ namespace Kinectv1.Llm.Tools
                 Console.WriteLine($"[ToolRegistry] Tool {toolName} failed: {ex.Message}");
                 return $"Error executing {toolName}: {ex.Message}";
             }
-        }
-
-        /// <summary>
-        /// Check if the response contains any tool calls.
-        /// </summary>
-        public bool HasToolCalls(string response)
-        {
-            if (string.IsNullOrWhiteSpace(response)) return false;
-            return response.Contains("```tool", StringComparison.OrdinalIgnoreCase) ||
-                   Regex.IsMatch(response, @"\{[^{}]*""tool""\s*:", RegexOptions.IgnoreCase);
         }
     }
 }
